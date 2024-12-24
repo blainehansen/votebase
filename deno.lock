@@ -1,0 +1,16 @@
+{
+  "version": "4",
+  "specifiers": {
+    "npm:date-fns@^4.1.0": "4.1.0"
+  },
+  "npm": {
+    "date-fns@4.1.0": {
+      "integrity": "sha512-Ukq0owbQXxa/U3EGtsdVBkR1w7KOQ5gIBqdH2hkvknzZPYvBxb/aa6E8L7tmjFtkwZBu3UXBbjIgPo/Ez4xaNg=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:date-fns@^4.1.0"
+    ]
+  }
+}

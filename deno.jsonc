@@ -1,0 +1,23 @@
+{
+	"tasks": {
+		"dev": "IS_PRODUCTION=false deno run --watch --allow-env=\"IS_PRODUCTION\" --allow-net server/main.ts"
+	},
+	"imports": {
+		"date-fns": "npm:date-fns@^4.1.0"
+	},
+	"compilerOptions": {
+		"strict": true,
+		"allowUnusedLabels": false,
+		"allowUnreachableCode": false,
+		"exactOptionalPropertyTypes": true,
+		"noFallthroughCasesInSwitch": false,
+		"noImplicitOverride": true,
+		"noImplicitReturns": true,
+		"noPropertyAccessFromIndexSignature": true,
+		"noUncheckedIndexedAccess": true,
+		"noUnusedLocals": false,
+		"noUnusedParameters": false,
+
+		"checkJs": true
+	}
+}
