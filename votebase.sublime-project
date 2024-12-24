@@ -1,22 +1,22 @@
 {
-	"folders": [{ "path": "." }],
+	"folders": [{ "path": ".", }],
 	"settings": {
 		"LSP": {
-			"deno": {
+			"Deno": {
 				"command": ["deno", "lsp"],
 				"initializationOptions": {
 					// "config": "", // Sets the path for the config file in your project
 					"enable": true,
 					// "importMap": "", // Sets the path for the import-map in your project
 					"lint": true,
-					"unstable": false
+					"unstable": false,
 				},
 				"enabled": true,
 			},
 
       "LSP-typescript": {
-        "enabled": false
+        "enabled": false,
       }
-		}
-	}
+		},
+	},
 }
