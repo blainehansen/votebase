@@ -3,6 +3,7 @@
 		"dev": "IS_PRODUCTION=false deno run --watch --allow-env=\"IS_PRODUCTION\" --allow-net server/main.ts"
 	},
 	"imports": {
+		"@std/assert": "jsr:@std/assert@^1.0.10",
 		"date-fns": "npm:date-fns@^4.1.0"
 	},
 	"compilerOptions": {
