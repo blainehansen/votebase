@@ -1,3 +1,14 @@
+https://hyper.rs/guides/1/server/echo/
+https://github.com/hyperium/hyper/blob/master/examples/service_struct_impl.rs
+https://github.com/hyperium/hyper/blob/master/examples/hello-http2.rs
+https://github.com/hyperium/hyper/blob/master/examples/params.rs
+
+
+https://secutils.dev/docs/blog/rust-application-with-js-extensions
+https://deno.com/blog/roll-your-own-javascript-runtime
+
+
+
 The purpose of this tool is to completely solve the purely technological sub-problems (incidental complexity) of governance, and leave only policy questions (which are sometimes technical!). Those sub-questions are:
 
 - data storage

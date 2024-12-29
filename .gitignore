@@ -1,1 +1,9 @@
 *.sublime-workspace
+*.history.*
+*.history
+*.cache.*
+
+
+# Added by cargo
+
+/target
