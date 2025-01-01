@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 deno_core = "0.327.0"
+rocket = { version = "0.5" }
