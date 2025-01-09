@@ -12,6 +12,7 @@ deno_core = "0.328.0"
 [dependencies]
 deno_core = { workspace = true }
 actix-web = "4"
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio"] }
 reqwest = "0.12"
 serde_json = { version = "1", default-features = false }
 tokio = { version = "1.40", features = ["full"] }

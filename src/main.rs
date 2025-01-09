@@ -2,6 +2,8 @@
 mod runtime;
 use actix_web::{web, HttpResponse};
 
+type PgPool = sqlx::Pool<sqlx::Postgres>;
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
 	pretty_env_logger::formatted_builder()
@@ -9,8 +11,13 @@ async fn main() -> std::io::Result<()> {
 		.parse_default_env()
 		.init();
 
-	actix_web::HttpServer::new(|| {
+	let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
+		.max_connections(5)
+		.connect("postgres://dev_user:dev_password@localhost/dev_db").await.unwrap();
+
+	actix_web::HttpServer::new(move || {
 		actix_web::App::new()
+			.app_data(web::Data::new(pool.clone()))
 			.wrap(actix_web::middleware::Logger::default())
 			.service(execute_action)
 			.service(execute_view)
@@ -20,23 +27,68 @@ async fn main() -> std::io::Result<()> {
 	.await
 }
 
+#[actix_web::post("/action/{path}")]
+async fn execute_action(
+	// TODO make your own extractor to get the full safe path
+	path: web::Path<String>,
+	arg: web::Query<serde_json::Value>,
+	pool: web::Data<PgPool>,
+) -> Result<HttpResponse<()>, VotebaseError> {
+	// TODO do a join or something to get function_name?
+	let (constitution_code,): (String,) = sqlx::query_as("select constitution_code from constitutions where path = $1")
+		.bind(path.into_inner())
+		.fetch_one(pool.get_ref()).await?;
+
+	let return_value = runtime::run_function(constitution_code, FUNCTION_NAME, arg.into_inner()).await?;
+	dbg!(return_value);
+	// TODO use the return value, perhaps validating first to a known structure you can use to modify the database
+
+	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
+}
+
+#[actix_web::get("/view/{path}")]
+async fn execute_view(
+	path: web::Path<String>,
+	query: web::Query<serde_json::Value>,
+	pool: web::Data<PgPool>,
+) -> Result<web::Json<serde_json::Value>, VotebaseError> {
+	// TODO do a join or something to get function_name?
+	let (constitution_code,): (String,) = sqlx::query_as("select constitution_code from constitutions where path = $1")
+		.bind(path.into_inner())
+		.fetch_one(pool.get_ref()).await?;
+
+	let return_value = runtime::run_function(constitution_code, FUNCTION_NAME, query.into_inner()).await?;
+
+	Ok(web::Json(dbg!(return_value)))
+}
+
+
+
+// const CONSTITUTION_CODE: &'static str = r#"
+// console.log("wassup")
+
+// votebase.reg("hello", (arg: string) => {
+// 	console.log(arg)
+// 	return typeof arg === 'object'
+// })
+// "#;
+const FUNCTION_NAME: &'static str = "hello";
+
+
 #[derive(thiserror::Error, Debug)]
 enum VotebaseError {
 	#[error("internal error")]
-	Internal,
-}
-
-impl From<runtime::DenoError> for VotebaseError {
-	fn from(_value: runtime::DenoError) -> Self {
-		VotebaseError::Internal
-	}
+	DenoError(#[from] runtime::DenoError),
+	#[error("internal error")]
+	SqlxError(#[from] sqlx::Error)
 }
 
 impl VotebaseError {
 	fn respond(&self, status_code: actix_web::http::StatusCode) -> HttpResponse {
+		error!("{}", self);
 		let res = HttpResponse::new(status_code);
 		match self {
-			Self::Internal => res.into(),
+			Self::DenoError(_) | Self::SqlxError(_) => res.into(),
 		}
 
 		// let mut buf = web::BytesMut::new();
@@ -52,7 +104,7 @@ impl VotebaseError {
 impl actix_web::ResponseError for VotebaseError {
 	fn status_code(&self) -> actix_web::http::StatusCode {
 		match self {
-			Self::Internal => actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+			Self::DenoError(_) | Self::SqlxError(_) => actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
 
@@ -60,32 +112,3 @@ impl actix_web::ResponseError for VotebaseError {
 		self.respond(self.status_code())
 	}
 }
-
-#[actix_web::post("/action/{path}")]
-async fn execute_action(path: web::Path<String>, arg: web::Query<serde_json::Value>) -> Result<HttpResponse<()>, VotebaseError> {
-	dbg!(path);
-	let return_value = runtime::run_function(CONSTITUTION_CODE.to_string(), FUNCTION_NAME, arg.into_inner()).await?;
-	dbg!(return_value);
-
-	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
-}
-
-#[actix_web::get("/view/{path}")]
-async fn execute_view(path: web::Path<String>, query: web::Query<serde_json::Value>) -> Result<web::Json<serde_json::Value>, VotebaseError> {
-	info!("hey");
-	dbg!(path);
-	let return_value = runtime::run_function(CONSTITUTION_CODE.to_string(), FUNCTION_NAME, query.into_inner()).await?;
-
-	Ok(web::Json(dbg!(return_value)))
-}
-
-
-const CONSTITUTION_CODE: &'static str = r#"
-console.log("wassup")
-
-votebase.reg("hello", (arg: string) => {
-	console.log(arg)
-	return typeof arg === 'object'
-})
-"#;
-const FUNCTION_NAME: &'static str = "hello";
