@@ -7,9 +7,9 @@ fn main() {
 		// extension name
 		votebase,
 		// list of all JS files in the extension
-		esm_entry_point = "ext:votebase/src/runtime.js",
+		esm_entry_point = "ext:votebase/src/runtime.ts",
 		// the entrypoint to our extension
-		esm = ["src/runtime.js"]
+		esm = ["src/runtime.ts"]
 	);
 
 	let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
@@ -22,7 +22,7 @@ fn main() {
 			skip_op_registration: false,
 			extensions: vec![votebase::init_ops_and_esm()],
 			with_runtime_cb: None,
-			extension_transpiler: None,
+			extension_transpiler: Some(std::rc::Rc::new(transpile_helpers::transpile_typescript)),
 		},
 		None,
 	)

@@ -1,0 +1,8 @@
+[package]
+name = "transpile_helpers"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+deno_core = { workspace = true }
+deno_ast = { version = "0.44", features = ["transpiling"] }
