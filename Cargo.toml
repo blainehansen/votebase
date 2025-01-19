@@ -7,10 +7,12 @@ edition = "2021"
 members = ["transpile_helpers"]
 
 [workspace.dependencies]
-deno_core = "0.328.0"
+deno_core = "0.331.0"
+deno_error = "0.5.5"
 
 [dependencies]
 deno_core = { workspace = true }
+deno_error = { workspace = true }
 actix-web = "4"
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio"] }
 reqwest = "0.12"

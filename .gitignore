@@ -1,8 +1,7 @@
 *.sublime-workspace
-*.history.*
-*.history
+*.local.*
+*.local
 *.cache.*
-
 
 # Added by cargo
 

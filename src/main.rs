@@ -1,5 +1,7 @@
 #[macro_use] extern crate log;
 mod runtime;
+mod error;
+use error::VotebaseError;
 use actix_web::{web, HttpResponse};
 
 type PgPool = sqlx::Pool<sqlx::Postgres>;
@@ -12,7 +14,9 @@ async fn main() -> std::io::Result<()> {
 		.init();
 
 	let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
+		// TODO make this configurable
 		.max_connections(5)
+		// TODO make this configurable
 		.connect("postgres://dev_user:dev_password@localhost/dev_db").await.unwrap();
 
 	actix_web::HttpServer::new(move || {
@@ -27,15 +31,41 @@ async fn main() -> std::io::Result<()> {
 	.await
 }
 
+#[derive(Debug)]
+struct FnPath {
+	ruleset: String,
+	function: String,
+}
+
+const PATH_DELIMITER: char = '|';
+
+impl actix_web::FromRequest for FnPath {
+	type Error = actix_web::Error;
+	type Future = std::future::Ready<Result<Self, Self::Error>>;
+
+	fn from_request(req: &actix_web::HttpRequest, _: &mut actix_web::dev::Payload) -> Self::Future {
+		let path = match req.match_info().get("path") {
+			Some(p) => p,
+			None => return std::future::ready(Err(actix_web::error::ErrorBadRequest("path is required"))),
+		};
+		let result = match path.rsplit_once(PATH_DELIMITER) {
+			Some((r, f)) => Ok(FnPath{ ruleset: r.to_string(), function: f.to_string() }),
+			None => Err(actix_web::error::ErrorBadRequest("all paths must have at least one ruleset")),
+		};
+
+		std::future::ready(result)
+	}
+}
+
+
 #[actix_web::post("/action/{path}")]
 async fn execute_action(
-	// TODO make your own extractor to get the full safe path
-	path: web::Path<String>,
+	path: FnPath,
 	arg: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
 ) -> Result<HttpResponse<()>, VotebaseError> {
 	// TODO do a join or something to get function_name?
-	let (constitution_code,): (String,) = sqlx::query_as("select constitution_code from constitutions where path = $1")
+	let (constitution_code,): (String,) = sqlx::query_as("select constitution_code from constitutions where rule")
 		.bind(path.into_inner())
 		.fetch_one(pool.get_ref()).await?;
 
@@ -62,53 +92,15 @@ async fn execute_view(
 	Ok(web::Json(dbg!(return_value)))
 }
 
+// we need a route to insert a candidate constitution, because we need the ability to check that the constitution is right
+// split_first/last
+
+#[derive(Debug)]
+struct Ruleset {
+	final_schema: String,
+	migration_sql: String,
+	text: String,
+}
 
 
-// const CONSTITUTION_CODE: &'static str = r#"
-// console.log("wassup")
-
-// votebase.reg("hello", (arg: string) => {
-// 	console.log(arg)
-// 	return typeof arg === 'object'
-// })
-// "#;
 const FUNCTION_NAME: &'static str = "hello";
-
-
-#[derive(thiserror::Error, Debug)]
-enum VotebaseError {
-	#[error("internal error")]
-	DenoError(#[from] runtime::DenoError),
-	#[error("internal error")]
-	SqlxError(#[from] sqlx::Error)
-}
-
-impl VotebaseError {
-	fn respond(&self, status_code: actix_web::http::StatusCode) -> HttpResponse {
-		error!("{}", self);
-		let res = HttpResponse::new(status_code);
-		match self {
-			Self::DenoError(_) | Self::SqlxError(_) => res.into(),
-		}
-
-		// let mut buf = web::BytesMut::new();
-		// let _ = std::write!(helpers::MutWriter(&mut buf), "{}", self);
-
-		// let mime = mime::TEXT_PLAIN_UTF_8.try_into_value().unwrap();
-		// res.headers_mut().insert(actix_web::http::header::CONTENT_TYPE, mime);
-
-		// res.set_body(actix_web::body::BoxBody::new(buf))
-	}
-}
-
-impl actix_web::ResponseError for VotebaseError {
-	fn status_code(&self) -> actix_web::http::StatusCode {
-		match self {
-			Self::DenoError(_) | Self::SqlxError(_) => actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-		}
-	}
-
-	fn error_response(&self) -> HttpResponse {
-		self.respond(self.status_code())
-	}
-}

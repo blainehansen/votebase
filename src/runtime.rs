@@ -2,15 +2,19 @@ use deno_core::v8;
 
 pub type DenoError = deno_core::error::AnyError;
 
+fn js_err<E: std::error::Error>(e: E) -> deno_error::JsErrorBox {
+	deno_error::JsErrorBox::generic(e.to_string())
+}
+
 #[deno_core::op2(async)]
 #[string]
-async fn op_fetch(#[string] url: String) -> Result<String, DenoError> {
-	let body = reqwest::get(url).await?.text().await?;
+async fn op_fetch(#[string] url: String) -> Result<String, deno_error::JsErrorBox> {
+	let body = reqwest::get(url).await.map_err(js_err)?.text().await.map_err(js_err)?;
 	Ok(body)
 }
 
 #[deno_core::op2(async)]
-async fn op_set_timeout(delay: f64) -> Result<(), DenoError> {
+async fn op_set_timeout(delay: f64) -> Result<(), deno_error::JsErrorBox> {
 	tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
 	Ok(())
 }
