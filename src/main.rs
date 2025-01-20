@@ -66,7 +66,7 @@ async fn execute_action(
 ) -> Result<HttpResponse<()>, VotebaseError> {
 	// TODO do a join or something to get function_name?
 	let (constitution_code,): (String,) = sqlx::query_as("select constitution_code from constitutions where rule")
-		.bind(path.into_inner())
+		.bind(path.ruleset)
 		.fetch_one(pool.get_ref()).await?;
 
 	let return_value = runtime::run_function(constitution_code, FUNCTION_NAME, arg.into_inner()).await?;

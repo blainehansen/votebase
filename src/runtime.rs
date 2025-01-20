@@ -1,8 +1,11 @@
+use std::{cell::RefCell, ops::Deref, rc::Rc};
+
 use deno_core::v8;
+use sqlx::Connection;
 
 pub type DenoError = deno_core::error::AnyError;
 
-fn js_err<E: std::error::Error>(e: E) -> deno_error::JsErrorBox {
+pub fn js_err<E: std::error::Error>(e: E) -> deno_error::JsErrorBox {
 	deno_error::JsErrorBox::generic(e.to_string())
 }
 
@@ -19,12 +22,49 @@ async fn op_set_timeout(delay: f64) -> Result<(), deno_error::JsErrorBox> {
 	Ok(())
 }
 
+use deno_core::OpState;
+
+#[deno_core::op2(async)]
+#[bigint]
+async fn op_sql_execute_many(
+	state: Rc<RefCell<OpState>>,
+	#[string] sql: String,
+) -> Result<u64, deno_error::JsErrorBox> {
+	let mut state = state.as_ref().borrow_mut();
+	let connection = deno_core::_ops::opstate_borrow_mut::<sqlx::PgConnection>(std::ops::DerefMut::deref_mut(&mut state));
+	let result = sqlx::raw_sql(&sql).execute(connection).await.map_err(js_err)?;
+	Ok(result.rows_affected())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn can_use_do_sql() {
+		let mut js_runtime = create_js_runtime();
+		let connection: sqlx::PgConnection = sqlx::PgConnection::connect("postgres://dev_user:dev_password@localhost:5432/dev_db").await.unwrap();
+		js_runtime.op_state().borrow_mut().put(connection);
+
+		let script = r#"
+			const result = await Deno.core.ops.op_sql_execute_many(
+				"select 1 as hey;"
+			);
+			Deno.core.print(result);
+		"#;
+		let specifier = deno_core::resolve_url(MAIN_SPECIFIER).unwrap();
+		let mod_id = js_runtime.load_main_es_module_from_code(&specifier, script).await.unwrap();
+		let result = js_runtime.mod_evaluate(mod_id);
+		js_runtime.run_event_loop(Default::default()).await.unwrap();
+		result.await.unwrap();
+	}
+}
+
 
 static RUNTIME_SNAPSHOT: &[u8] =
 	include_bytes!(concat!(env!("OUT_DIR"), "/VOTEBASE_SNAPSHOT.bin"));
 
 type FunctionMap = std::collections::HashMap<String, v8::Global<v8::Function>>;
-
 
 // https://github.com/denoland/deno_core/issues/515
 // https://discord.com/channels/684898665143206084/1022163295895027722/threads/1201661871959310346
@@ -47,25 +87,30 @@ deno_core::extension!(
 		op_fetch,
 		op_set_timeout,
 		op_register_func,
+		op_sql_execute_many,
 	],
 	state = |state: &mut deno_core::OpState| {
 		state.put(std::collections::HashMap::<String, v8::Global<v8::Function>>::new());
 	},
 );
 
+pub fn create_js_runtime() -> deno_core::JsRuntime {
+	deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+		module_loader: None,
+		startup_snapshot: Some(RUNTIME_SNAPSHOT),
+		extensions: vec![votebase::init_ops()],
+		..Default::default()
+	})
+}
+const MAIN_SPECIFIER: &'static str = "votebase:<main>";
+
 pub async fn run_function(
 	constitution_code: String,
 	function_name: &str,
 	function_arg: serde_json::Value,
 ) -> Result<serde_json::Value, DenoError> {
-	let mut js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
-		module_loader: None,
-		startup_snapshot: Some(RUNTIME_SNAPSHOT),
-		extensions: vec![votebase::init_ops()],
-		..Default::default()
-	});
+	let mut js_runtime = create_js_runtime();
 
-	const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 	let (constitution_code, _) = transpile_helpers::transpile_typescript(
 		deno_core::ascii_str!(MAIN_SPECIFIER).into(),
 		constitution_code.into(),
