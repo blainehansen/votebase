@@ -88,8 +88,7 @@ async fn execute_view(
 		.fetch_one(pool.get_ref()).await?;
 
 	let return_value = runtime::run_function(constitution_code, FUNCTION_NAME, query.into_inner()).await?;
-
-	Ok(web::Json(dbg!(return_value)))
+	Ok(web::Json(return_value))
 }
 
 // we need a route to insert a candidate constitution, because we need the ability to check that the constitution is right

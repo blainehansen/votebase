@@ -1,5 +1,4 @@
-use std::{cell::RefCell, ops::Deref, rc::Rc};
-
+use std::{cell::RefCell, rc::Rc};
 use deno_core::v8;
 use sqlx::Connection;
 
@@ -43,8 +42,7 @@ mod tests {
 	#[tokio::test]
 	async fn can_use_do_sql() {
 		let mut js_runtime = create_js_runtime();
-		let connection: sqlx::PgConnection = sqlx::PgConnection::connect("postgres://dev_user:dev_password@localhost:5432/dev_db").await.unwrap();
-		js_runtime.op_state().borrow_mut().put(connection);
+		add_pg_connection(&mut js_runtime, "postgres://dev_user:dev_password@localhost:5432/dev_db").await.unwrap();
 
 		let script = r#"
 			const result = await Deno.core.ops.op_sql_execute_many(
@@ -101,6 +99,14 @@ pub fn create_js_runtime() -> deno_core::JsRuntime {
 		extensions: vec![votebase::init_ops()],
 		..Default::default()
 	})
+}
+pub async fn add_pg_connection(
+	js_runtime: &mut deno_core::JsRuntime,
+	connection_string: &str,
+) -> sqlx::Result<()> {
+	let connection: sqlx::PgConnection = sqlx::PgConnection::connect(connection_string).await?;
+	js_runtime.op_state().borrow_mut().put(connection);
+	Ok(())
 }
 const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 

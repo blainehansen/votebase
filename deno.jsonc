@@ -1,6 +1,9 @@
 {
 	"tasks": {},
-	"imports": {},
+	"imports": {
+		"zod": "npm:zod@^3.24.1"
+	},
+	"nodeModulesDir": "auto",
 	"compilerOptions": {
 		"strict": true,
 		"allowUnusedLabels": false,
