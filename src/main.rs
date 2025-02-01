@@ -13,11 +13,15 @@ async fn main() -> std::io::Result<()> {
 		.parse_default_env()
 		.init();
 
+	let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS").ok()
+		.and_then(|s| s.parse().ok()).unwrap_or(5);
+
+	let database_url = std::env::var("DATABASE_URL")
+		.unwrap_or_else(|_| "postgres://dev_user:dev_password@localhost/dev_db".to_string());
+
 	let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
-		// TODO make this configurable
-		.max_connections(5)
-		// TODO make this configurable
-		.connect("postgres://dev_user:dev_password@localhost/dev_db").await.unwrap();
+		.max_connections(max_connections)
+		.connect(&database_url).await.unwrap();
 
 	actix_web::HttpServer::new(move || {
 		actix_web::App::new()
@@ -65,11 +69,15 @@ async fn execute_action(
 	pool: web::Data<PgPool>,
 ) -> Result<HttpResponse<()>, VotebaseError> {
 	// TODO do a join or something to get function_name?
-	let (constitution_code,): (String,) = sqlx::query_as("select constitution_code from constitutions where rule")
+	let (ruleset_code,): (String,) = sqlx::query_as("select code from rulesets where ruleset_path = $1")
 		.bind(path.ruleset)
 		.fetch_one(pool.get_ref()).await?;
 
-	let return_value = runtime::run_function(constitution_code, FUNCTION_NAME, arg.into_inner()).await?;
+	// TODO have to get this from the database
+	let action_role_url = "TODO";
+	let return_value = runtime::run_function(
+		ruleset_code, &path.function, arg.into_inner(), runtime::FnType::Action, action_role_url,
+	).await?;
 	dbg!(return_value);
 	// TODO use the return value, perhaps validating first to a known structure you can use to modify the database
 
@@ -78,16 +86,20 @@ async fn execute_action(
 
 #[actix_web::get("/view/{path}")]
 async fn execute_view(
-	path: web::Path<String>,
+	path: FnPath,
 	query: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
 ) -> Result<web::Json<serde_json::Value>, VotebaseError> {
 	// TODO do a join or something to get function_name?
-	let (constitution_code,): (String,) = sqlx::query_as("select constitution_code from constitutions where path = $1")
-		.bind(path.into_inner())
+	let (ruleset_code,): (String,) = sqlx::query_as("select code from rulesets where ruleset_path = $1")
+		.bind(path.ruleset)
 		.fetch_one(pool.get_ref()).await?;
 
-	let return_value = runtime::run_function(constitution_code, FUNCTION_NAME, query.into_inner()).await?;
+	// TODO have to get this from the database
+	let view_role_url = "TODO";
+	let return_value = runtime::run_function(
+		ruleset_code, FUNCTION_NAME, query.into_inner(), runtime::FnType::View, view_role_url,
+	).await?;
 	Ok(web::Json(return_value))
 }
 

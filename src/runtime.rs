@@ -30,6 +30,11 @@ async fn op_sql_execute_many(
 	#[string] sql: String,
 ) -> Result<u64, deno_error::JsErrorBox> {
 	let mut state = state.as_ref().borrow_mut();
+	let sql_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
+	if !sql_allowed {
+		return Err(deno_error::JsErrorBox::generic("sql actions not allowed outside the context of an action or view"))
+	}
+
 	let connection = deno_core::_ops::opstate_borrow_mut::<sqlx::PgConnection>(std::ops::DerefMut::deref_mut(&mut state));
 	let result = sqlx::raw_sql(&sql).execute(connection).await.map_err(js_err)?;
 	Ok(result.rows_affected())
@@ -64,6 +69,9 @@ static RUNTIME_SNAPSHOT: &[u8] =
 
 type FunctionMap = std::collections::HashMap<String, v8::Global<v8::Function>>;
 
+struct ActionMap(FunctionMap);
+struct ViewMap(FunctionMap);
+
 // https://github.com/denoland/deno_core/issues/515
 // https://discord.com/channels/684898665143206084/1022163295895027722/threads/1201661871959310346
 // https://gist.github.com/alshdavid/c9e5bc0d794e3ec9dba6afaa689b704e#file-main-rs-L51
@@ -71,12 +79,20 @@ type FunctionMap = std::collections::HashMap<String, v8::Global<v8::Function>>;
 // https://discord.com/channels/684898665143206084/1022163295895027722/threads/1074150763460313128
 
 #[deno_core::op2]
-fn op_register_func(
-	#[state] function_state: &mut FunctionMap,
+fn op_register_action(
+	#[state] function_state: &mut ActionMap,
 	#[string] key: String,
 	#[global] func: v8::Global<v8::Function>,
 ) {
-	function_state.insert(key, func);
+	function_state.0.insert(key, func);
+}
+#[deno_core::op2]
+fn op_register_view(
+	#[state] function_state: &mut ViewMap,
+	#[string] key: String,
+	#[global] func: v8::Global<v8::Function>,
+) {
+	function_state.0.insert(key, func);
 }
 
 deno_core::extension!(
@@ -84,11 +100,13 @@ deno_core::extension!(
 	ops = [
 		op_fetch,
 		op_set_timeout,
-		op_register_func,
+		op_register_action,
+		op_register_view,
 		op_sql_execute_many,
 	],
 	state = |state: &mut deno_core::OpState| {
-		state.put(std::collections::HashMap::<String, v8::Global<v8::Function>>::new());
+		state.put(ActionMap(std::collections::HashMap::<String, v8::Global<v8::Function>>::new()));
+		state.put(ViewMap(std::collections::HashMap::<String, v8::Global<v8::Function>>::new()));
 	},
 );
 
@@ -100,7 +118,7 @@ pub fn create_js_runtime() -> deno_core::JsRuntime {
 		..Default::default()
 	})
 }
-pub async fn add_pg_connection(
+async fn add_pg_connection(
 	js_runtime: &mut deno_core::JsRuntime,
 	connection_string: &str,
 ) -> sqlx::Result<()> {
@@ -108,14 +126,27 @@ pub async fn add_pg_connection(
 	js_runtime.op_state().borrow_mut().put(connection);
 	Ok(())
 }
+// TODO not just sql allowed, but http as well
+// really any external action during function gathering
+fn set_sql_allowed(js_runtime: &mut deno_core::JsRuntime, sql_allowed: bool) {
+	js_runtime.op_state().borrow_mut().put(sql_allowed);
+}
 const MAIN_SPECIFIER: &'static str = "votebase:<main>";
+
+#[derive(Debug)]
+pub enum FnType { Action, View }
 
 pub async fn run_function(
 	constitution_code: String,
 	function_name: &str,
 	function_arg: serde_json::Value,
+	function_type: FnType,
+	db_url: &str,
 ) -> Result<serde_json::Value, DenoError> {
 	let mut js_runtime = create_js_runtime();
+	// db_url encodes the user, and therefore the role and powers of the connection
+	add_pg_connection(&mut js_runtime, db_url).await?;
+	set_sql_allowed(&mut js_runtime, false);
 
 	let (constitution_code, _) = transpile_helpers::transpile_typescript(
 		deno_core::ascii_str!(MAIN_SPECIFIER).into(),
@@ -127,8 +158,13 @@ pub async fn run_function(
 	js_runtime.run_event_loop(Default::default()).await?;
 	result.await?;
 
-	let state: FunctionMap = js_runtime.op_state().borrow_mut().take();
-	let function = state.get(function_name).unwrap();
+	let (function_map, function_type) = match function_type {
+		FnType::Action => { let map: ActionMap = js_runtime.op_state().borrow_mut().take(); (map.0, "action") },
+		FnType::View => { let map: ViewMap = js_runtime.op_state().borrow_mut().take(); (map.0, "view") },
+	};
+
+	let function = function_map.get(function_name)
+		.ok_or_else(|| deno_core::anyhow::anyhow!("{} '{}' not found", function_type, function_name))?;
 
 	let function_arg = {
 		let mut scope = js_runtime.handle_scope();
@@ -136,6 +172,7 @@ pub async fn run_function(
 		v8::Global::new(&mut scope, function_arg)
 	};
 
+	set_sql_allowed(&mut js_runtime, true);
 	let call = js_runtime.call_with_args(&function, &[function_arg]);
 	let call_return_value = js_runtime
 		.with_event_loop_promise(call, deno_core::PollEventLoopOptions::default())

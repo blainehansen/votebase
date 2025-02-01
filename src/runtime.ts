@@ -2,7 +2,8 @@ const { core } = Deno as unknown as {  core: {
 	print: (message: string, is_error: boolean) => void,
 	ops: {
 		op_fetch: (url: string) => Promise<string>,
-		op_register_func: (name: string, func: () => void) => void,
+		op_register_action: (name: string, func: () => void) => void,
+		op_register_view: (name: string, func: () => void) => void,
 		op_set_timeout: (delay: number | undefined) => Promise<void>,
 	},
 } }
@@ -24,7 +25,8 @@ globalThis.console = {
 declare global {
 	namespace votebase {
 		function fetch(url: string): Promise<string>;
-		function reg(name: string, func: () => void): void;
+		function registerAction(name: string, func: () => void): void;
+		function registerView(name: string, func: () => void): void;
 	}
 }
 
@@ -32,8 +34,11 @@ globalThis.votebase = {
 	fetch(url) {
 		return core.ops.op_fetch(url)
 	},
-	reg(name, func) {
-		core.ops.op_register_func(name, func)
+	registerAction(name, func) {
+		core.ops.op_register_action(name, func)
+	},
+	registerView(name, func) {
+		core.ops.op_register_view(name, func)
 	},
 }
 
