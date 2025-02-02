@@ -1,6 +1,6 @@
 # all the things I could do next:
 - figure out how the current rulesets are catalogued
-- figure out permissioning and roles (both for the server, and for each ruleset and it's different definitions)
+- figure out permissioning and roles (both for the server, and for each ruleset and its different definitions)
 - get the action route working (look in the ruleset catalog, invoke the ruleset with its ability to execute queries revoked to gather the function, then invoke that function with its ability to execute queries reinstated with a full writeable role)
 - get the view route working (look in the ruleset catalog, invoke the ruleset with its ability to execute queries revoked to gather the function, then invoke that function with its ability to execute queries reinstated with a read-only role)
 - get the route working that simply shows views (and actions?) that are available to the user

@@ -23,44 +23,22 @@ async fn op_set_timeout(delay: f64) -> Result<(), deno_error::JsErrorBox> {
 
 use deno_core::OpState;
 
+const ERR_EXTERNAL_NOT_ALLOWED: &'static str = "runtime functions that interact with the outside world (such as database or http operations) aren't allowed outside the context of an action or view";
+
 #[deno_core::op2(async)]
-#[bigint]
 async fn op_sql_execute_many(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
-) -> Result<u64, deno_error::JsErrorBox> {
+) -> Result<u32, deno_error::JsErrorBox> {
 	let mut state = state.as_ref().borrow_mut();
-	let sql_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
-	if !sql_allowed {
-		return Err(deno_error::JsErrorBox::generic("sql actions not allowed outside the context of an action or view"))
+	let external_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
+	if !external_allowed {
+		return Err(deno_error::JsErrorBox::generic(ERR_EXTERNAL_NOT_ALLOWED))
 	}
 
 	let connection = deno_core::_ops::opstate_borrow_mut::<sqlx::PgConnection>(std::ops::DerefMut::deref_mut(&mut state));
 	let result = sqlx::raw_sql(&sql).execute(connection).await.map_err(js_err)?;
-	Ok(result.rows_affected())
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[tokio::test]
-	async fn can_use_do_sql() {
-		let mut js_runtime = create_js_runtime();
-		add_pg_connection(&mut js_runtime, "postgres://dev_user:dev_password@localhost:5432/dev_db").await.unwrap();
-
-		let script = r#"
-			const result = await Deno.core.ops.op_sql_execute_many(
-				"select 1 as hey;"
-			);
-			Deno.core.print(result);
-		"#;
-		let specifier = deno_core::resolve_url(MAIN_SPECIFIER).unwrap();
-		let mod_id = js_runtime.load_main_es_module_from_code(&specifier, script).await.unwrap();
-		let result = js_runtime.mod_evaluate(mod_id);
-		js_runtime.run_event_loop(Default::default()).await.unwrap();
-		result.await.unwrap();
-	}
+	Ok(result.rows_affected().try_into().map_err(js_err)?)
 }
 
 
@@ -118,7 +96,7 @@ pub fn create_js_runtime() -> deno_core::JsRuntime {
 		..Default::default()
 	})
 }
-async fn add_pg_connection(
+async fn set_pg_connection(
 	js_runtime: &mut deno_core::JsRuntime,
 	connection_string: &str,
 ) -> sqlx::Result<()> {
@@ -126,10 +104,8 @@ async fn add_pg_connection(
 	js_runtime.op_state().borrow_mut().put(connection);
 	Ok(())
 }
-// TODO not just sql allowed, but http as well
-// really any external action during function gathering
-fn set_sql_allowed(js_runtime: &mut deno_core::JsRuntime, sql_allowed: bool) {
-	js_runtime.op_state().borrow_mut().put(sql_allowed);
+fn set_external_allowed(js_runtime: &mut deno_core::JsRuntime, external_allowed: bool) {
+	js_runtime.op_state().borrow_mut().put(external_allowed);
 }
 const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 
@@ -137,7 +113,7 @@ const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 pub enum FnType { Action, View }
 
 pub async fn run_function(
-	constitution_code: String,
+	ruleset_code: String,
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
@@ -145,15 +121,15 @@ pub async fn run_function(
 ) -> Result<serde_json::Value, DenoError> {
 	let mut js_runtime = create_js_runtime();
 	// db_url encodes the user, and therefore the role and powers of the connection
-	add_pg_connection(&mut js_runtime, db_url).await?;
-	set_sql_allowed(&mut js_runtime, false);
+	set_pg_connection(&mut js_runtime, db_url).await?;
+	set_external_allowed(&mut js_runtime, false);
 
-	let (constitution_code, _) = transpile_helpers::transpile_typescript(
+	let (ruleset_code, _) = transpile_helpers::transpile_typescript(
 		deno_core::ascii_str!(MAIN_SPECIFIER).into(),
-		constitution_code.into(),
+		ruleset_code.into(),
 	)?;
 	let specifier = deno_core::resolve_url(MAIN_SPECIFIER)?;
-	let mod_id = js_runtime.load_main_es_module_from_code(&specifier, constitution_code).await?;
+	let mod_id = js_runtime.load_main_es_module_from_code(&specifier, ruleset_code).await?;
 	let result = js_runtime.mod_evaluate(mod_id);
 	js_runtime.run_event_loop(Default::default()).await?;
 	result.await?;
@@ -172,7 +148,7 @@ pub async fn run_function(
 		v8::Global::new(&mut scope, function_arg)
 	};
 
-	set_sql_allowed(&mut js_runtime, true);
+	set_external_allowed(&mut js_runtime, true);
 	let call = js_runtime.call_with_args(&function, &[function_arg]);
 	let call_return_value = js_runtime
 		.with_event_loop_promise(call, deno_core::PollEventLoopOptions::default())
@@ -181,4 +157,74 @@ pub async fn run_function(
 	let mut scope = js_runtime.handle_scope();
 	let call_return_value = v8::Local::new(&mut scope, call_return_value);
 	Ok(deno_core::serde_v8::from_v8(&mut scope, call_return_value)?)
+}
+
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	const DEV_DB_URL: &'static str = "postgres://dev_user:dev_password@localhost:5432/dev_db";
+
+	#[tokio::test]
+	async fn can_do_sql() {
+		let mut js_runtime = create_js_runtime();
+		set_pg_connection(&mut js_runtime, DEV_DB_URL).await.unwrap();
+		set_external_allowed(&mut js_runtime, true);
+
+		let script = r#"
+			const result = await Deno.core.ops.op_sql_execute_many("select 1 as hey")
+			Deno.core.print(result)
+		"#;
+		let specifier = deno_core::resolve_url(MAIN_SPECIFIER).unwrap();
+		let mod_id = js_runtime.load_main_es_module_from_code(&specifier, script).await.unwrap();
+		let result = js_runtime.mod_evaluate(mod_id);
+		js_runtime.run_event_loop(Default::default()).await.unwrap();
+		result.await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn run_function_basics() {
+		let result = run_function(
+			r#"
+				await Deno.core.ops.op_sql_execute_many("select 1")
+				votebase.registerAction("test_action", async () => {
+					return true
+				})
+			"#.to_string(),
+			"test_action", serde_json::json!(null), FnType::Action, DEV_DB_URL,
+		).await.unwrap_err();
+		assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
+
+		let result = run_function(
+			r#"
+				votebase.registerAction("test_action", async () => {
+					return await Deno.core.ops.op_sql_execute_many("select 1")
+				})
+			"#.to_string(),
+			"test_action", serde_json::json!(null), FnType::Action, DEV_DB_URL,
+		).await.unwrap();
+		assert_eq!(result, serde_json::json!(1));
+
+		let result = run_function(
+			r#"
+				await Deno.core.ops.op_sql_execute_many("select 1")
+				votebase.registerView("test_view", async () => {
+					return true
+				})
+			"#.to_string(),
+			"test_view", serde_json::json!(null), FnType::View, DEV_DB_URL,
+		).await.unwrap_err();
+		assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
+
+		let result = run_function(
+			r#"
+				votebase.registerView("test_view", async () => {
+					return await Deno.core.ops.op_sql_execute_many("select 1")
+				})
+			"#.to_string(),
+			"test_view", serde_json::json!(null), FnType::View, DEV_DB_URL,
+		).await.unwrap();
+		assert_eq!(result, serde_json::json!(1));
+	}
 }
