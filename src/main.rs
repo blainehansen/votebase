@@ -6,6 +6,34 @@ use actix_web::{web, HttpResponse};
 
 type PgPool = sqlx::Pool<sqlx::Postgres>;
 
+static GLOBAL_PG_OPTIONS: once_cell::sync::Lazy<sqlx::postgres::PgConnectOptions> = once_cell::sync::Lazy::new(|| {
+	#[cfg(debug_assertions)]
+	let port = std::env::var("DB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(5432);
+	#[cfg(not(debug_assertions))]
+	let port = std::env::var("DB_PORT").expect("DB_PORT must be set").parse().expect("DB_PORT must be a valid port number");
+
+	#[cfg(debug_assertions)]
+	let host = std::env::var("DB_HOST").unwrap_or("localhost".to_string());
+	#[cfg(not(debug_assertions))]
+	let host = std::env::var("DB_HOST").expect("DB_HOST must be set");
+
+	#[cfg(debug_assertions)]
+	let database = std::env::var("DB_DATABASE").unwrap_or("dev_db".to_string());
+	#[cfg(not(debug_assertions))]
+	let database = std::env::var("DB_DATABASE").expect("DB_DATABASE must be set");
+
+	sqlx::postgres::PgConnectOptions::new_without_pgpass()
+		.port(port)
+		.host(&host)
+		.database(&database)
+});
+
+fn pg_connect_options(username: &str, password: &str) -> sqlx::postgres::PgConnectOptions {
+	GLOBAL_PG_OPTIONS.clone()
+		.username(username)
+		.password(password)
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
 	pretty_env_logger::formatted_builder()
@@ -16,12 +44,20 @@ async fn main() -> std::io::Result<()> {
 	let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS").ok()
 		.and_then(|s| s.parse().ok()).unwrap_or(5);
 
-	let database_url = std::env::var("DATABASE_URL")
-		.unwrap_or_else(|_| "postgres://dev_user:dev_password@localhost/dev_db".to_string());
+	#[cfg(debug_assertions)]
+	let admin_user = std::env::var("VOTEBASE_USER").unwrap_or("dev_user".to_string());
+	#[cfg(not(debug_assertions))]
+	let admin_user = std::env::var("VOTEBASE_USER").expect("VOTEBASE_USER must be set");
 
+	#[cfg(debug_assertions)]
+	let admin_pass = std::env::var("VOTEBASE_PASS").unwrap_or("dev_password".to_string());
+	#[cfg(not(debug_assertions))]
+	let admin_pass = std::env::var("VOTEBASE_PASS").expect("VOTEBASE_PASS must be set");
+	let database_url = pg_connect_options(&admin_user, &admin_pass);
 	let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
+		// TODO am I sure about even setting this at all?
 		.max_connections(max_connections)
-		.connect(&database_url).await.unwrap();
+		.connect_with(database_url).await.unwrap();
 
 	actix_web::HttpServer::new(move || {
 		actix_web::App::new()
@@ -61,44 +97,63 @@ impl actix_web::FromRequest for FnPath {
 	}
 }
 
+fn construct_role(fn_path: &FnPath, fn_type: runtime::FnType) -> String {
+	format!("{}|{}|{}",
+		match fn_type {
+			runtime::FnType::Action => "action",
+			runtime::FnType::View => "view"
+		},
+		fn_path.ruleset, fn_path.function,
+	)
+}
 
 #[actix_web::post("/action/{path}")]
 async fn execute_action(
-	path: FnPath,
+	fn_path: FnPath,
 	arg: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
 ) -> Result<HttpResponse<()>, VotebaseError> {
-	// TODO do a join or something to get function_name?
-	let (ruleset_code,): (String,) = sqlx::query_as("select code from rulesets where ruleset_path = $1")
-		.bind(path.ruleset)
+	// TODO these queries could benefit from compile time verification
+	let (ruleset_code, action_pass): (String,  String) = sqlx::query_as("
+		select r.code, r.action_pass
+		from ruleset as r join ruleset_function as f on r.path = f.path
+		where r.path = $1 and f.name = $2 and f.kind = 'ACTION'
+	")
+		.bind(&fn_path.ruleset).bind(&fn_path.function)
 		.fetch_one(pool.get_ref()).await?;
 
-	// TODO have to get this from the database
-	let action_role_url = "TODO";
-	let return_value = runtime::run_function(
-		ruleset_code, &path.function, arg.into_inner(), runtime::FnType::Action, action_role_url,
+	let fn_type = runtime::FnType::Action;
+	let action_role = construct_role(&fn_path, fn_type);
+	let action_role_url = pg_connect_options(&action_role, &action_pass);
+	// basically returning a number | undefined that represents a new ruleset to swap this one out for?
+	let new_ruleset_id: Option<u32> = runtime::run_function(
+		ruleset_code, &fn_path.function, arg.into_inner(), fn_type, &action_role_url,
 	).await?;
-	dbg!(return_value);
-	// TODO use the return value, perhaps validating first to a known structure you can use to modify the database
+
 
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
 }
 
 #[actix_web::get("/view/{path}")]
 async fn execute_view(
-	path: FnPath,
+	fn_path: FnPath,
 	query: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
 ) -> Result<web::Json<serde_json::Value>, VotebaseError> {
-	// TODO do a join or something to get function_name?
-	let (ruleset_code,): (String,) = sqlx::query_as("select code from rulesets where ruleset_path = $1")
-		.bind(path.ruleset)
+	// TODO these queries could benefit from compile time verification
+	let (ruleset_code, view_pass): (String, String) = sqlx::query_as("
+		select r.code, r.view_pass
+		from ruleset as r join ruleset_function as f on r.path = f.path
+		where r.path = $1 and f.name = $2 and f.kind = 'VIEW'
+	")
+		.bind(&fn_path.ruleset).bind(&fn_path.function)
 		.fetch_one(pool.get_ref()).await?;
 
-	// TODO have to get this from the database
-	let view_role_url = "TODO";
+	let fn_type = runtime::FnType::View;
+	let view_role = construct_role(&fn_path, fn_type);
+	let view_role_url = pg_connect_options(&view_role, &view_pass);
 	let return_value = runtime::run_function(
-		ruleset_code, FUNCTION_NAME, query.into_inner(), runtime::FnType::View, view_role_url,
+		ruleset_code, &fn_path.function, query.into_inner(), fn_type, &view_role_url,
 	).await?;
 	Ok(web::Json(return_value))
 }
@@ -110,8 +165,5 @@ async fn execute_view(
 struct Ruleset {
 	final_schema: String,
 	migration_sql: String,
-	text: String,
+	code: String,
 }
-
-
-const FUNCTION_NAME: &'static str = "hello";

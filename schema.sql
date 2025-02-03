@@ -1,40 +1,169 @@
-drop role if exists votebase_server;
-drop role if exists ruleset__root__migrator;
+create schema votebase_catalog;
+
+create table votebase_catalog.ruleset (
+	full_path text primary key constraint well_formed_path check (case
+		when parent_full_path is null then full_path = "name"
+		else full_path = parent_full_path || '|' || "name"
+	end),
+	"name" text not null,
+	parent_full_path text references votebase_catalog.ruleset(full_path),
+
+	actions text[] not null,
+	views text[] not null,
+	constraint actions_views_different_names check (not (actions && views)),
+	action_pass text not null,
+	view_pass text not null,
+
+	code text not null,
+	db_schema text not null,
+	db_migration text not null
+);
+
+create unique index ruleset_single_null_parent
+on votebase_catalog.ruleset((true))
+where parent_full_path is null;
+
+create table votebase_catalog.candidate_ruleset (
+	id uuid primary key,
+	candidate_for text not null references votebase_catalog.ruleset(full_path),
+
+	actions text[] not null,
+	views text[] not null,
+	constraint actions_views_different_names check (not (actions && views)),
+
+	code text not null,
+	db_schema text not null,
+	db_migration text not null
+);
 
 
-create role votebase_server createrole noinherit login password 'votebase_server_password';
-create schema votebase_server;
-grant CREATE ON DATABASE dev_db to votebase_server;
+-- create table votebase_catalog.member (
+-- 	id uuid primary key,
+-- 	email text not null,
+-- 	display_name text not null
+-- );
 
--- when a ruleset is created, we create the schema and base roles used to manage it
--- so here we're in the `instate_ruleset` function
-set role votebase_server;
-
-create schema ruleset__root;
-
--- TODO allow createrole on ruleset__root__migrator?
-create role ruleset__root__migrator noinherit nologin;
-alter role ruleset__root__migrator set search_path to ruleset__root;
-grant ALL ON SCHEMA ruleset__root to ruleset__root__migrator;
+-- create table votebase_catalog.member_to_ruleset (
+-- 	member_id uuid not null references votebase_catalog.member(id),
+-- 	ruleset_full_path text not null references votebase_catalog.ruleset(full_path),
+-- 	primary key (member_id, ruleset_full_path)
+-- );
 
 
-create role ruleset__root__actor noinherit nologin;
-alter role ruleset__root__actor set search_path to ruleset__root;
-grant USAGE ON SCHEMA ruleset__root to ruleset__root__actor;
+create or replace function votebase_catalog.apply_candidate(candidate_id uuid) returns void as $$
+declare
+	candidate votebase_catalog.candidate_ruleset;
+begin
+	select * into candidate
+	from votebase_catalog.candidate_ruleset
+	where id = candidate_id;
 
--- now we're in the `migrate_ruleset` function
--- this is run when the ruleset is initially created at all as well, with whatever the initial is
-set role ruleset__root__migrator;
+	if not found then
+		raise exception 'candidate ruleset % not found', candidate_id;
+	end if;
 
-create table happiness_report ();
+	update votebase_catalog.ruleset
+	set
+		actions = candidate.actions, views = candidate.views,
+		code = candidate.code, db_schema = candidate.db_schema, db_migration = candidate.db_migration
+	where full_path = v_candidate.candidate_for;
 
--- TODO create a sub-role, one that inherits from ruleset__root__actor, and has special privileges
+	delete from votebase_catalog.candidate_ruleset
+	where case
+		when candidate.parent_full_path is null then parent_full_path is null
+		else candidate.parent_full_path = parent_full_path
+	end;
+
+	-- TODO need to create child rulesets?
+end;
+$$ language plpgsql;
 
 
--- now we're in the either `execute_view` or `execute_action` functions
-set role ruleset__root__actor;
+create or replace function votebase_catalog.insert_ruleset(
+	p_parent_full_path text, p_name text,
+	p_action_pass text, p_actions text[], p_view_pass text, p_views text[],
+	p_code text, p_db_schema text, p_db_migration text
+) returns void as $$
+begin
+	insert into votebase_catalog.ruleset (
+		full_path,
+		parent_full_path, "name",
+		action_pass, actions, view_pass, views,
+		code, db_schema, db_migration
+	) values (
+		case
+			when p_parent_full_path is null then p_name
+			else p_parent_full_path || '|' || p_name
+		end,
+		p_parent_full_path, p_name,
+		p_action_pass, p_actions, p_view_pass, p_views,
+		p_code, p_db_schema, p_db_migration
+	);
+end;
+$$ language plpgsql;
 
-select * from happiness_report;
+
+
+select votebase_catalog.insert_ruleset(
+	null, 'root',
+	'pass', array['root_action'],
+	'pass', array['root_view'],
+	'', '', ''
+);
+select * from votebase_catalog.ruleset;
+
+select votebase_catalog.insert_ruleset(
+	'root', 'child',
+	'pass', array['child_action'],
+	'pass', array['child_view'],
+	'', '', ''
+);
+select * from votebase_catalog.ruleset;
+
+
+
+
+
+-- drop role if exists votebase_server;
+-- drop role if exists ruleset__root__migrator;
+
+
+-- create role votebase_server createrole noinherit login password 'votebase_server_password';
+-- create schema votebase_server;
+-- grant CREATE ON DATABASE dev_db to votebase_server;
+
+-- -- when a ruleset is created, we create the schema and base roles used to manage it
+-- -- so here we're in the `instate_ruleset` function
+-- set role votebase_server;
+
+-- create schema ruleset__root;
+
+-- -- TODO allow createrole on ruleset__root__migrator?
+-- create role ruleset__root__migrator noinherit nologin;
+-- alter role ruleset__root__migrator set search_path to ruleset__root;
+-- grant ALL ON SCHEMA ruleset__root to ruleset__root__migrator;
+
+
+-- create role ruleset__root__actor noinherit nologin;
+-- alter role ruleset__root__actor set search_path to ruleset__root;
+-- grant USAGE ON SCHEMA ruleset__root to ruleset__root__actor;
+
+-- -- now we're in the `migrate_ruleset` function
+-- -- this is run when the ruleset is initially created at all as well, with whatever the initial is
+-- set role ruleset__root__migrator;
+
+-- create table happiness_report ();
+
+-- -- TODO create a sub-role, one that inherits from ruleset__root__actor, and has special privileges
+
+
+-- -- now we're in the either `execute_view` or `execute_action` functions
+-- set role ruleset__root__actor;
+
+-- select * from happiness_report;
+
+
+
 
 
 
@@ -57,35 +186,6 @@ select * from happiness_report;
 -- there's a `ruleset` role that the ruleset must inherit from. this is enforced by the fact that only these
 
 
-
-
-
-
--- create schema votebase_meta;
-
--- create table votebase_meta.ruleset (
--- 	"name" text primary key,
--- 	parent_name text references ruleset("name"),
-
--- 	fn_code text not null,
--- 	-- action_names text[] not null,
--- 	-- view_names text[] not null,
--- 	db_schema text not null,
--- 	db_migration text not null
--- );
-
--- create unique index votebase_meta.ruleset_single_null_parent on votebase_meta.ruleset(parent_name)
--- where parent_name is null;
-
--- create table votebase_meta.ruleset_candidate (
--- 	proposed_for text not null references votebase_meta.ruleset("name"),
-
--- 	fn_code text not null,
--- 	-- action_names text[] not null,
--- 	-- view_names text[] not null,
--- 	db_schema text not null,
--- 	db_migration text not null
--- );
 
 
 -- -- for every ruleset, there will be a schema
