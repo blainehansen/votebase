@@ -71,10 +71,10 @@ async fn main() -> std::io::Result<()> {
 	.await
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FnPath {
-	ruleset: String,
-	function: String,
+	ruleset_full_path: String,
+	fn_name: String,
 }
 
 const PATH_DELIMITER: char = '|';
@@ -89,7 +89,7 @@ impl actix_web::FromRequest for FnPath {
 			None => return std::future::ready(Err(actix_web::error::ErrorBadRequest("path is required"))),
 		};
 		let result = match path.rsplit_once(PATH_DELIMITER) {
-			Some((r, f)) => Ok(FnPath{ ruleset: r.to_string(), function: f.to_string() }),
+			Some((r, f)) => Ok(FnPath{ ruleset_full_path: r.to_string(), fn_name: f.to_string() }),
 			None => Err(actix_web::error::ErrorBadRequest("all paths must have at least one ruleset")),
 		};
 
@@ -103,7 +103,7 @@ fn construct_role(fn_path: &FnPath, fn_type: runtime::FnType) -> String {
 			runtime::FnType::Action => "action",
 			runtime::FnType::View => "view"
 		},
-		fn_path.ruleset, fn_path.function,
+		fn_path.ruleset_full_path, fn_path.fn_name,
 	)
 }
 
@@ -113,23 +113,29 @@ async fn execute_action(
 	arg: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
 ) -> Result<HttpResponse<()>, VotebaseError> {
-	// TODO these queries could benefit from compile time verification
-	let (ruleset_code, action_pass): (String,  String) = sqlx::query_as("
-		select r.code, r.action_pass
-		from ruleset as r join ruleset_function as f on r.path = f.path
-		where r.path = $1 and f.name = $2 and f.kind = 'ACTION'
-	")
-		.bind(&fn_path.ruleset).bind(&fn_path.function)
-		.fetch_one(pool.get_ref()).await?;
+	let pool = pool.get_ref();
+
+	let action = sqlx::query!("
+		select code, action_pass as pass
+		from votebase_catalog.ruleset
+		where full_path = $1 and $2 = ANY(actions)
+	", &fn_path.ruleset_full_path, &fn_path.fn_name)
+		.fetch_one(pool).await.map_err(|e| map_sqlx_not_found(e, fn_path.clone()))?;
 
 	let fn_type = runtime::FnType::Action;
 	let action_role = construct_role(&fn_path, fn_type);
-	let action_role_url = pg_connect_options(&action_role, &action_pass);
-	// basically returning a number | undefined that represents a new ruleset to swap this one out for?
-	let new_ruleset_id: Option<u32> = runtime::run_function(
-		ruleset_code, &fn_path.function, arg.into_inner(), fn_type, &action_role_url,
+	let action_role_url = pg_connect_options(&action_role, &action.pass);
+
+	let new_ruleset_id = runtime::run_function::<Option<String>>(
+		action.code, &fn_path.fn_name, arg.into_inner(), fn_type, &action_role_url,
 	).await?;
 
+	if let Some(new_ruleset_id) = new_ruleset_id {
+		let new_ruleset_id = new_ruleset_id.parse::<sqlx::types::Uuid>()?;
+		info!("apply_candidate {new_ruleset_id}");
+		sqlx::query!("call votebase_catalog.apply_candidate($1);", new_ruleset_id)
+			.execute(pool).await?;
+	}
 
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
 }
@@ -140,26 +146,29 @@ async fn execute_view(
 	query: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
 ) -> Result<web::Json<serde_json::Value>, VotebaseError> {
-	// TODO these queries could benefit from compile time verification
-	let (ruleset_code, view_pass): (String, String) = sqlx::query_as("
-		select r.code, r.view_pass
-		from ruleset as r join ruleset_function as f on r.path = f.path
-		where r.path = $1 and f.name = $2 and f.kind = 'VIEW'
-	")
-		.bind(&fn_path.ruleset).bind(&fn_path.function)
-		.fetch_one(pool.get_ref()).await?;
+	let view = sqlx::query!("
+		select code, view_pass as pass
+		from votebase_catalog.ruleset
+		where full_path = $1 and $2 = ANY(views)
+	", &fn_path.ruleset_full_path, &fn_path.fn_name)
+		.fetch_one(pool.get_ref()).await.map_err(|e| map_sqlx_not_found(e, fn_path.clone()))?;
 
 	let fn_type = runtime::FnType::View;
 	let view_role = construct_role(&fn_path, fn_type);
-	let view_role_url = pg_connect_options(&view_role, &view_pass);
+	let view_role_url = pg_connect_options(&view_role, &view.pass);
 	let return_value = runtime::run_function(
-		ruleset_code, &fn_path.function, query.into_inner(), fn_type, &view_role_url,
+		view.code, &fn_path.fn_name, query.into_inner(), fn_type, &view_role_url,
 	).await?;
 	Ok(web::Json(return_value))
 }
 
-// we need a route to insert a candidate constitution, because we need the ability to check that the constitution is right
-// split_first/last
+
+fn map_sqlx_not_found(error: sqlx::Error, fn_path: FnPath) -> VotebaseError {
+	match error {
+		sqlx::Error::RowNotFound => VotebaseError::FnNotFoundError(fn_path),
+		e => e.into(),
+	}
+}
 
 #[derive(Debug)]
 struct Ruleset {

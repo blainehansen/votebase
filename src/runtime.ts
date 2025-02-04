@@ -4,7 +4,7 @@ const { core } = Deno as unknown as { core: {
 	print: (message: string, is_error: boolean) => void,
 	ops: {
 		op_fetch: (url: string) => Promise<string>,
-		op_register_action: (name: string, func: (arg: unknown) => number | undefined) => void,
+		op_register_action: (name: string, func: (arg: unknown) => string | undefined) => void,
 		op_register_view: (name: string, func: (query: unknown) => string) => void,
 		op_set_timeout: (delay: number | undefined) => Promise<void>,
 	},
@@ -27,7 +27,7 @@ globalThis.console = {
 declare global {
 	namespace votebase {
 		function fetch(url: string): Promise<string>;
-		function registerAction(name: string, func: (arg: unknown) => number | undefined): void;
+		function registerAction(name: string, func: (arg: unknown) => string | undefined): void;
 		function registerView<Query>(name: string, func: (query: unknown) => string): void;
 	}
 }

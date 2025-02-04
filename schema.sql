@@ -24,7 +24,7 @@ on votebase_catalog.ruleset((true))
 where parent_full_path is null;
 
 create table votebase_catalog.candidate_ruleset (
-	id uuid primary key,
+	id uuid primary key default gen_random_uuid(),
 	candidate_for text not null references votebase_catalog.ruleset(full_path),
 
 	actions text[] not null,
@@ -49,8 +49,7 @@ create table votebase_catalog.candidate_ruleset (
 -- 	primary key (member_id, ruleset_full_path)
 -- );
 
-
-create or replace function votebase_catalog.apply_candidate(candidate_id uuid) returns void as $$
+create or replace procedure votebase_catalog.apply_candidate(candidate_id uuid) as $$
 declare
 	candidate votebase_catalog.candidate_ruleset;
 begin
@@ -79,11 +78,11 @@ end;
 $$ language plpgsql;
 
 
-create or replace function votebase_catalog.insert_ruleset(
+create or replace procedure votebase_catalog.insert_ruleset(
 	p_parent_full_path text, p_name text,
 	p_action_pass text, p_actions text[], p_view_pass text, p_views text[],
 	p_code text, p_db_schema text, p_db_migration text
-) returns void as $$
+) as $$
 begin
 	insert into votebase_catalog.ruleset (
 		full_path,
@@ -104,21 +103,21 @@ $$ language plpgsql;
 
 
 
-select votebase_catalog.insert_ruleset(
-	null, 'root',
-	'pass', array['root_action'],
-	'pass', array['root_view'],
-	'', '', ''
-);
-select * from votebase_catalog.ruleset;
+-- call votebase_catalog.insert_ruleset(
+-- 	null, 'root',
+-- 	'pass', array['root_action'],
+-- 	'pass', array['root_view'],
+-- 	'', '', ''
+-- );
+-- select * from votebase_catalog.ruleset;
 
-select votebase_catalog.insert_ruleset(
-	'root', 'child',
-	'pass', array['child_action'],
-	'pass', array['child_view'],
-	'', '', ''
-);
-select * from votebase_catalog.ruleset;
+-- call votebase_catalog.insert_ruleset(
+-- 	'root', 'child',
+-- 	'pass', array['child_action'],
+-- 	'pass', array['child_view'],
+-- 	'', '', ''
+-- );
+-- select * from votebase_catalog.ruleset;
 
 
 

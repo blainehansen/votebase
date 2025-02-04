@@ -1,21 +1,25 @@
-use crate::runtime;
+use crate::{runtime, FnPath};
 use actix_web::HttpResponse;
 
 #[derive(thiserror::Error, Debug)]
 pub enum VotebaseError {
+	#[error("function {}|{} not found", .0.ruleset_full_path, .0.fn_name)]
+	FnNotFoundError(FnPath),
+
 	#[error("internal error")]
 	DenoError(#[from] runtime::DenoError),
 	#[error("internal error")]
-	SqlxError(#[from] sqlx::Error)
+	SqlxError(#[from] sqlx::Error),
+	#[error("interal uuid error")]
+	UuidParseError(#[from] sqlx::types::uuid::Error)
 }
+
 
 impl VotebaseError {
 	fn respond(&self, status_code: actix_web::http::StatusCode) -> HttpResponse {
 		error!("{}", self);
 		let res = HttpResponse::new(status_code);
-		match self {
-			Self::DenoError(_) | Self::SqlxError(_) => res.into(),
-		}
+		res.into()
 
 		// let mut buf = web::BytesMut::new();
 		// let _ = std::write!(helpers::MutWriter(&mut buf), "{}", self);
@@ -30,7 +34,11 @@ impl VotebaseError {
 impl actix_web::ResponseError for VotebaseError {
 	fn status_code(&self) -> actix_web::http::StatusCode {
 		match self {
-			Self::DenoError(_) | Self::SqlxError(_) => actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+			Self::FnNotFoundError(_) => actix_web::http::StatusCode::NOT_FOUND,
+			| Self::DenoError(_)
+			| Self::SqlxError(_)
+			| Self::UuidParseError(_)
+				=> actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}
 
