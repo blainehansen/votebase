@@ -3,6 +3,7 @@ node_modules
 *.local.*
 *.local
 *.cache.*
+.env
 
 # Added by cargo
 

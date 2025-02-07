@@ -6,34 +6,6 @@ use actix_web::{web, HttpResponse};
 
 type PgPool = sqlx::Pool<sqlx::Postgres>;
 
-static GLOBAL_PG_OPTIONS: once_cell::sync::Lazy<sqlx::postgres::PgConnectOptions> = once_cell::sync::Lazy::new(|| {
-	#[cfg(debug_assertions)]
-	let port = std::env::var("DB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(5432);
-	#[cfg(not(debug_assertions))]
-	let port = std::env::var("DB_PORT").expect("DB_PORT must be set").parse().expect("DB_PORT must be a valid port number");
-
-	#[cfg(debug_assertions)]
-	let host = std::env::var("DB_HOST").unwrap_or("localhost".to_string());
-	#[cfg(not(debug_assertions))]
-	let host = std::env::var("DB_HOST").expect("DB_HOST must be set");
-
-	#[cfg(debug_assertions)]
-	let database = std::env::var("DB_DATABASE").unwrap_or("dev_db".to_string());
-	#[cfg(not(debug_assertions))]
-	let database = std::env::var("DB_DATABASE").expect("DB_DATABASE must be set");
-
-	sqlx::postgres::PgConnectOptions::new_without_pgpass()
-		.port(port)
-		.host(&host)
-		.database(&database)
-});
-
-fn pg_connect_options(username: &str, password: &str) -> sqlx::postgres::PgConnectOptions {
-	GLOBAL_PG_OPTIONS.clone()
-		.username(username)
-		.password(password)
-}
-
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
 	pretty_env_logger::formatted_builder()
@@ -65,10 +37,44 @@ async fn main() -> std::io::Result<()> {
 			.wrap(actix_web::middleware::Logger::default())
 			.service(execute_action)
 			.service(execute_view)
+			.service(index_route)
 	})
 	.bind(("0.0.0.0", 8080))?
 	.run()
 	.await
+}
+
+static GLOBAL_PG_OPTIONS: once_cell::sync::Lazy<sqlx::postgres::PgConnectOptions> = once_cell::sync::Lazy::new(|| {
+	#[cfg(debug_assertions)]
+	let port = std::env::var("DB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(5432);
+	#[cfg(not(debug_assertions))]
+	let port = std::env::var("DB_PORT").expect("DB_PORT must be set").parse().expect("DB_PORT must be a valid port number");
+
+	#[cfg(debug_assertions)]
+	let host = std::env::var("DB_HOST").unwrap_or("localhost".to_string());
+	#[cfg(not(debug_assertions))]
+	let host = std::env::var("DB_HOST").expect("DB_HOST must be set");
+
+	#[cfg(debug_assertions)]
+	let database = std::env::var("DB_DATABASE").unwrap_or("dev_db".to_string());
+	#[cfg(not(debug_assertions))]
+	let database = std::env::var("DB_DATABASE").expect("DB_DATABASE must be set");
+
+	sqlx::postgres::PgConnectOptions::new_without_pgpass()
+		.port(port)
+		.host(&host)
+		.database(&database)
+});
+fn pg_connect_options(username: &str, password: &str) -> sqlx::postgres::PgConnectOptions {
+	GLOBAL_PG_OPTIONS.clone()
+		.username(username)
+		.password(password)
+}
+fn map_sqlx_not_found(error: sqlx::Error, fn_path: FnPath) -> VotebaseError {
+	match error {
+		sqlx::Error::RowNotFound => VotebaseError::FnNotFoundError(fn_path),
+		e => e.into(),
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -162,17 +168,13 @@ async fn execute_view(
 	Ok(web::Json(return_value))
 }
 
-
-fn map_sqlx_not_found(error: sqlx::Error, fn_path: FnPath) -> VotebaseError {
-	match error {
-		sqlx::Error::RowNotFound => VotebaseError::FnNotFoundError(fn_path),
-		e => e.into(),
-	}
+#[derive(askama_actix::Template)]
+#[template(path = "index.html")]
+struct IndexTemplate<'a> {
+	name: &'a str,
 }
 
-#[derive(Debug)]
-struct Ruleset {
-	final_schema: String,
-	migration_sql: String,
-	code: String,
+#[actix_web::get("/")]
+async fn index_route() -> impl actix_web::Responder {
+	IndexTemplate { name: "Votebase" }
 }

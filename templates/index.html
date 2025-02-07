@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Votebase wassup hey</title>
+	<script src="//unpkg.com/alpinejs" defer></script>
+	<script src="//unpkg.com/htmx.org@2.0.4" defer></script>
+</head>
+<body>
+	Hello {{ name }}!
+
+	<div x-data="{ open: false }">
+		<button @click="open = !open" x-text="open ? 'Contract' : 'Expand'"></button>
+
+		<span x-show="open">
+			Content...
+		</span>
+	</div>
+
+</body>
+</html>
