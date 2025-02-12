@@ -1,5 +1,5 @@
 use std::{cell::RefCell, rc::Rc};
-use deno_core::{v8};
+use deno_core::v8;
 use sqlx::Connection;
 
 pub type DenoError = deno_core::error::AnyError;
@@ -62,6 +62,9 @@ fn op_register_action(
 	#[string] key: String,
 	#[global] func: v8::Global<v8::Function>,
 ) {
+	// if the js side calls zodToJsonSchema and then we use a serde serializer to decode one of these:
+	// https://docs.rs/jsonschema/latest/jsonschema/struct.Validator.html
+	// then we've effectively demanded actions/views to type their inputs!
 	function_state.0.insert(key, func);
 }
 #[deno_core::op2]
@@ -71,6 +74,36 @@ fn op_register_view(
 	#[global] func: v8::Global<v8::Function>,
 ) {
 	function_state.0.insert(key, func);
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CandidateSelfReplacement {
+	candidate_for: sqlx::types::Uuid,
+	code: String,
+	db_schema: String,
+	db_migration: String,
+}
+
+#[deno_core::op2]
+fn op_propose_self_replacement(
+	#[state] current_full_path: &str,
+	#[state] server_pool: &crate::PgPool,
+	#[serde] candidate: CandidateSelfReplacement,
+) {
+	// TODO have to gather actions and views by executing the code with no permissions
+	// this is actually very tricky, since we need a runtime to run this code!
+
+	sqlx::query!(
+		"call votebase_catalog.insert_candidate_replacement($1, $2, $3, $4, $5, $6);",
+		&current_full_path, actions, views, &candidate.code, &candidate.db_schema, &candidate.db_migration
+	).execute(pool).await?;
+}
+
+pub fn replace_ruleset(new_ruleset_id: sqlx::types::Uuid) -> Result<(), sqlx::Error> {
+	// TODO also need code to migrate to new ruleset
+	// ought to do *all* of this in a transaction? that's not even possible with ddl statements is it?
+	sqlx::query!("call votebase_catalog.apply_candidate($1);", new_ruleset_id)
+		.execute(pool).await?;
 }
 
 deno_core::extension!(
@@ -119,6 +152,8 @@ pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	function_type: FnType,
 	db_url: &sqlx::postgres::PgConnectOptions,
 ) -> Result<V, DenoError> {
+	// TODO set current_ruleset_id
+
 	let mut js_runtime = create_js_runtime();
 	// db_url encodes the user, and therefore the role and powers of the connection
 	set_pg_connection(&mut js_runtime, db_url).await?;

@@ -70,9 +70,9 @@ fn pg_connect_options(username: &str, password: &str) -> sqlx::postgres::PgConne
 		.username(username)
 		.password(password)
 }
-fn map_sqlx_not_found(error: sqlx::Error, fn_path: FnPath) -> VotebaseError {
+fn map_sqlx_not_found(error: sqlx::Error, fn_path: &FnPath) -> VotebaseError {
 	match error {
-		sqlx::Error::RowNotFound => VotebaseError::FnNotFoundError(fn_path),
+		sqlx::Error::RowNotFound => VotebaseError::FnNotFoundError(fn_path.clone()),
 		e => e.into(),
 	}
 }
@@ -126,7 +126,7 @@ async fn execute_action(
 		from votebase_catalog.ruleset
 		where full_path = $1 and $2 = ANY(actions)
 	", &fn_path.ruleset_full_path, &fn_path.fn_name)
-		.fetch_one(pool).await.map_err(|e| map_sqlx_not_found(e, fn_path.clone()))?;
+		.fetch_one(pool).await.map_err(|e| map_sqlx_not_found(e, &fn_path))?;
 
 	let fn_type = runtime::FnType::Action;
 	let action_role = construct_role(&fn_path, fn_type);
@@ -139,8 +139,7 @@ async fn execute_action(
 	if let Some(new_ruleset_id) = new_ruleset_id {
 		let new_ruleset_id = new_ruleset_id.parse::<sqlx::types::Uuid>()?;
 		info!("apply_candidate {new_ruleset_id}");
-		sqlx::query!("call votebase_catalog.apply_candidate($1);", new_ruleset_id)
-			.execute(pool).await?;
+		runtime::replace_ruleset(new_ruleset_id)?;
 	}
 
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
@@ -151,21 +150,22 @@ async fn execute_view(
 	fn_path: FnPath,
 	query: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
-) -> Result<web::Json<serde_json::Value>, VotebaseError> {
+	// TODO use Either here to allow json or html?
+) -> Result<web::Html, VotebaseError> {
 	let view = sqlx::query!("
 		select code, view_pass as pass
 		from votebase_catalog.ruleset
 		where full_path = $1 and $2 = ANY(views)
 	", &fn_path.ruleset_full_path, &fn_path.fn_name)
-		.fetch_one(pool.get_ref()).await.map_err(|e| map_sqlx_not_found(e, fn_path.clone()))?;
+		.fetch_one(pool.get_ref()).await.map_err(|e| map_sqlx_not_found(e, &fn_path))?;
 
 	let fn_type = runtime::FnType::View;
 	let view_role = construct_role(&fn_path, fn_type);
 	let view_role_url = pg_connect_options(&view_role, &view.pass);
-	let return_value = runtime::run_function(
+	let return_value: String = runtime::run_function(
 		view.code, &fn_path.fn_name, query.into_inner(), fn_type, &view_role_url,
 	).await?;
-	Ok(web::Json(return_value))
+	Ok(web::Html::new(return_value))
 }
 
 #[derive(askama_actix::Template)]

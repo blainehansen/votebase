@@ -23,7 +23,7 @@ create unique index ruleset_single_null_parent
 on votebase_catalog.ruleset((true))
 where parent_full_path is null;
 
-create table votebase_catalog.candidate_ruleset (
+create table votebase_catalog.candidate_replacement_ruleset (
 	id uuid primary key default gen_random_uuid(),
 	candidate_for text not null references votebase_catalog.ruleset(full_path),
 
@@ -49,12 +49,39 @@ create table votebase_catalog.candidate_ruleset (
 -- 	primary key (member_id, ruleset_full_path)
 -- );
 
+create or replace function votebase_catalog.insert_candidate_replacement(
+	p_candidate_for text, p_actions text[], p_views text[],
+	p_code text, p_db_schema text, p_db_migration text
+) returns uuid as $$
+declare
+	candidate_id uuid;
+begin
+	if not exists (select 1 from votebase_catalog.ruleset where full_path = p_candidate_for) then
+		raise exception 'ruleset % not found', p_candidate_for;
+	end if;
+
+	insert into votebase_catalog.candidate_replacement_ruleset (
+		candidate_for,
+		actions, views,
+		code, db_schema, db_migration
+	) values (
+		p_candidate_for,
+		p_actions, p_views,
+		p_code, p_db_schema, p_db_migration
+	)
+	returning id into candidate_id;
+
+	return candidate_id;
+end;
+$$ language plpgsql;
+
+
 create or replace procedure votebase_catalog.apply_candidate(candidate_id uuid) as $$
 declare
-	candidate votebase_catalog.candidate_ruleset;
+	candidate votebase_catalog.candidate_replacement_ruleset;
 begin
 	select * into candidate
-	from votebase_catalog.candidate_ruleset
+	from votebase_catalog.candidate_replacement_ruleset
 	where id = candidate_id;
 
 	if not found then
@@ -67,7 +94,7 @@ begin
 		code = candidate.code, db_schema = candidate.db_schema, db_migration = candidate.db_migration
 	where full_path = v_candidate.candidate_for;
 
-	delete from votebase_catalog.candidate_ruleset
+	delete from votebase_catalog.candidate_replacement_ruleset
 	where case
 		when candidate.parent_full_path is null then parent_full_path is null
 		else candidate.parent_full_path = parent_full_path

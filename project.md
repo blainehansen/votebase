@@ -1,3 +1,40 @@
+# phases
+- standalone rulesets that can only replace themselves
+  - X view route
+  - X action route (without migration)
+  - ruleset replacement proposal (in runtime)
+    - ruleset migration checking
+  - ruleset replacement enaction
+    - ruleset migrations
+    - action role
+    - view role
+  - sql runtime functions https://docs.rs/sqlx/latest/sqlx/trait.Executor.html
+    - fetch many (queryRows)
+    - fetch optional (queryMaybeOne)
+    - fetch one (queryOne)
+    - execute
+    - raw sql https://docs.rs/sqlx/latest/sqlx/fn.raw_sql.html
+    - query maybe scalar https://docs.rs/sqlx/latest/sqlx/fn.query_scalar.html
+    - query scalar https://docs.rs/sqlx/latest/sqlx/fn.query_scalar.html
+    - query rows https://docs.rs/sqlx/latest/sqlx/fn.query_with.html
+- client site
+  - nuxt static generated?
+  - login/auth nonsense
+  - async list views
+  - async call and display view html (views are responsible for rendering controls to call actions)
+- parent and child rulesets, but without any communication or data sharing
+  - new child ruleset proposal and enaction, child ruleset replacement proposal and enaction
+- could release?
+- full featured `fetch`?
+  - more or less just copy how deno does it? or just implement the spec using something simple like reqwest?
+- parent and child rulesets, with function calling for all communication (simpler?)
+  - client site display rulesets one is a member of
+- parent and child rulesets, with function calling and permissions data sharing (this might actually be simpler, since it can just be a templated sql string to run over the child ruleset's roles. especially given that a parent ruleset can specify safe functions and then just allow the child to call them, and have read access to things like weight tables, this is actually probably much simpler)
+
+
+how much can even be achieved with parent and child systems without communication? full persistent
+
+
 - postgres table to schedule or cancel one-off events
   - runtime function for actions to schedule them
 - postgres table to hold static recurring events
