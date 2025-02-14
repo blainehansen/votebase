@@ -37,7 +37,6 @@ async fn main() -> std::io::Result<()> {
 			.wrap(actix_web::middleware::Logger::default())
 			.service(execute_action)
 			.service(execute_view)
-			.service(index_route)
 	})
 	.bind(("0.0.0.0", 8080))?
 	.run()
@@ -96,7 +95,7 @@ impl actix_web::FromRequest for FnPath {
 		};
 		let result = match path.rsplit_once(PATH_DELIMITER) {
 			Some((r, f)) => Ok(FnPath{ ruleset_full_path: r.to_string(), fn_name: f.to_string() }),
-			None => Err(actix_web::error::ErrorBadRequest("all paths must have at least one ruleset")),
+			None => Err(actix_web::error::ErrorBadRequest("all paths must have at least one ruleset name")),
 		};
 
 		std::future::ready(result)
@@ -133,7 +132,8 @@ async fn execute_action(
 	let action_role_url = pg_connect_options(&action_role, &action.pass);
 
 	let new_ruleset_id = runtime::run_function::<Option<String>>(
-		action.code, &fn_path.fn_name, arg.into_inner(), fn_type, &action_role_url,
+		fn_path.ruleset_full_path, action.code, &fn_path.fn_name, arg.into_inner(), fn_type,
+		&action_role_url, pool.clone(),
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
@@ -152,29 +152,21 @@ async fn execute_view(
 	pool: web::Data<PgPool>,
 	// TODO use Either here to allow json or html?
 ) -> Result<web::Html, VotebaseError> {
+	let pool = pool.get_ref();
+
 	let view = sqlx::query!("
 		select code, view_pass as pass
 		from votebase_catalog.ruleset
 		where full_path = $1 and $2 = ANY(views)
 	", &fn_path.ruleset_full_path, &fn_path.fn_name)
-		.fetch_one(pool.get_ref()).await.map_err(|e| map_sqlx_not_found(e, &fn_path))?;
+		.fetch_one(pool).await.map_err(|e| map_sqlx_not_found(e, &fn_path))?;
 
 	let fn_type = runtime::FnType::View;
 	let view_role = construct_role(&fn_path, fn_type);
 	let view_role_url = pg_connect_options(&view_role, &view.pass);
 	let return_value: String = runtime::run_function(
-		view.code, &fn_path.fn_name, query.into_inner(), fn_type, &view_role_url,
+		fn_path.ruleset_full_path, view.code, &fn_path.fn_name, query.into_inner(), fn_type,
+		&view_role_url, pool.clone(),
 	).await?;
 	Ok(web::Html::new(return_value))
-}
-
-#[derive(askama_actix::Template)]
-#[template(path = "index.html")]
-struct IndexTemplate<'a> {
-	name: &'a str,
-}
-
-#[actix_web::get("/")]
-async fn index_route() -> impl actix_web::Responder {
-	IndexTemplate { name: "Votebase" }
 }

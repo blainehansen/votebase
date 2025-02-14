@@ -8,17 +8,22 @@ pub fn js_err<E: std::error::Error>(e: E) -> deno_error::JsErrorBox {
 	deno_error::JsErrorBox::generic(e.to_string())
 }
 
+fn demand_external_allowed(state: &RefCell<OpState>) -> Result<(), deno_error::JsErrorBox> {
+	let state = state.borrow();
+	let external_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
+	if !external_allowed {
+		return Err(deno_error::JsErrorBox::generic(ERR_EXTERNAL_NOT_ALLOWED))
+	}
+	Ok(())
+}
+
 #[deno_core::op2(async)]
 #[string]
 async fn op_fetch(
 	state: Rc<RefCell<OpState>>,
 	#[string] url: String,
 ) -> Result<String, deno_error::JsErrorBox> {
-	let state = state.as_ref().borrow();
-	let external_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
-	if !external_allowed {
-		return Err(deno_error::JsErrorBox::generic(ERR_EXTERNAL_NOT_ALLOWED))
-	}
+	demand_external_allowed(state.as_ref())?;
 
 	let body = reqwest::get(url).await.map_err(js_err)?.text().await.map_err(js_err)?;
 	Ok(body)
@@ -29,11 +34,7 @@ async fn op_set_timeout(
 	state: Rc<RefCell<OpState>>,
 	delay: f64
 ) -> Result<(), deno_error::JsErrorBox> {
-	let state = state.as_ref().borrow();
-	let external_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
-	if !external_allowed {
-		return Err(deno_error::JsErrorBox::generic(ERR_EXTERNAL_NOT_ALLOWED))
-	}
+	demand_external_allowed(state.as_ref())?;
 
 	tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
 	Ok(())
@@ -47,22 +48,14 @@ async fn op_sql_execute_many(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
 ) -> Result<u32, deno_error::JsErrorBox> {
-	let mut state = state.as_ref().borrow_mut();
-	let external_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
-	if !external_allowed {
-		return Err(deno_error::JsErrorBox::generic(ERR_EXTERNAL_NOT_ALLOWED))
-	}
+	let state = state.as_ref();
+	demand_external_allowed(state)?;
+	let mut state = state.borrow_mut();
 
 	let connection = deno_core::_ops::opstate_borrow_mut::<sqlx::PgConnection>(std::ops::DerefMut::deref_mut(&mut state));
 	let result = sqlx::raw_sql(&sql).execute(connection).await.map_err(js_err)?;
 	Ok(result.rows_affected().try_into().map_err(js_err)?)
 }
-
-// https://github.com/denoland/deno_core/issues/515
-// https://discord.com/channels/684898665143206084/1022163295895027722/threads/1201661871959310346
-// https://gist.github.com/alshdavid/c9e5bc0d794e3ec9dba6afaa689b704e#file-main-rs-L51
-
-// https://discord.com/channels/684898665143206084/1022163295895027722/threads/1074150763460313128
 
 type FnMap = std::collections::HashMap<String, Fn>;
 
@@ -112,21 +105,28 @@ async fn op_propose_self_replacement(
 	state: Rc<RefCell<OpState>>,
 	#[serde] candidate: CandidateSelfReplacement,
 ) -> Result<String, deno_error::JsErrorBox> {
+	demand_external_allowed(state.as_ref())?;
+	let (actions, views) = validate_candidate(&candidate).await?;
+
 	let state = state.as_ref().borrow();
-	let external_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
-	if !external_allowed {
-		return Err(deno_error::JsErrorBox::generic(ERR_EXTERNAL_NOT_ALLOWED))
-	}
-
-	// TODO need to get these populated
-	let server_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
+	let candidate_uuid = sqlx::query!(
+		r#"select u as "u!" from votebase_catalog.insert_candidate_replacement($1, $2, $3, $4, $5, $6) as u(u);"#,
+		&current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration,
+	).fetch_one(server_role_pool).await.map_err(js_err)?;
 
-	let mut js_runtime = create_js_runtime();
-	set_external_allowed(&mut js_runtime, false);
-	load_code(&candidate.code, &mut js_runtime).await.map_err(|e| js_err(e.root_cause()))?;
+	Ok(candidate_uuid.u.into())
+}
 
-	let inner_state = js_runtime.op_state();
+async fn validate_candidate(
+	candidate: &CandidateSelfReplacement,
+) -> Result<(Vec<String>, Vec<String>), deno_error::JsErrorBox> {
+	let mut inner_js_runtime = create_js_runtime();
+	set_external_allowed(&mut inner_js_runtime, false);
+	load_code(&candidate.code, &mut inner_js_runtime).await.map_err(|e| js_err(e.root_cause()))?;
+
+	let inner_state = inner_js_runtime.op_state();
 	let inner_state = inner_state.as_ref().borrow();
 	let fn_map = deno_core::_ops::opstate_borrow::<FnMap>(&inner_state);
 	let mut actions = vec![];
@@ -138,12 +138,10 @@ async fn op_propose_self_replacement(
 		}
 	}
 
-	let candidate_uuid = sqlx::query!(
-		r#"select u as "u!" from votebase_catalog.insert_candidate_replacement($1, $2, $3, $4, $5, $6) as u(u);"#,
-		&current_full_path, &dbg!(actions), &dbg!(views), &candidate.code, &candidate.db_schema, &candidate.db_migration,
-	).fetch_one(server_pool).await.map_err(js_err)?;
+	// TODO here goes the code that checks the migrations for consistency
+	// this means we need something like migra!
 
-	Ok(candidate_uuid.u.into())
+	Ok((actions, views))
 }
 
 pub async fn replace_ruleset(
@@ -169,12 +167,9 @@ deno_core::extension!(
 		op_propose_self_replacement,
 	],
 	state = |state: &mut deno_core::OpState| {
-		// fn_map
 		state.put(FnMap::new());
-		// external_allowed
 		state.put(false);
-		// current_full_path
-		// TODO?
+		// server_role_pool will be set via set_pg_pool
 	},
 );
 
@@ -193,6 +188,7 @@ async fn set_pg_connection(
 	js_runtime: &mut deno_core::JsRuntime,
 	connect_options: &sqlx::postgres::PgConnectOptions,
 ) -> sqlx::Result<()> {
+	// TODO use sync::Once for this? so a connection is only made if sql functions are actually called?
 	let connection: sqlx::PgConnection = sqlx::PgConnection::connect_with(connect_options).await?;
 	js_runtime.op_state().borrow_mut().put(connection);
 	Ok(())
@@ -200,6 +196,21 @@ async fn set_pg_connection(
 fn set_external_allowed(js_runtime: &mut deno_core::JsRuntime, external_allowed: bool) {
 	js_runtime.op_state().borrow_mut().put(external_allowed);
 }
+
+fn set_pg_pool(
+	js_runtime: &mut deno_core::JsRuntime,
+	server_role_pool: crate::PgPool,
+) {
+	js_runtime.op_state().borrow_mut().put(server_role_pool);
+}
+
+fn set_current_full_path(
+	js_runtime: &mut deno_core::JsRuntime,
+	current_full_path: String,
+) {
+	js_runtime.op_state().borrow_mut().put(current_full_path);
+}
+
 const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 
 #[derive(Copy, Clone, Debug)]
@@ -229,16 +240,18 @@ async fn load_code(
 }
 
 pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
+	current_full_path: String,
 	ruleset_code: String,
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
-	db_url: &sqlx::postgres::PgConnectOptions,
+	fn_role_url: &sqlx::postgres::PgConnectOptions,
+	server_role_pool: crate::PgPool,
 ) -> Result<V, DenoError> {
 	// TODO set current_ruleset_id
 
 	let mut js_runtime = create_js_runtime();
-	// db_url encodes the user, and therefore the role and powers of the connection
+	// fn_role_url encodes the user, and therefore the role and powers of the connection
 	set_external_allowed(&mut js_runtime, false);
 	load_code(&ruleset_code, &mut js_runtime).await?;
 
@@ -249,7 +262,7 @@ pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	let function = match (function_type, function) {
 		(FnType::Action, Fn::Action(function)) => function,
 		(FnType::View, Fn::View(function)) => function,
-		_ => { return Err(deno_core::anyhow::anyhow!("'{}' isn't a {}", function_name, function_type)) },
+		_ => { return Err(deno_core::anyhow::anyhow!("'{}' isn't of type {}", function_name, function_type)) },
 	};
 
 	let function_arg = {
@@ -259,7 +272,9 @@ pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	};
 
 	set_external_allowed(&mut js_runtime, true);
-	set_pg_connection(&mut js_runtime, db_url).await?;
+	set_pg_connection(&mut js_runtime, fn_role_url).await?;
+	set_pg_pool(&mut js_runtime, server_role_pool);
+	set_current_full_path(&mut js_runtime, current_full_path);
 	let call = js_runtime.call_with_args(&function, &[function_arg]);
 	let call_return_value = js_runtime
 		.with_event_loop_promise(call, deno_core::PollEventLoopOptions::default())
@@ -277,29 +292,56 @@ mod tests {
 
 	const DEV_DB_URL: &'static str = "postgres://dev_user:dev_password@localhost:5432/dev_db";
 
+	fn boil_string(s: &str) -> String {
+		s.split_whitespace().collect::<Vec<&str>>().join(" ")
+	}
+
 	#[tokio::test]
 	async fn test_propose_self_replacement() {
 		let mut js_runtime = create_js_runtime();
 		set_external_allowed(&mut js_runtime, true);
+		let pool = sqlx::postgres::PgPoolOptions::new().connect(DEV_DB_URL).await.unwrap();
+		set_pg_pool(&mut js_runtime, pool.clone());
+		set_current_full_path(&mut js_runtime, "root".to_string());
+
+		sqlx::raw_sql(r#"
+			delete from votebase_catalog.candidate_replacement_ruleset where true;
+			delete from votebase_catalog.ruleset where true;
+			call votebase_catalog.insert_ruleset(null, 'root', '', ARRAY[]::text[], '', ARRAY[]::text[], '', '', '');
+		"#).execute(&pool).await.unwrap();
 
 		load_code(
 			r#"
-				const u = Deno.core.ops.op_propose_self_replacement({
+				const u = await Deno.core.ops.op_propose_self_replacement({
 					code: `
 						votebase.registerAction("action1", () => {});
 						votebase.registerAction("action2", () => {});
 						votebase.registerView("view1", () => {});
 					`,
-					db_schema: "", db_migration: "",
+					db_schema: "schema", db_migration: "migration",
 				})
-				console.log(u)
+				if (typeof u !== 'string' || u.length !== 36)
+					throw new Error(`op_propose_self_replacement didn't return uuid: ${u}`)
 			"#.into(),
 			&mut js_runtime,
 		).await.unwrap();
 
-		// let state = js_runtime.op_state();
-		// let state = state.as_ref().borrow();
-		// let fn_map = deno_core::_ops::opstate_borrow::<FnMap>(&state);
+		let mut result = sqlx::query!(r#"
+			select candidate_for, actions, views, code, db_schema, db_migration
+			from votebase_catalog.candidate_replacement_ruleset
+		"#).fetch_one(&pool).await.unwrap();
+
+		assert_eq!(result.candidate_for, "root");
+		result.actions.sort();
+		assert_eq!(result.actions, &["action1", "action2"]);
+		assert_eq!(result.views, &["view1"]);
+		assert_eq!(boil_string(&result.code), boil_string(r#"
+			votebase.registerAction("action1", () => {});
+			votebase.registerAction("action2", () => {});
+			votebase.registerView("view1", () => {});
+		"#));
+		assert_eq!(result.db_schema, "schema");
+		assert_eq!(result.db_migration, "migration");
 	}
 
 	#[tokio::test]
@@ -323,46 +365,48 @@ mod tests {
 	#[tokio::test]
 	async fn run_function_basics() {
 		let db_url = DEV_DB_URL.parse().unwrap();
-		let result = run_function::<serde_json::Value>(
+		let pool = sqlx::postgres::PgPoolOptions::new().connect(DEV_DB_URL).await.unwrap();
+		let result = run_function::<u32>(
+			"".into(),
 			r#"
 				await Deno.core.ops.op_sql_execute_many("select 1")
 				votebase.registerAction("test_action", async () => {
 					return true
 				})
 			"#.to_string(),
-			"test_action", serde_json::json!(null), FnType::Action, &db_url,
+			"test_action", serde_json::json!(null), FnType::Action, &db_url, pool.clone(),
 		).await.unwrap_err();
 		assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
-		let result = run_function::<serde_json::Value>(
-			r#"
+		let result = run_function::<u32>(
+			"".into(), r#"
 				votebase.registerAction("test_action", async () => {
 					return await Deno.core.ops.op_sql_execute_many("select 1")
 				})
 			"#.to_string(),
-			"test_action", serde_json::json!(null), FnType::Action, &db_url,
+			"test_action", serde_json::json!(null), FnType::Action, &db_url, pool.clone(),
 		).await.unwrap();
-		assert_eq!(result, serde_json::json!(1));
+		assert_eq!(result, 1);
 
-		let result = run_function::<serde_json::Value>(
-			r#"
+		let result = run_function::<u32>(
+			"".into(), r#"
 				await Deno.core.ops.op_sql_execute_many("select 1")
 				votebase.registerView("test_view", async () => {
 					return true
 				})
 			"#.to_string(),
-			"test_view", serde_json::json!(null), FnType::View, &db_url,
+			"test_view", serde_json::json!(null), FnType::View, &db_url, pool.clone(),
 		).await.unwrap_err();
 		assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
-		let result = run_function::<serde_json::Value>(
-			r#"
+		let result = run_function::<u32>(
+			"".into(), r#"
 				votebase.registerView("test_view", async () => {
 					return await Deno.core.ops.op_sql_execute_many("select 1")
 				})
 			"#.to_string(),
-			"test_view", serde_json::json!(null), FnType::View, &db_url,
+			"test_view", serde_json::json!(null), FnType::View, &db_url, pool.clone(),
 		).await.unwrap();
-		assert_eq!(result, serde_json::json!(1));
+		assert_eq!(result, 1);
 	}
 }

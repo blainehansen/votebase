@@ -13,10 +13,8 @@ deno_error = "0.5.5"
 [dependencies]
 deno_core = { workspace = true }
 deno_error = { workspace = true }
-serde = "*"
+serde = { version = "*" }
 actix-web = { version = "4" }
-askama = { version = "*", default-features = false }
-askama_actix = { version = "0.14", default-features = false }
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "macros", "uuid"] }
 # uuid = { version = "*", features = ["serde"] }
 reqwest = "0.12"
@@ -34,6 +32,3 @@ transpile_helpers = { path = "./transpile_helpers" }
 
 [profile.dev.package.sqlx-macros]
 opt-level = 3
-
-# [profile.dev.package.askama_derive]
-# opt-level = 3

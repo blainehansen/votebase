@@ -35,6 +35,16 @@
 how much can even be achieved with parent and child systems without communication? full persistent
 
 
+
+// https://github.com/denoland/deno_core/issues/515
+// https://discord.com/channels/684898665143206084/1022163295895027722/threads/1201661871959310346
+// https://gist.github.com/alshdavid/c9e5bc0d794e3ec9dba6afaa689b704e#file-main-rs-L51
+
+// https://discord.com/channels/684898665143206084/1022163295895027722/threads/1074150763460313128
+
+
+
+
 - postgres table to schedule or cancel one-off events
   - runtime function for actions to schedule them
 - postgres table to hold static recurring events
