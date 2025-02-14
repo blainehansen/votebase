@@ -17,8 +17,8 @@ serde = "*"
 actix-web = { version = "4" }
 askama = { version = "*", default-features = false }
 askama_actix = { version = "0.14", default-features = false }
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "macros", "uuid", "serde"] }
-uuid = { version = "*", features = ["serde"] }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "macros", "uuid"] }
+# uuid = { version = "*", features = ["serde"] }
 reqwest = "0.12"
 serde_json = { version = "1", default-features = false }
 tokio = { version = "1.40", features = ["full"] }

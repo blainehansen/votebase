@@ -139,7 +139,7 @@ async fn execute_action(
 	if let Some(new_ruleset_id) = new_ruleset_id {
 		let new_ruleset_id = new_ruleset_id.parse::<sqlx::types::Uuid>()?;
 		info!("apply_candidate {new_ruleset_id}");
-		runtime::replace_ruleset(new_ruleset_id)?;
+		runtime::replace_ruleset(pool, new_ruleset_id).await?;
 	}
 
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
