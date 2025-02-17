@@ -16,28 +16,6 @@ pub struct Runtime {
 	js_runtime: deno_core::JsRuntime,
 }
 
-// there are a couple of roles that can be used
-// - the roles for actions and views, which are created at runtime in the course of creating rulesets. these are very weak and only able to access their own ruleset schema and whatever permissions are given to them by their parent ruleset
-// - the server role, which has the ability to read and mutate the catalog, and by extension
-// - another even stronger role used for checking migrations? since it needs to create databases? is this scary? it might not be, since the ability to create a database just means you can play with *that* database, not others
-struct ServerPgOpt(PgOpt);
-struct FnPgOpt {
-	opt: PgOpt,
-	connection: Option<sqlx::postgres::PgConnection>,
-}
-
-impl FnPgOpt {
-	fn new(opt: PgOpt) -> FnPgOpt {
-		FnPgOpt { opt, connection: None }
-	}
-	async fn connect(&mut self) -> Result<&mut sqlx::postgres::PgConnection, sqlx::Error> {
-		if self.connection.is_none() {
-			self.connection = Some(sqlx::postgres::PgConnection::connect_with(&self.opt.options).await?);
-		}
-		Ok(self.connection.as_mut().unwrap())
-	}
-}
-
 impl Runtime {
 	pub async fn new(code: &str) -> Result<Self, DenoError> {
 		let js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
@@ -109,6 +87,25 @@ static RUNTIME_SNAPSHOT: &[u8] =
 const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 
 
+struct ServerPgOpt(PgOpt);
+struct FnPgOpt {
+	opt: PgOpt,
+	connection: Option<sqlx::postgres::PgConnection>,
+}
+
+impl FnPgOpt {
+	fn new(opt: PgOpt) -> FnPgOpt {
+		FnPgOpt { opt, connection: None }
+	}
+	async fn connect(&mut self) -> Result<&mut sqlx::postgres::PgConnection, sqlx::Error> {
+		if self.connection.is_none() {
+			self.connection = Some(sqlx::postgres::PgConnection::connect_with(&self.opt.options).await?);
+		}
+		Ok(self.connection.as_mut().unwrap())
+	}
+}
+
+
 fn demand_external_allowed(state: &RefCell<OpState>) -> Result<(), deno_error::JsErrorBox> {
 	let state = state.borrow();
 	let external_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
@@ -152,8 +149,9 @@ async fn op_sql_execute_many(
 	let state = state.as_ref();
 	demand_external_allowed(state)?;
 	let mut state = state.borrow_mut();
+	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+		.connect().await.map_err(js_err)?;
 
-	let connection = deno_core::_ops::opstate_borrow_mut::<sqlx::PgConnection>(std::ops::DerefMut::deref_mut(&mut state));
 	let result = sqlx::raw_sql(&sql).execute(connection).await.map_err(js_err)?;
 	Ok(result.rows_affected().try_into().map_err(js_err)?)
 }
@@ -209,8 +207,8 @@ async fn op_propose_self_replacement(
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
-	let server_opt = deno_core::_ops::opstate_borrow::<PgOpt>(&state);
-	let (actions, views) = validate_candidate(current_full_path, server_opt, &candidate).await?;
+	let server_opt = deno_core::_ops::opstate_borrow::<ServerPgOpt>(&state);
+	let (actions, views) = validate_candidate(current_full_path, &server_opt.0, &candidate).await?;
 
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 	let candidate_uuid = sqlx::query!(
@@ -245,41 +243,23 @@ async fn validate_candidate(
 		}
 	}
 
-	let output = tokio::process::Command::new("pg_dump")
-		.arg("--schema-only")
-		.arg(format!("--dbname={}", &server_opt.database))
-		.arg(format!("--schema={}", ruleset_pgschema(current_full_path)))
-		.arg("--username").arg(server_opt.options.get_username())
-		.arg("--host").arg(server_opt.options.get_host())
-		.arg("--port").arg(server_opt.options.get_port().to_string())
-		.env("PGPASSWORD", &server_opt.password)
-		.output()
-		.await.map_err(js_err)?;
-
-	if !output.status.success() {
-		return Err(deno_error::JsErrorBox::generic(format!(
-			"pg_dump failed: {}\n{}",
-			output.status,
-			String::from_utf8_lossy(&output.stderr)
-		)));
-	}
-
-	let current_schema = String::from_utf8_lossy(&output.stdout).to_string();
-	// TODO if either one of these fails to create we need to drop the other if it succeeded
-	let (declared_tempdb, actual_tempdb) = tokio::try_join!(
-		async { new_tempdb(&format!("{current_full_path}_declared"), &server_opt).await.map_err(js_err) },
-		async { new_tempdb(&format!("{current_full_path}_actual"), &server_opt).await.map_err(js_err) },
-	)?;
+	let pgschema = ruleset_pgschema(current_full_path);
+	let declared_tempdb = new_tempdb(&pgschema, &format!("{current_full_path}_declared"), &server_opt).await.map_err(js_err)?;
+	let actual_tempdb = new_tempdb(&pgschema, &format!("{current_full_path}_actual"), &server_opt).await.map_err(js_err)?;
 
 	let result = (|| async {
 		let mut declared_conn = sqlx::PgConnection::connect_with(&declared_tempdb.options).await.map_err(js_err)?;
+		sqlx::raw_sql(&format!(r#"
+			create schema "{pgschema}";
+		"#)).execute(&mut declared_conn).await.map_err(js_err)?;
 		sqlx::raw_sql(&candidate.db_schema).execute(&mut declared_conn).await.map_err(js_err)?;
 
+		let current_schema = compute_diff(&pgschema, &actual_tempdb, &server_opt).await.map_err(js_err)?;
 		let mut actual_conn = sqlx::PgConnection::connect_with(&actual_tempdb.options).await.map_err(js_err)?;
 		sqlx::raw_sql(&current_schema).execute(&mut actual_conn).await.map_err(js_err)?;
 		sqlx::raw_sql(&candidate.db_migration).execute(&mut actual_conn).await.map_err(js_err)?;
 
-		let diff = compute_diff(&declared_tempdb, &actual_tempdb).await.map_err(js_err)?;
+		let diff = compute_diff(&pgschema, &declared_tempdb, &actual_tempdb).await.map_err(js_err)?;
 		if !diff.is_empty() {
 			Err(deno_error::JsErrorBox::generic(format!("candidate for {current_full_path} has misdeclared schema")))
 		}
@@ -287,8 +267,8 @@ async fn validate_candidate(
 	})().await;
 
 	let (drop_declared, drop_actual) = tokio::join!(
-		async { drop_tempdb(declared_tempdb.database, &server_opt.options).await.map_err(js_err) },
-		async { drop_tempdb(actual_tempdb.database, &server_opt.options).await.map_err(js_err) },
+		async { drop_tempdb(declared_tempdb.database, &server_opt).await.map_err(js_err) },
+		async { drop_tempdb(actual_tempdb.database, &server_opt).await.map_err(js_err) },
 	);
 	drop_declared?;
 	drop_actual?;
@@ -297,23 +277,55 @@ async fn validate_candidate(
 	Ok((actions, views))
 }
 
-fn to_connection_string(config: &PgOpt) -> String {
-	let username = config.options.get_username();
-	let password = &config.password;
-	let host = config.options.get_host();
-	let port = config.options.get_port();
-	let dbname = config.options.get_database().unwrap_or("");
-	format!("postgresql://{username}:{password}@{host}:{port}/{dbname}")
+const TEMP_DB_COMMENT: &'static str = "'TEMP DB CREATED BY votebase'";
+
+async fn new_tempdb(
+	pgschema: &str,
+	intended_full_path: &str,
+	base_config: &PgOpt,
+) -> Result<PgOpt, sqlx::Error> {
+	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+	let intended_full_path = ruleset_pgschema(intended_full_path);
+	let dbname = format!("___votebase_temp__{intended_full_path}__{now}");
+
+	let mut conn = sqlx::PgConnection::connect_with(&base_config.options).await?;
+	sqlx::raw_sql(&format!(r#"
+		create database "{dbname}";
+	"#)).execute(&mut conn).await?;
+	sqlx::raw_sql(&format!(r#"
+		alter database "{dbname}" set search_path = '{pgschema}';
+		comment on database "{dbname}" is {TEMP_DB_COMMENT};
+	"#)).execute(&mut conn).await?;
+
+	let config = base_config.clone().database(&dbname);
+	Ok(config)
+}
+
+async fn drop_tempdb(dbname: String, base_config: &PgOpt) -> Result<(), sqlx::Error> {
+	let mut conn = sqlx::PgConnection::connect_with(&base_config.options).await?;
+	sqlx::raw_sql(&format!(r#"drop database if exists "{dbname}";"#))
+		.execute(&mut conn).await?;
+	Ok(())
 }
 
 async fn compute_diff(
+	pgschema: &str,
 	current: &PgOpt,
 	intended: &PgOpt,
 ) -> Result<String, deno_error::JsErrorBox> {
-	let output = tokio::process::Command::new("migra")
+	#[cfg(debug_assertions)]
+	let mut command = {
+		let mut command = tokio::process::Command::new("uv");
+		command.args("tool run -p 3.11 --with psycopg2-binary --with setuptools migra".split_whitespace());
+		command
+	};
+	#[cfg(not(debug_assertions))]
+	let mut command = tokio::process::Command::new("migra");
+
+	let output = command
 		.arg("--unsafe")
 		.arg("--with-privileges")
-		.arg("--exclude_schema").arg("votebase_catalog")
+		.arg("--schema").arg(pgschema)
 		.arg(to_connection_string(current))
 		.arg(to_connection_string(intended))
 		.output()
@@ -327,34 +339,13 @@ async fn compute_diff(
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-
-const TEMP_DB_COMMENT: &'static str = "'TEMP DB CREATED BY votebase'";
-
-async fn new_tempdb(
-	intended_full_path: &str,
-	base_config: &PgOpt,
-) -> Result<PgOpt, sqlx::Error> {
-	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-	let intended_full_path = ruleset_pgschema(intended_full_path);
-	let dbname = format!("___votebase_temp__{intended_full_path}__{now}");
-
-	let config = base_config.clone().database(&dbname);
-	let mut conn = sqlx::PgConnection::connect_with(&config.options).await?;
-	sqlx::raw_sql(&format!(r#"
-		create database "{dbname}";
-		comment on database "{dbname}" is {TEMP_DB_COMMENT};
-	"#)).execute(&mut conn).await?;
-
-	Ok(config)
-}
-
-async fn drop_tempdb(dbname: String, base_config: &sqlx::postgres::PgConnectOptions) -> Result<(), sqlx::Error> {
-	let mut conn = sqlx::PgConnection::connect_with(base_config).await?;
-
-	sqlx::raw_sql(&format!(r#"drop database if exists "{dbname}";"#))
-		.execute(&mut conn).await?;
-
-	Ok(())
+fn to_connection_string(config: &PgOpt) -> String {
+	let username = config.options.get_username();
+	let password = &config.password;
+	let host = config.options.get_host();
+	let port = config.options.get_port();
+	let dbname = config.options.get_database().unwrap_or("");
+	format!("postgresql://{username}:{password}@{host}:{port}/{dbname}")
 }
 
 // pub async fn clean_all_temp_dbs(base_config: &sqlx::postgres::PgConnectOptions) -> Result<(), sqlx::Error> {
@@ -412,7 +403,8 @@ pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
-	fn_role_url: &sqlx::postgres::PgConnectOptions,
+	fn_role_url: PgOpt,
+	server_opt: PgOpt,
 	server_role_pool: crate::PgPool,
 ) -> Result<V, DenoError> {
 	let mut runtime = Runtime::new(&ruleset_code).await?;
@@ -435,7 +427,8 @@ pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	};
 
 	runtime.set_external_allowed(true);
-	runtime.set_pg_connection(fn_role_url).await?;
+	runtime.set_fn_opt(fn_role_url);
+	runtime.set_server_opt(server_opt);
 	runtime.set_pg_pool(server_role_pool);
 	runtime.set_current_full_path(current_full_path);
 

@@ -153,7 +153,7 @@ async fn execute_action(
 
 	let new_ruleset_id = runtime::run_function::<Option<String>>(
 		fn_path.ruleset_full_path, action.code, &fn_path.fn_name, arg.into_inner(), fn_type,
-		&action_role_url.options, pool.clone(),
+		action_role_url, GLOBAL_PG_OPTIONS.clone(), pool.clone(),
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
@@ -186,7 +186,7 @@ async fn execute_view(
 	let view_role_url = pg_connect_options(&view_role, &view.pass);
 	let return_value: String = runtime::run_function(
 		fn_path.ruleset_full_path, view.code, &fn_path.fn_name, query.into_inner(), fn_type,
-		&view_role_url.options, pool.clone(),
+		view_role_url, GLOBAL_PG_OPTIONS.clone(), pool.clone(),
 	).await?;
 	Ok(web::Html::new(return_value))
 }
