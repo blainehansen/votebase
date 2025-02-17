@@ -5,7 +5,7 @@ create table votebase_catalog.ruleset (
 		when parent_full_path is null then full_path = "name"
 		else full_path = parent_full_path || '|' || "name"
 	end),
-	"name" text not null,
+	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
 	parent_full_path text references votebase_catalog.ruleset(full_path),
 
 	actions text[] not null,
@@ -76,7 +76,7 @@ end;
 $$ language plpgsql;
 
 
-create or replace procedure votebase_catalog.apply_candidate(candidate_id uuid) as $$
+create or replace function votebase_catalog.apply_candidate(candidate_id uuid) returns text as $$
 declare
 	candidate votebase_catalog.candidate_replacement_ruleset;
 begin
@@ -101,6 +101,8 @@ begin
 	end;
 
 	-- TODO need to create child rulesets?
+
+	return candidate.db_migration;
 end;
 $$ language plpgsql;
 

@@ -1,0 +1,126 @@
+use super::*;
+
+const DEV_DB_URL: &'static str = "postgres://dev_user:dev_password@localhost:5432/dev_db";
+
+fn boil_string(s: &str) -> String {
+	s.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+#[tokio::test]
+async fn test_propose_self_replacement() {
+	let mut js_runtime = create_js_runtime();
+	set_external_allowed(&mut js_runtime, true);
+	let pool = sqlx::postgres::PgPoolOptions::new().connect(DEV_DB_URL).await.unwrap();
+	set_pg_pool(&mut js_runtime, pool.clone());
+	set_current_full_path(&mut js_runtime, "root".to_string());
+
+	sqlx::raw_sql(r#"
+		delete from votebase_catalog.candidate_replacement_ruleset where true;
+		delete from votebase_catalog.ruleset where true;
+		call votebase_catalog.insert_ruleset(null, 'root', '', ARRAY[]::text[], '', ARRAY[]::text[], '', '', '');
+
+		create schema votebase_ruleset_root;
+		SET search_path = 'votebase_ruleset_root';
+		create table stuff (id uuid primary key);
+	"#).execute(&pool).await.unwrap();
+
+	load_code(
+		r#"
+			const u = await votebase.proposeSelfReplacement({
+				code: `
+					votebase.registerAction("action1", () => {});
+					votebase.registerAction("action2", () => {});
+					votebase.registerView("view1", () => {});
+				`,
+				db_schema: "create table stuff (id uuid primary key, color text not null);",
+				db_migration: "alter table stuff add column color text not null;",
+			})
+			if (typeof u !== 'string' || u.length !== 36)
+				throw new Error(`proposeSelfReplacement didn't return uuid: ${u}`)
+		"#.into(),
+		&mut js_runtime,
+	).await.unwrap();
+
+	let mut result = sqlx::query!(r#"
+		select candidate_for, actions, views, code, db_schema, db_migration
+		from votebase_catalog.candidate_replacement_ruleset
+	"#).fetch_one(&pool).await.unwrap();
+
+	assert_eq!(result.candidate_for, "root");
+	result.actions.sort();
+	assert_eq!(result.actions, &["action1", "action2"]);
+	assert_eq!(result.views, &["view1"]);
+	assert_eq!(boil_string(&result.code), boil_string(r#"
+		votebase.registerAction("action1", () => {});
+		votebase.registerAction("action2", () => {});
+		votebase.registerView("view1", () => {});
+	"#));
+	assert_eq!(result.db_schema, "create table stuff (id uuid primary key, color text not null);");
+	assert_eq!(result.db_migration, "alter table stuff add column color text not null;");
+}
+
+#[tokio::test]
+async fn can_do_sql() {
+	let mut js_runtime = create_js_runtime();
+	let db_url = DEV_DB_URL.parse().unwrap();
+	set_pg_connection(&mut js_runtime, &db_url).await.unwrap();
+	set_external_allowed(&mut js_runtime, true);
+
+	let script = r#"
+		const result = await Deno.core.ops.op_sql_execute_many("select 1 as hey")
+		Deno.core.print(result)
+	"#;
+	let specifier = deno_core::resolve_url(MAIN_SPECIFIER).unwrap();
+	let mod_id = js_runtime.load_main_es_module_from_code(&specifier, script).await.unwrap();
+	let result = js_runtime.mod_evaluate(mod_id);
+	js_runtime.run_event_loop(Default::default()).await.unwrap();
+	result.await.unwrap();
+}
+
+#[tokio::test]
+async fn run_function_basics() {
+	let db_url = DEV_DB_URL.parse().unwrap();
+	let pool = sqlx::postgres::PgPoolOptions::new().connect(DEV_DB_URL).await.unwrap();
+	let result = run_function::<u32>(
+		"".into(),
+		r#"
+			await Deno.core.ops.op_sql_execute_many("select 1")
+			votebase.registerAction("test_action", async () => {
+				return true
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, &db_url, pool.clone(),
+	).await.unwrap_err();
+	assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
+
+	let result = run_function::<u32>(
+		"".into(), r#"
+			votebase.registerAction("test_action", async () => {
+				return await Deno.core.ops.op_sql_execute_many("select 1")
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, &db_url, pool.clone(),
+	).await.unwrap();
+	assert_eq!(result, 1);
+
+	let result = run_function::<u32>(
+		"".into(), r#"
+			await Deno.core.ops.op_sql_execute_many("select 1")
+			votebase.registerView("test_view", async () => {
+				return true
+			})
+		"#.to_string(),
+		"test_view", serde_json::json!(null), FnType::View, &db_url, pool.clone(),
+	).await.unwrap_err();
+	assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
+
+	let result = run_function::<u32>(
+		"".into(), r#"
+			votebase.registerView("test_view", async () => {
+				return await Deno.core.ops.op_sql_execute_many("select 1")
+			})
+		"#.to_string(),
+		"test_view", serde_json::json!(null), FnType::View, &db_url, pool.clone(),
+	).await.unwrap();
+	assert_eq!(result, 1);
+}

@@ -1,5 +1,6 @@
 #[macro_use] extern crate log;
 mod runtime;
+
 mod error;
 use error::VotebaseError;
 use actix_web::{web, HttpResponse};
@@ -29,7 +30,7 @@ async fn main() -> std::io::Result<()> {
 	let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
 		// TODO am I sure about even setting this at all?
 		.max_connections(max_connections)
-		.connect_with(database_url).await.unwrap();
+		.connect_with(database_url.options).await.unwrap();
 
 	actix_web::HttpServer::new(move || {
 		actix_web::App::new()
@@ -43,7 +44,7 @@ async fn main() -> std::io::Result<()> {
 	.await
 }
 
-static GLOBAL_PG_OPTIONS: once_cell::sync::Lazy<sqlx::postgres::PgConnectOptions> = once_cell::sync::Lazy::new(|| {
+static GLOBAL_PG_OPTIONS: once_cell::sync::Lazy<PgOpt> = once_cell::sync::Lazy::new(|| {
 	#[cfg(debug_assertions)]
 	let port = std::env::var("DB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(5432);
 	#[cfg(not(debug_assertions))]
@@ -59,15 +60,34 @@ static GLOBAL_PG_OPTIONS: once_cell::sync::Lazy<sqlx::postgres::PgConnectOptions
 	#[cfg(not(debug_assertions))]
 	let database = std::env::var("DB_DATABASE").expect("DB_DATABASE must be set");
 
-	sqlx::postgres::PgConnectOptions::new_without_pgpass()
+	let options = sqlx::postgres::PgConnectOptions::new_without_pgpass()
 		.port(port)
 		.host(&host)
-		.database(&database)
+		.database(&database);
+	PgOpt { options, database, password: "".to_string() }
 });
-fn pg_connect_options(username: &str, password: &str) -> sqlx::postgres::PgConnectOptions {
-	GLOBAL_PG_OPTIONS.clone()
-		.username(username)
-		.password(password)
+
+#[derive(Debug, Clone)]
+struct PgOpt {
+	options: sqlx::postgres::PgConnectOptions,
+	database: String,
+	password: String,
+}
+impl PgOpt {
+	fn database(self, d: &str) -> Self {
+		PgOpt { options: self.options.database(d), database: d.to_string(), ..self }
+	}
+	fn password(self, p: &str) -> Self {
+		PgOpt { options: self.options.password(p), password: p.to_string(), ..self }
+	}
+	fn username(self, u: &str) -> Self {
+		PgOpt { options: self.options.username(u), ..self }
+	}
+}
+
+fn pg_connect_options(username: &str, password: &str) -> PgOpt {
+	let password = password.to_string();
+	GLOBAL_PG_OPTIONS.clone().username(username).password(&password)
 }
 fn map_sqlx_not_found(error: sqlx::Error, fn_path: &FnPath) -> VotebaseError {
 	match error {
@@ -133,7 +153,7 @@ async fn execute_action(
 
 	let new_ruleset_id = runtime::run_function::<Option<String>>(
 		fn_path.ruleset_full_path, action.code, &fn_path.fn_name, arg.into_inner(), fn_type,
-		&action_role_url, pool.clone(),
+		&action_role_url.options, pool.clone(),
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
@@ -166,7 +186,7 @@ async fn execute_view(
 	let view_role_url = pg_connect_options(&view_role, &view.pass);
 	let return_value: String = runtime::run_function(
 		fn_path.ruleset_full_path, view.code, &fn_path.fn_name, query.into_inner(), fn_type,
-		&view_role_url, pool.clone(),
+		&view_role_url.options, pool.clone(),
 	).await?;
 	Ok(web::Html::new(return_value))
 }

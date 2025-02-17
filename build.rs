@@ -7,9 +7,9 @@ fn main() {
 		// extension name
 		votebase,
 		// list of all JS files in the extension
-		esm_entry_point = "ext:votebase/src/runtime.ts",
+		esm_entry_point = "ext:votebase/src/runtime/runtime.ts",
 		// the entrypoint to our extension
-		esm = ["src/runtime.ts"]
+		esm = ["src/runtime/runtime.ts"]
 	);
 
 	let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
