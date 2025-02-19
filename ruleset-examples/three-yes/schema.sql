@@ -3,10 +3,12 @@ create table member (
 	"name" text not null
 );
 
-create table actual_constitution (
+create table text_constitution (
 	dummy_constant bool not null default true check(dummy_constant) unique,
 	"text" text not null
 );
+create unique index single_text_constitution
+on text_constitution((true)) where true;
 
 create table candidate_constitution (
 	id uuid primary key,
@@ -40,8 +42,8 @@ begin
 		return;
 	end if;
 
-	delete from actual_constitution;
-	insert into actual_constitution ("text")
+	delete from text_constitution;
+	insert into text_constitution ("text")
 	select "text" from candidate_constitution where id = winning_candidate_id;
 
 	delete from yes_or_no;
@@ -68,7 +70,7 @@ from member
 cross join candidate_constitution as candidate
 where member."name" = 'alice';
 
-select * from actual_constitution;
+select * from text_constitution;
 
 
 select vote_yes_or_no((member.id, candidate.id, true)::yes_or_no)
@@ -76,7 +78,7 @@ from member
 cross join candidate_constitution as candidate
 where member."name" = 'bob';
 
-select * from actual_constitution;
+select * from text_constitution;
 
 
 select vote_yes_or_no((member.id, candidate.id, true)::yes_or_no)
@@ -84,4 +86,4 @@ from member
 cross join candidate_constitution as candidate
 where member."name" = 'carol';
 
-select * from actual_constitution;
+select * from text_constitution;

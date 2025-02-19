@@ -123,13 +123,7 @@ impl actix_web::FromRequest for FnPath {
 }
 
 fn construct_role(fn_path: &FnPath, fn_type: runtime::FnType) -> String {
-	format!("{}|{}|{}",
-		match fn_type {
-			runtime::FnType::Action => "action",
-			runtime::FnType::View => "view"
-		},
-		fn_path.ruleset_full_path, fn_path.fn_name,
-	)
+	format!("{}|{}|{}", fn_type, fn_path.ruleset_full_path, fn_path.fn_name)
 }
 
 #[actix_web::post("/action/{path}")]

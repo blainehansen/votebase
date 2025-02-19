@@ -22,11 +22,15 @@
 		"noUnusedLocals": false,
 		"noUnusedParameters": false,
 
+		"checkJs": true,
 		"isolatedModules": false,
 
-		"checkJs": true,
-
 		"esModuleInterop": true,
-		"skipLibCheck": true
+		"skipLibCheck": true,
+
+		"baseUrl": "./",
+		"paths": {
+			"votebase": ["./src/runtime/runtime.ts"]
+		}
 	}
 }

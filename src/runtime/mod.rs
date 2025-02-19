@@ -386,6 +386,22 @@ pub async fn replace_ruleset(
 	tx.commit().await
 }
 
+pub async fn create_ruleset(
+	pool: &crate::PgPool,
+	new_ruleset_id: sqlx::types::Uuid,
+) -> Result<(), sqlx::Error> {
+	let mut tx = pool.begin().await?;
+
+	let db_migration = sqlx::query!(
+		r#"select m as "db_migration!" from votebase_catalog.apply_candidate($1) as t(m);"#,
+		new_ruleset_id,
+	).fetch_one(&mut *tx).await?.db_migration;
+
+	sqlx::raw_sql(&db_migration).execute(&mut *tx).await?;
+
+	tx.commit().await
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum FnType { Action, View }
 impl std::fmt::Display for FnType {
