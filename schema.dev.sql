@@ -7,7 +7,7 @@ begin
 	insert into votebase_catalog.ruleset (
 		full_path,
 		parent_full_path, "name",
-		action_pass, actions, view_pass, views,
+		actions, views,
 		code, db_schema, db_migration
 	) values (
 		case
@@ -15,7 +15,7 @@ begin
 			else p_parent_full_path || '|' || p_name
 		end,
 		p_parent_full_path, p_name,
-		p_action_pass, p_actions, p_view_pass, p_views,
+		p_actions, p_views,
 		p_code, p_db_schema, p_db_migration
 	);
 end;

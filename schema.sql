@@ -1,11 +1,7 @@
-alter default privileges revoke all privileges on all tables from public;
-alter default privileges revoke all privileges on all sequences from public;
-alter default privileges revoke all privileges on all functions from public;
-alter default privileges revoke all privileges on all types from public;
-alter default privileges revoke all privileges on all schemas from public;
-
+drop schema public;
 
 create schema votebase_catalog;
+create extension if not exists pgcrypto with schema votebase_catalog;
 
 create table votebase_catalog.ruleset (
 	full_path text primary key constraint well_formed_path check (case
@@ -18,8 +14,8 @@ create table votebase_catalog.ruleset (
 	actions text[] not null,
 	views text[] not null,
 	constraint actions_views_different_names check (not (actions && views)),
-	action_pass text not null,
-	view_pass text not null,
+	action_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
+	view_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
 
 	code text not null,
 	db_schema text not null,
@@ -128,11 +124,9 @@ $$ language plpgsql;
 
 
 
-alter default privileges revoke all privileges on all tables from votebase_catalog;
-alter default privileges revoke all privileges on all sequences from votebase_catalog;
-alter default privileges revoke all privileges on all functions from votebase_catalog;
-alter default privileges revoke all privileges on all types from votebase_catalog;
-alter default privileges revoke all privileges on all schemas from votebase_catalog;
-alter default privileges revoke all privileges on database dev_db;
-
--- TODO is this right?
+-- alter default privileges in schema votebase_catalog revoke all privileges on tables;
+-- alter default privileges in schema votebase_catalog revoke all privileges on sequences;
+-- alter default privileges in schema votebase_catalog revoke all privileges on functions;
+-- alter default privileges in schema votebase_catalog revoke all privileges on types;
+-- alter default privileges in schema votebase_catalog revoke all privileges on schemas;
+-- alter default privileges revoke all privileges on database dev_db;

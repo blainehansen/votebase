@@ -32,6 +32,21 @@ async fn main() -> std::io::Result<()> {
 		.max_connections(max_connections)
 		.connect_with(database_url.options).await.unwrap();
 
+	let ruleset_count = sqlx::query!(r#"select coalesce(count("name"), 0) as "ruleset_count!" from votebase_catalog.ruleset;"#)
+		.fetch_one(&pool).await.unwrap().ruleset_count;
+	if ruleset_count == 0 {
+		sqlx::query!(r#"
+			insert into votebase_catalog.ruleset (
+				full_path, parent_full_path, "name",
+				actions, views, code, db_schema, db_migration
+			) values (
+				'root', null, 'root',
+				$1, $2, $3, '', ''
+			);
+		"#, &vec!["__insert_initial".to_string()], &vec![], include_str!("../rulesets/accept-any.ts"))
+			.execute(&pool).await.unwrap();
+	}
+
 	actix_web::HttpServer::new(move || {
 		actix_web::App::new()
 			.app_data(web::Data::new(pool.clone()))
