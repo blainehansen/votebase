@@ -3,34 +3,15 @@
 	"extends": "@tsconfig/node-lts",
 	"_version": "22.0.0",
 	"compilerOptions": {
-		"jsx": "react-jsx",
-		"jsxImportSource": "./",
-
-		"lib": [
-			"es2023", "DOM"
-		],
-
-		"strict": true,
-		"allowUnusedLabels": false,
-		"allowUnreachableCode": false,
-		"exactOptionalPropertyTypes": true,
-		"noFallthroughCasesInSwitch": false,
-		"noImplicitOverride": true,
-		"noImplicitReturns": true,
-		"noPropertyAccessFromIndexSignature": true,
-		"noUncheckedIndexedAccess": true,
-		"noUnusedLocals": false,
-		"noUnusedParameters": false,
-
 		"checkJs": true,
 		"isolatedModules": false,
-
 		"esModuleInterop": true,
 		"skipLibCheck": true,
-
-		"baseUrl": "./",
-		"paths": {
-			"votebase": ["./src/runtime/runtime.ts"]
-		}
-	}
+		"moduleResolution": "nodenext",
+		"lib": ["es2023", "DOM"]
+	},
+	"references": [
+		{ "path": "./frontend" },
+		{ "path": "./rulesets" }
+	]
 }

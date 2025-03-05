@@ -5,6 +5,9 @@ node_modules
 *.cache.*
 .env
 
+frontend/.vitepress/cache
+frontend/.vitepress/dist
+
 # Added by cargo
 
 /target
