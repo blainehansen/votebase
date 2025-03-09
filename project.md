@@ -1,3 +1,15 @@
+Scheduled events table could have a log table tracking all occurrences
+Use a compare and swap (update that's conditional on the row not having a value that indicates it's been grabbed by the server) to mark the row as handled
+
+Post route to advance time, only turned on in debug mode, used for testing
+
+Figure out some little utility script to package up a ruleset as a json or yaml or something document
+
+Zod schema and type for ruleset to allow ruleset functions to talk about them and accept them as input
+
+
+
+
 https://doc.rust-lang.org/nightly/cargo/reference/cargo-targets.html#examples
 
 the simplest way to allow bootstrapping a server is for the initial schema creation to *itself* bootstrap a root ruleset with a single action that merely accepts a proposal replacement ruleset, and if that proposal checks as well-founded it is immediately instituted
