@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n\t\tselect code, view_pass as pass\n\t\tfrom votebase_catalog.ruleset\n\t\twhere full_path = $1 and $2 = ANY(views)\n\t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "pass",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "8c4c1682f8b0a251324aaa577d8a31ac89c595bc4af7b42b809df427bb489a17"
+}

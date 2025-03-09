@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n\t\tselect candidate_for, actions, views, code, db_schema, db_migration\n\t\tfrom votebase_catalog.candidate_replacement_ruleset\n\t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "candidate_for",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "actions",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "views",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "db_schema",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "db_migration",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "30ae6bc60dad6a12e999a237a351a44327bc9f51b0189023a7b04266d39793df"
+}

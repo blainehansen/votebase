@@ -388,16 +388,27 @@ pub async fn replace_ruleset(
 
 pub async fn create_ruleset(
 	pool: &crate::PgPool,
-	new_ruleset_id: sqlx::types::Uuid,
+	action_names: &Vec<String>, view_names: &Vec<String>, ruleset_code: &str, db_schema: &str,
 ) -> Result<(), sqlx::Error> {
 	let mut tx = pool.begin().await?;
 
-	let db_migration = sqlx::query!(
-		r#"select m as "db_migration!" from votebase_catalog.apply_candidate($1) as t(m);"#,
-		new_ruleset_id,
-	).fetch_one(&mut *tx).await?.db_migration;
+	sqlx::query!(r#"
+		insert into votebase_catalog.ruleset (
+			full_path, parent_full_path, "name",
+			actions, views, code, db_schema
+		) values (
+			'root', null, 'root',
+			$1, $2, $3, $4
+		);
+	"#, action_names, view_names, ruleset_code, db_schema)
+		.execute(&mut *tx).await.unwrap();
 
-	sqlx::raw_sql(&db_migration).execute(&mut *tx).await?;
+	// TODO need to perform any role creations or migrations to facilitate this ruleset
+	// create the schema object?
+	// create the view/actions/migrator roles?
+	// create any other permissions this needs to operate with it's parent? including permissions on tables like users?
+
+	// sqlx::raw_sql(&db_migration).execute(&mut *tx).await?;
 
 	tx.commit().await
 }

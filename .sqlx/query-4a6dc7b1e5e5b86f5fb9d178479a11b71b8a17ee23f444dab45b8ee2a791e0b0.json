@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select m as \"db_migration!\" from votebase_catalog.apply_candidate($1) as t(m);",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "db_migration!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4a6dc7b1e5e5b86f5fb9d178479a11b71b8a17ee23f444dab45b8ee2a791e0b0"
+}

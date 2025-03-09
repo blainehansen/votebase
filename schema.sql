@@ -18,9 +18,19 @@ create table votebase_catalog.ruleset (
 	view_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
 
 	code text not null,
-	db_schema text not null,
-	db_migration text not null
+	db_schema text not null
 );
+
+-- create table votebase_catalog.ruleset_replacements (
+-- 	full_path text not null references votebase_catalog.ruleset(full_path),
+
+-- 	old_actions text[] not null,
+-- 	old_views text[] not null,
+
+-- 	old_db_schema text not null,
+-- 	db_migration text not null,
+-- 	old_code text not null
+-- );
 
 create unique index ruleset_single_null_parent
 on votebase_catalog.ruleset((true))
@@ -107,7 +117,7 @@ begin
 	update votebase_catalog.ruleset
 	set
 		actions = candidate.actions, views = candidate.views,
-		code = candidate.code, db_schema = candidate.db_schema, db_migration = candidate.db_migration
+		code = candidate.code, db_schema = candidate.db_schema
 	where full_path = v_candidate.candidate_for;
 
 	delete from votebase_catalog.candidate_replacement_ruleset
@@ -115,6 +125,8 @@ begin
 		when candidate.parent_full_path is null then parent_full_path is null
 		else candidate.parent_full_path = parent_full_path
 	end;
+
+	-- TODO insert into votebase_catalog.ruleset_replacements
 
 	-- TODO need to create child rulesets?
 
