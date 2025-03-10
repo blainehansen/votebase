@@ -5,7 +5,12 @@ export type Result<T, E> =
 	| { ok: true, value: T, error?: never }
 	| { ok?: never, value?: never, error: E }
 
+export type Infallible<T> = Result<T, never>
+
 export type ZodResult<T, E = never> = Result<T, ZodError<unknown> | E>
+export function displayError(e: string | ZodError<unknown>): string {
+	return typeof e === 'string' ? e : e.toString()
+}
 
 export type Async<T, E> =
 	| { init: true, ok?: never, value?: never, loading?: never, error?: never }
@@ -13,8 +18,10 @@ export type Async<T, E> =
 	| { init?: never, ok: true, value: T, loading?: never, error?: never }
 	| { init?: never, ok?: never, value?: never, loading?: never, error: E }
 
+export type ZodAsync<T, E = never> = Async<T, ZodError<unknown> | E>
+
 export namespace Async {
-	export type AsyncRef<T, E> = Readonly<ShallowRef<Readonly<Async<T, E>>>> & { readonly refresh: () => void }
+	export type Ref<T, E> = Readonly<ShallowRef<Readonly<Async<T, E>>>> & { readonly refresh: () => void }
 
 	export function create<T, E>(fn: () => Promise<Result<T, E>>, lazy = false) {
 		const inner = shallowRef<Async<T, E>>({ init: true })
@@ -30,24 +37,34 @@ export namespace Async {
 
 		if (!lazy) onMounted(refresh)
 
-		return inner as AsyncRef<T, E>
+		return inner as Ref<T, E>
+	}
+
+	export function computedFetch<T>(parser: ZodSchema<T>, fn: () => string | undefined) {
+		const inner = shallowRef<ZodAsync<T, string>>({ init: true })
+
+		watchEffect(async () => {
+			const url = fn()
+			if (!url) return
+			inner.value = { loading: true }
+			const response = await safeFetch(parser, url)
+			inner.value = response.ok
+				? { ok: true, value: response.value }
+				: { error: response.error }
+		})
+
+		return inner as Ref<T, ZodError<unknown> | string>
 	}
 
 	export function fetch<T>(...args: Parameters<typeof safeFetch<T>>) {
 		return create(() => safeFetch(...args))
 	}
 
-	export type Infallible<T> = Result<T, never>
 	export function infallible<T>(fn: () => Promise<T>) {
 		return create(async (): Promise<Infallible<T>> => ({ ok: true, value: await fn() }))
 	}
 }
 
-
-
-// TODO get proper server prefix
-// https://nuxt.com/docs/guide/going-further/runtime-config#environment-variables
-const SERVER_PREFIX = 'http://localhost:8080'
 
 export async function safeFetch<T>(parser: ZodSchema<T>, ...args: Parameters<typeof fetch>): Promise<ZodResult<T, string>> {
 	try {

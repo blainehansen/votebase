@@ -54,6 +54,7 @@ async fn main() -> std::io::Result<()> {
 		let app = actix_web::App::new()
 			.app_data(web::Data::new(pool.clone()))
 			.wrap(actix_web::middleware::Logger::default())
+			.service(get_rulesets)
 			.service(execute_action)
 			.service(execute_view);
 
@@ -150,7 +151,26 @@ fn construct_role(fn_path: &FnPath, fn_type: runtime::FnType) -> String {
 	format!("{}|{}|{}", fn_type, fn_path.ruleset_full_path, fn_path.fn_name)
 }
 
-#[actix_web::post("/action/{path}")]
+#[derive(Debug, serde::Serialize)]
+struct RulesetListing {
+	full_path: String,
+}
+
+#[actix_web::get("/rulesets")]
+async fn get_rulesets(
+	pool: web::Data<PgPool>,
+) -> Result<web::Json<Vec<RulesetListing>>, VotebaseError> {
+	let pool = pool.get_ref();
+
+	let rulesets = sqlx::query_as!(RulesetListing, "
+		select full_path
+		from votebase_catalog.ruleset
+	").fetch_all(pool).await?;
+
+	Ok(web::Json(rulesets))
+}
+
+#[actix_web::post("/fn/action/{path}")]
 async fn execute_action(
 	fn_path: FnPath,
 	arg: web::Query<serde_json::Value>,
@@ -183,7 +203,7 @@ async fn execute_action(
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
 }
 
-#[actix_web::get("/view/{path}")]
+#[actix_web::get("/fn/view/{path}")]
 async fn execute_view(
 	fn_path: FnPath,
 	query: web::Query<serde_json::Value>,
@@ -210,8 +230,8 @@ async fn execute_view(
 }
 
 #[cfg(debug_assertions)]
-#[actix_web::post("/__debug/advance_time")]
-async fn debug_advance_time(amount: web::Json<()>) -> HttpResponse<()> {
+#[actix_web::post("/__debug_advance_time")]
+async fn debug_advance_time(_amount: web::Json<()>) -> HttpResponse<()> {
 
   HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ())
 }

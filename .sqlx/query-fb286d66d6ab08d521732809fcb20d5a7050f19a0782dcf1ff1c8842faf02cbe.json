@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n\t\tselect full_path\n\t\tfrom votebase_catalog.ruleset\n\t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "full_path",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fb286d66d6ab08d521732809fcb20d5a7050f19a0782dcf1ff1c8842faf02cbe"
+}
