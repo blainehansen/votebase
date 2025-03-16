@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n\t\tselect code, action_pass, migrator_pass\n\t\tfrom votebase_catalog.ruleset\n\t\twhere full_path = $1 and $2 = ANY(actions)\n\t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "action_pass",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "migrator_pass",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "05aac35af7273ff6327933c66ad584a83efdc454d0d16a0c6db38d8acd9b23cb"
+}

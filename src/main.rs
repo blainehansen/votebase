@@ -58,8 +58,9 @@ async fn main() -> std::io::Result<()> {
 		.fetch_one(&pool).await.expect("wasn't able to fetch the count of rulesets").ruleset_count;
 	if ruleset_count == 0 {
 		runtime::create_ruleset(
-			&pool,
-			&vec!["__insert_initial".to_string()], &vec![], include_str!("../rulesets/accept-any/ruleset.ts"), "",
+			&pool, None, "root",
+			&vec!["__insert_initial".to_string()], &vec![],
+			include_str!("../rulesets/accept-any/ruleset.ts"), "",
 		).await.expect("wasn't able to create root seed ruleset");
 	}
 
@@ -207,7 +208,7 @@ async fn execute_action(
 	let server_pg_opt = pool.connect_options().as_ref().clone();
 
 	let action = sqlx::query!("
-		select code, action_pass as pass
+		select code, action_pass, migrator_pass
 		from votebase_catalog.ruleset
 		where full_path = $1 and $2 = ANY(actions)
 	", &fn_path.ruleset_full_path, &fn_path.fn_name)
@@ -215,7 +216,9 @@ async fn execute_action(
 
 	let fn_type = runtime::FnType::Action;
 	let action_role = construct_role(&fn_path, fn_type);
-	let action_role_url = server_pg_opt.clone().username(&action_role).password(&action.pass);
+	let action_role_url = server_pg_opt.clone().username(&action_role).password(&action.action_pass);
+	let migrator_role = construct_role(&fn_path, fn_type);
+	let migrator_role_url = server_pg_opt.clone().username(&migrator_role).password(&action.migrator_pass);
 
 	let new_ruleset_id = runtime::run_function::<Option<String>>(
 		fn_path.ruleset_full_path, action.code, &fn_path.fn_name, arg.into_inner(), fn_type,
@@ -225,7 +228,7 @@ async fn execute_action(
 	if let Some(new_ruleset_id) = new_ruleset_id {
 		let new_ruleset_id = new_ruleset_id.parse::<sqlx::types::Uuid>()?;
 		info!("apply_candidate {new_ruleset_id}");
-		runtime::replace_ruleset(pool, new_ruleset_id).await?;
+		runtime::replace_ruleset(pool, migrator_role_url, new_ruleset_id).await?;
 	}
 
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))

@@ -212,7 +212,6 @@ async fn op_propose_self_replacement(
 	let (actions, views) = validate_candidate(current_full_path, &server_opt.0, &candidate).await?;
 
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
-	println!("before insert");
 	let candidate_uuid = sqlx::query!(
 		r#"select u as "candidate_uuid!" from votebase_catalog.insert_candidate_replacement($1, $2, $3, $4, $5, $6) as t(u);"#,
 		&current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration,
@@ -222,9 +221,7 @@ async fn op_propose_self_replacement(
 }
 
 fn ruleset_pgschema(full_path: &str) -> String {
-	let full_path = full_path.split(crate::PATH_DELIMITER).collect::<Vec<&str>>().join("_");
-	// TODO this needs to actually be the schema I want, and it needs to be used in `create_ruleset`
-	format!("votebase_ruleset_{full_path}")
+	format!("ruleset:{full_path}")
 }
 
 async fn validate_candidate(
@@ -330,8 +327,8 @@ async fn compute_diff(
 		.arg("--unsafe")
 		.arg("--with-privileges")
 		.arg("--schema").arg(pgschema)
-		.arg(dbg!(convert_db_url(current)))
-		.arg(dbg!(convert_db_url(intended)))
+		.arg(convert_db_url(current))
+		.arg(convert_db_url(intended))
 		.output()
 		.await
 		.map_err(js_err)?;
@@ -374,45 +371,50 @@ fn convert_db_url(url: &sqlx::postgres::PgConnectOptions) -> String {
 
 pub async fn replace_ruleset(
 	pool: &crate::PgPool,
+	migrator_role_url: PgOpt,
 	new_ruleset_id: sqlx::types::Uuid,
 ) -> Result<(), sqlx::Error> {
-	let mut tx = pool.begin().await?;
-
 	let db_migration = sqlx::query!(
 		r#"select m as "db_migration!" from votebase_catalog.apply_candidate($1) as t(m);"#,
 		new_ruleset_id,
-	).fetch_one(&mut *tx).await?.db_migration;
+	).fetch_one(pool).await?.db_migration;
 
-	sqlx::raw_sql(&db_migration).execute(&mut *tx).await?;
-
-	tx.commit().await
+	let mut migrator_connection = sqlx::PgConnection::connect_with(&migrator_role_url).await?;
+	sqlx::raw_sql(&db_migration).execute(&mut migrator_connection).await?;
+	Ok(())
 }
 
 pub async fn create_ruleset(
 	pool: &crate::PgPool,
-	action_names: &Vec<String>, view_names: &Vec<String>, ruleset_code: &str, db_schema: &str,
+	parent_full_path: Option<&str>, name: &str,
+	action_names: &Vec<String>, view_names: &Vec<String>,
+	ruleset_code: &str, db_schema: &str,
 ) -> Result<(), sqlx::Error> {
 	let mut tx = pool.begin().await?;
 
-	sqlx::query!(r#"
+	let ruleset = sqlx::query!(r#"
 		insert into votebase_catalog.ruleset (
-			full_path, parent_full_path, "name",
-			actions, views, code, db_schema
+			parent_full_path, "name", actions, views, code, db_schema
 		) values (
-			'root', null, 'root',
-			$1, $2, $3, $4
-		);
-	"#, action_names, view_names, ruleset_code, db_schema)
-		.execute(&mut *tx).await.unwrap();
+			$1, $2, $3, $4, $5, $6
+		) returning full_path, migrator_pass, action_pass, view_pass;
+	"#, parent_full_path, name, action_names, view_names, ruleset_code, db_schema)
+		.fetch_one(&mut *tx).await?;
 
-	// TODO need to perform any role creations or migrations to facilitate this ruleset
-	// create the schema object?
-	// create the view/actions/migrator roles?
-	// create any other permissions this needs to operate with it's parent? including permissions on tables like users?
+	sqlx::raw_sql(&format!(include_str!("./create-ruleset.sql"),
+		full_path=ruleset.full_path,
+		migrator_pass=ruleset.migrator_pass, action_pass=ruleset.action_pass, view_pass=ruleset.view_pass,
+	)).execute(&mut *tx).await?;
+	tx.commit().await?;
 
-	// sqlx::raw_sql(&db_migration).execute(&mut *tx).await?;
+	let migrator_options = pool.connect_options().as_ref().clone()
+		.username(&format!("role:{}|migrator", ruleset.full_path))
+		.password(&ruleset.migrator_pass);
 
-	tx.commit().await
+	let mut migrator_conn = sqlx::PgConnection::connect_with(&migrator_options).await?;
+	sqlx::raw_sql(&db_schema).execute(&mut migrator_conn).await?;
+
+	Ok(())
 }
 
 #[derive(Copy, Clone, Debug)]

@@ -13,17 +13,20 @@ fn boil_string(s: &str) -> String {
 async fn test_propose_self_replacement() {
 	let pool = sqlx::postgres::PgPoolOptions::new().connect(DEV_DB_URL).await.unwrap();
 	sqlx::raw_sql(r#"
+		drop schema if exists "ruleset:root" cascade;
+		drop role if exists "role:root|migrator";
+		drop role if exists "role:root|action";
+		drop role if exists "role:root|view";
 		delete from votebase_catalog.candidate_replacement_ruleset where true;
 		delete from votebase_catalog.ruleset where true;
-		call votebase_catalog.insert_ruleset(null, 'root', '', ARRAY[]::text[], '', ARRAY[]::text[], '', '');
-
-		drop schema if exists votebase_ruleset_root cascade;
-		create schema votebase_ruleset_root;
-		SET search_path = 'votebase_ruleset_root';
-		create table stuff (id uuid primary key);
 	"#).execute(&pool).await.unwrap();
 
 	let current_full_path = "root";
+	create_ruleset(
+		&pool, None, &current_full_path, &vec![], &vec![],
+		"", "create table stuff (id uuid primary key);",
+	).await.unwrap();
+
 	run_function::<()>(
 		current_full_path.to_string(), r#"
 			votebase.registerAction("test_action", async () => {

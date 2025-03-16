@@ -1,19 +1,48 @@
-drop schema public;
+alter default privileges revoke all privileges on tables from PUBLIC;
+alter default privileges revoke all privileges on sequences from PUBLIC;
+alter default privileges revoke all privileges on functions from PUBLIC;
+alter default privileges revoke all privileges on types from PUBLIC;
+alter default privileges revoke all privileges on schemas from PUBLIC;
+revoke all privileges on database dev_db from PUBLIC;
+grant connect on database dev_db to PUBLIC;
+revoke all privileges on parameter search_path from PUBLIC;
 
+-- CREATE | CONNECT | TEMPORARY | TEMP
+grant all privileges on database dev_db to current_user;
+-- SET | ALTER SYSTEM
+grant all privileges on parameter search_path to current_user;
+-- USAGE | CREATE
+alter default privileges grant all privileges on schemas to current_user;
+
+drop schema public;
 create schema votebase_catalog;
+
+-- SELECT | INSERT | UPDATE | DELETE | TRUNCATE | REFERENCES | TRIGGER | MAINTAIN
+alter default privileges in schema votebase_catalog grant all privileges on tables to current_user;
+-- USAGE | SELECT | UPDATE
+alter default privileges in schema votebase_catalog grant all privileges on sequences to current_user;
+-- EXECUTE
+alter default privileges in schema votebase_catalog grant all privileges on functions to current_user;
+-- USAGE
+alter default privileges in schema votebase_catalog grant all privileges on types to current_user;
+
 create extension if not exists pgcrypto with schema votebase_catalog;
 
 create table votebase_catalog.ruleset (
-	full_path text primary key constraint well_formed_path check (case
-		when parent_full_path is null then full_path = "name"
-		else full_path = parent_full_path || '|' || "name"
-	end),
-	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
+	full_path text primary key generated always as (case
+		when parent_full_path is null then "name"
+		else parent_full_path || '|' || "name"
+	end) stored,
+		-- constraint well_formed_path check (full_path = votebase_catalog.make_full_path(parent_full_path, "name"))
+		-- default votebase_catalog.make_full_path(parent_full_path, "name"),
 	parent_full_path text references votebase_catalog.ruleset(full_path),
+	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
 
 	actions text[] not null,
 	views text[] not null,
 	constraint actions_views_different_names check (not (actions && views)),
+
+	migrator_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
 	action_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
 	view_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
 
@@ -64,8 +93,7 @@ create table votebase_catalog.candidate_replacement_ruleset (
 
 
 -- create table votebase_catalog.member (
--- 	id uuid primary key,
--- 	email text not null,
+-- 	email text primary key,
 -- 	display_name text not null
 -- );
 
@@ -133,12 +161,3 @@ begin
 	return candidate.db_migration;
 end;
 $$ language plpgsql;
-
-
-
--- alter default privileges in schema votebase_catalog revoke all privileges on tables;
--- alter default privileges in schema votebase_catalog revoke all privileges on sequences;
--- alter default privileges in schema votebase_catalog revoke all privileges on functions;
--- alter default privileges in schema votebase_catalog revoke all privileges on types;
--- alter default privileges in schema votebase_catalog revoke all privileges on schemas;
--- alter default privileges revoke all privileges on database dev_db;
