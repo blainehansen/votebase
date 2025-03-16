@@ -5,6 +5,8 @@ use actix_web::HttpResponse;
 pub enum VotebaseError {
 	#[error("function {}|{} not found", .0.ruleset_full_path, .0.fn_name)]
 	FnNotFoundError(FnPath),
+	#[error("ruleset {} not found", .0)]
+	RulesetNotFoundError(String),
 
 	#[error("internal error")]
 	DenoError(#[from] runtime::DenoError),
@@ -17,7 +19,7 @@ pub enum VotebaseError {
 
 impl VotebaseError {
 	fn respond(&self, status_code: actix_web::http::StatusCode) -> HttpResponse {
-		error!("{}", self);
+		error!("{:?}", self);
 		let res = HttpResponse::new(status_code);
 		res.into()
 
@@ -34,7 +36,7 @@ impl VotebaseError {
 impl actix_web::ResponseError for VotebaseError {
 	fn status_code(&self) -> actix_web::http::StatusCode {
 		match self {
-			Self::FnNotFoundError(_) => actix_web::http::StatusCode::NOT_FOUND,
+			Self::FnNotFoundError(_) | Self::RulesetNotFoundError(_) => actix_web::http::StatusCode::NOT_FOUND,
 			| Self::DenoError(_)
 			| Self::SqlxError(_)
 			| Self::UuidParseError(_)

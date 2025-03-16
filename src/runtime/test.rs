@@ -2,9 +2,7 @@ use super::*;
 
 const DEV_DB_URL: &'static str = "postgres://dev_user:dev_password@localhost:5432/dev_db";
 fn opt() -> PgOpt {
-	let options: sqlx::postgres::PgConnectOptions = DEV_DB_URL.parse().unwrap();
-	let database = options.get_database().unwrap().to_string();
-	PgOpt { options, database, password: "dev_password".to_string() }
+	DEV_DB_URL.parse().unwrap()
 }
 
 fn boil_string(s: &str) -> String {
@@ -17,7 +15,7 @@ async fn test_propose_self_replacement() {
 	sqlx::raw_sql(r#"
 		delete from votebase_catalog.candidate_replacement_ruleset where true;
 		delete from votebase_catalog.ruleset where true;
-		call votebase_catalog.insert_ruleset(null, 'root', '', ARRAY[]::text[], '', ARRAY[]::text[], '', '', '');
+		call votebase_catalog.insert_ruleset(null, 'root', '', ARRAY[]::text[], '', ARRAY[]::text[], '', '');
 
 		drop schema if exists votebase_ruleset_root cascade;
 		create schema votebase_ruleset_root;

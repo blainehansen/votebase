@@ -1,14 +1,14 @@
 create or replace procedure votebase_catalog.insert_ruleset(
 	p_parent_full_path text, p_name text,
 	p_action_pass text, p_actions text[], p_view_pass text, p_views text[],
-	p_code text, p_db_schema text, p_db_migration text
+	p_code text, p_db_schema text
 ) as $$
 begin
 	insert into votebase_catalog.ruleset (
 		full_path,
 		parent_full_path, "name",
 		actions, views,
-		code, db_schema, db_migration
+		code, db_schema
 	) values (
 		case
 			when p_parent_full_path is null then p_name
@@ -16,7 +16,7 @@ begin
 		end,
 		p_parent_full_path, p_name,
 		p_actions, p_views,
-		p_code, p_db_schema, p_db_migration
+		p_code, p_db_schema
 	);
 end;
 $$ language plpgsql;

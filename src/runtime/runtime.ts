@@ -12,7 +12,7 @@ export type CandidateRuleset = {
 	db_migration: string,
 }
 
-const { core } = Deno as unknown as { core: {
+const { core } = globalThis.Deno as unknown as { core: {
 	print: (message: string, is_error: boolean) => void,
 	ops: {
 		op_fetch: (url: string) => Promise<string>,
@@ -29,11 +29,11 @@ declare global {
 		function registerView<Query>(name: string, func: (query: unknown) => Promise<string>): void
 		function proposeSelfReplacement(candidate: CandidateSelfReplacement): Promise<string>
 
-		function proposeChildRuleset(): Promise<void>
-		function instituteChildRuleset(): Promise<void>
+		// function proposeChildRuleset(): Promise<void>
+		// function instituteChildRuleset(): Promise<void>
 
-		function scheduleAction(at: Date, actionName: string, arg: unknown): Promise<string>
-		function cancelAction(uuid: string): Promise<void>
+		// function scheduleAction(at: Date, actionName: string, arg: unknown): Promise<string>
+		// function cancelAction(uuid: string): Promise<void>
 	}
 }
 

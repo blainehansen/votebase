@@ -16,6 +16,6 @@
 </template>
 
 <script setup lang="ts">
-import { asyncRulesets, displayError } from '@/utils/api'
-const rulesets = asyncRulesets()
+import { asyncRulesetListings, displayError } from '@/utils/api'
+const rulesets = asyncRulesetListings()
 </script>

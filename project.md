@@ -1,3 +1,10 @@
+- show a ruleset in detail and lists views
+ - with a conditional child route sub area that populates the actual view in an iframe
+- or an unrelated route like /ruleset-detail/[full_path]
+
+
+
+
 Scheduled events table could have a log table tracking all occurrences
 Use a compare and swap (update that's conditional on the row not having a value that indicates it's been grabbed by the server) to mark the row as handled
 

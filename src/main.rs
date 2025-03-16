@@ -6,6 +6,7 @@ use error::VotebaseError;
 use actix_web::{web, HttpResponse};
 
 type PgPool = sqlx::Pool<sqlx::Postgres>;
+type PgOpt = sqlx::postgres::PgConnectOptions;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -14,7 +15,53 @@ async fn main() -> std::io::Result<()> {
 		.parse_default_env()
 		.init();
 
+	#[cfg(debug_assertions)]
+	let db_port = std::env::var("DB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(5432);
+	#[cfg(not(debug_assertions))]
+	let db_port = std::env::var("DB_PORT").expect("DB_PORT must be set").parse().expect("DB_PORT must be a valid port number");
+
+	#[cfg(debug_assertions)]
+	let db_host = std::env::var("DB_HOST").unwrap_or("localhost".to_string());
+	#[cfg(not(debug_assertions))]
+	let db_host = std::env::var("DB_HOST").expect("DB_HOST must be set");
+
+	#[cfg(debug_assertions)]
+	let db_database = std::env::var("DB_DATABASE").unwrap_or("dev_db".to_string());
+	#[cfg(not(debug_assertions))]
+	let db_database = std::env::var("DB_DATABASE").expect("DB_DATABASE must be set");
+
+	#[cfg(debug_assertions)]
+	let db_admin_user = std::env::var("VOTEBASE_USER").unwrap_or("dev_user".to_string());
+	#[cfg(not(debug_assertions))]
+	let db_admin_user = std::env::var("VOTEBASE_USER").expect("VOTEBASE_USER must be set");
+
+	#[cfg(debug_assertions)]
+	let db_admin_pass = std::env::var("VOTEBASE_PASS").unwrap_or("dev_password".to_string());
+	#[cfg(not(debug_assertions))]
+	let db_admin_pass = std::env::var("VOTEBASE_PASS").expect("VOTEBASE_PASS must be set");
+
+	let database_url = sqlx::postgres::PgConnectOptions::new_without_pgpass()
+		.port(db_port)
+		.host(&db_host)
+		.database(&db_database)
+		.username(&db_admin_user)
+		.password(&db_admin_pass);
+
 	let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
+
+	let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
+		// TODO am I sure about even setting this at all?
+		.max_connections(max_connections)
+		.connect_with(database_url).await.unwrap();
+
+	let ruleset_count = sqlx::query!(r#"select coalesce(count("name"), 0) as "ruleset_count!" from votebase_catalog.ruleset;"#)
+		.fetch_one(&pool).await.expect("wasn't able to fetch the count of rulesets").ruleset_count;
+	if ruleset_count == 0 {
+		runtime::create_ruleset(
+			&pool,
+			&vec!["__insert_initial".to_string()], &vec![], include_str!("../rulesets/accept-any/ruleset.ts"), "",
+		).await.expect("wasn't able to create root seed ruleset");
+	}
 
 	#[cfg(debug_assertions)]
 	let host = std::env::var("VOTEBASE_HOST").unwrap_or("0.0.0.0".to_string());
@@ -26,40 +73,18 @@ async fn main() -> std::io::Result<()> {
 	#[cfg(not(debug_assertions))]
 	let port = std::env::var("VOTEBASE_PORT").ok().and_then(|p| p.parse().ok()).expect("VOTEBASE_PORT must be set");
 
-	#[cfg(debug_assertions)]
-	let admin_user = std::env::var("VOTEBASE_USER").unwrap_or("dev_user".to_string());
-	#[cfg(not(debug_assertions))]
-	let admin_user = std::env::var("VOTEBASE_USER").expect("VOTEBASE_USER must be set");
-
-	#[cfg(debug_assertions)]
-	let admin_pass = std::env::var("VOTEBASE_PASS").unwrap_or("dev_password".to_string());
-	#[cfg(not(debug_assertions))]
-	let admin_pass = std::env::var("VOTEBASE_PASS").expect("VOTEBASE_PASS must be set");
-	let database_url = pg_connect_options(&admin_user, &admin_pass);
-	let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
-		// TODO am I sure about even setting this at all?
-		.max_connections(max_connections)
-		.connect_with(database_url.options).await.unwrap();
-
-	let ruleset_count = sqlx::query!(r#"select coalesce(count("name"), 0) as "ruleset_count!" from votebase_catalog.ruleset;"#)
-		.fetch_one(&pool).await.expect("wasn't able to fetch the count of rulesets").ruleset_count;
-	if ruleset_count == 0 {
-		runtime::create_ruleset(
-			&pool,
-			&vec!["__insert_initial".to_string()], &vec![], include_str!("../rulesets/accept-any/ruleset.ts"), "",
-		).await.expect("wasn't able to create root seed ruleset");
-	}
-
 	actix_web::HttpServer::new(move || {
 		let app = actix_web::App::new()
 			.app_data(web::Data::new(pool.clone()))
 			.wrap(actix_web::middleware::Logger::default())
 			.service(get_rulesets)
+			.service(get_ruleset_views)
+			.service(get_ruleset_detail)
 			.service(execute_action)
 			.service(execute_view);
 
 		#[cfg(debug_assertions)]
-		let app = app.service(debug_advance_time);
+		let app = app.service(debug_advance_time).wrap(actix_cors::Cors::permissive());
 
 		app
 	})
@@ -69,51 +94,6 @@ async fn main() -> std::io::Result<()> {
 }
 
 
-static GLOBAL_PG_OPTIONS: once_cell::sync::Lazy<PgOpt> = once_cell::sync::Lazy::new(|| {
-	#[cfg(debug_assertions)]
-	let port = std::env::var("DB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(5432);
-	#[cfg(not(debug_assertions))]
-	let port = std::env::var("DB_PORT").expect("DB_PORT must be set").parse().expect("DB_PORT must be a valid port number");
-
-	#[cfg(debug_assertions)]
-	let host = std::env::var("DB_HOST").unwrap_or("localhost".to_string());
-	#[cfg(not(debug_assertions))]
-	let host = std::env::var("DB_HOST").expect("DB_HOST must be set");
-
-	#[cfg(debug_assertions)]
-	let database = std::env::var("DB_DATABASE").unwrap_or("dev_db".to_string());
-	#[cfg(not(debug_assertions))]
-	let database = std::env::var("DB_DATABASE").expect("DB_DATABASE must be set");
-
-	let options = sqlx::postgres::PgConnectOptions::new_without_pgpass()
-		.port(port)
-		.host(&host)
-		.database(&database);
-	PgOpt { options, database, password: "".to_string() }
-});
-
-#[derive(Debug, Clone)]
-struct PgOpt {
-	options: sqlx::postgres::PgConnectOptions,
-	database: String,
-	password: String,
-}
-impl PgOpt {
-	fn database(self, d: &str) -> Self {
-		PgOpt { options: self.options.database(d), database: d.to_string(), ..self }
-	}
-	fn password(self, p: &str) -> Self {
-		PgOpt { options: self.options.password(p), password: p.to_string(), ..self }
-	}
-	fn username(self, u: &str) -> Self {
-		PgOpt { options: self.options.username(u), ..self }
-	}
-}
-
-fn pg_connect_options(username: &str, password: &str) -> PgOpt {
-	let password = password.to_string();
-	GLOBAL_PG_OPTIONS.clone().username(username).password(&password)
-}
 fn map_sqlx_not_found(error: sqlx::Error, fn_path: &FnPath) -> VotebaseError {
 	match error {
 		sqlx::Error::RowNotFound => VotebaseError::FnNotFoundError(fn_path.clone()),
@@ -170,13 +150,61 @@ async fn get_rulesets(
 	Ok(web::Json(rulesets))
 }
 
+#[actix_web::get("/ruleset-views/{ruleset_full_path}")]
+async fn get_ruleset_views(
+	path: web::Path<String>,
+	pool: web::Data<PgPool>,
+) -> Result<web::Json<Vec<String>>, VotebaseError> {
+	let ruleset_full_path = path.into_inner();
+	let pool = pool.get_ref();
+
+	let r = sqlx::query!(r#"
+		select views
+		from votebase_catalog.ruleset
+		where full_path = $1
+	"#, &ruleset_full_path).fetch_one(pool).await.map_err(|e| match e {
+		sqlx::Error::RowNotFound => VotebaseError::RulesetNotFoundError(ruleset_full_path),
+		e => e.into(),
+	})?;
+
+	Ok(web::Json(r.views))
+}
+
+#[derive(Debug, serde::Serialize)]
+struct RulesetDetail {
+	views: Vec<String>,
+	code: String,
+	db_schema: String,
+}
+
+#[actix_web::get("/ruleset-detail/{ruleset_full_path}")]
+async fn get_ruleset_detail(
+	path: web::Path<String>,
+	pool: web::Data<PgPool>,
+) -> Result<web::Json<RulesetDetail>, VotebaseError> {
+	let ruleset_full_path = path.into_inner();
+	let pool = pool.get_ref();
+
+	let ruleset = sqlx::query_as!(RulesetDetail, r#"
+		select views, code, db_schema
+		from votebase_catalog.ruleset
+		where full_path = $1
+	"#, &ruleset_full_path).fetch_one(pool).await.map_err(|e| match e {
+		sqlx::Error::RowNotFound => VotebaseError::RulesetNotFoundError(ruleset_full_path),
+		e => e.into(),
+	})?;
+
+	Ok(web::Json(ruleset))
+}
+
 #[actix_web::post("/fn/action/{path}")]
 async fn execute_action(
 	fn_path: FnPath,
-	arg: web::Query<serde_json::Value>,
+	arg: web::Json<serde_json::Value>,
 	pool: web::Data<PgPool>,
 ) -> Result<HttpResponse<()>, VotebaseError> {
 	let pool = pool.get_ref();
+	let server_pg_opt = pool.connect_options().as_ref().clone();
 
 	let action = sqlx::query!("
 		select code, action_pass as pass
@@ -187,11 +215,11 @@ async fn execute_action(
 
 	let fn_type = runtime::FnType::Action;
 	let action_role = construct_role(&fn_path, fn_type);
-	let action_role_url = pg_connect_options(&action_role, &action.pass);
+	let action_role_url = server_pg_opt.clone().username(&action_role).password(&action.pass);
 
 	let new_ruleset_id = runtime::run_function::<Option<String>>(
 		fn_path.ruleset_full_path, action.code, &fn_path.fn_name, arg.into_inner(), fn_type,
-		action_role_url, GLOBAL_PG_OPTIONS.clone(), pool.clone(),
+		action_role_url, server_pg_opt, pool.clone(),
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
@@ -211,6 +239,7 @@ async fn execute_view(
 	// TODO use Either here to allow json or html?
 ) -> Result<web::Html, VotebaseError> {
 	let pool = pool.get_ref();
+	let server_pg_opt = pool.connect_options().as_ref().clone();
 
 	let view = sqlx::query!("
 		select code, view_pass as pass
@@ -221,10 +250,10 @@ async fn execute_view(
 
 	let fn_type = runtime::FnType::View;
 	let view_role = construct_role(&fn_path, fn_type);
-	let view_role_url = pg_connect_options(&view_role, &view.pass);
+	let view_role_url = server_pg_opt.clone().username(&view_role).password(&view.pass);
 	let return_value: String = runtime::run_function(
 		fn_path.ruleset_full_path, view.code, &fn_path.fn_name, query.into_inner(), fn_type,
-		view_role_url, GLOBAL_PG_OPTIONS.clone(), pool.clone(),
+		view_role_url, server_pg_opt, pool.clone(),
 	).await?;
 	Ok(web::Html::new(return_value))
 }
@@ -233,5 +262,5 @@ async fn execute_view(
 #[actix_web::post("/__debug_advance_time")]
 async fn debug_advance_time(_amount: web::Json<()>) -> HttpResponse<()> {
 
-  HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ())
+	HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ())
 }

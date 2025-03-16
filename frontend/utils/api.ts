@@ -10,28 +10,24 @@ export const RulesetListing = z.strictObject({
 	full_path: z.string(),
 })
 export type RulesetListing = z.infer<typeof RulesetListing>
-
-export function asyncRulesets() {
+export function asyncRulesetListings() {
 	return Async.fetch(z.array(RulesetListing), SERVER_PREFIX + '/rulesets')
 }
 
-
-export const Ruleset = z.strictObject({
-	full_path: z.string(),
+export const RulesetDetail = z.strictObject({
 	views: z.array(z.string()),
 	code: z.string(),
 	db_schema: z.string(),
 })
-export type Ruleset = z.infer<typeof Ruleset>
-
-export function asyncRuleset(rulesetFn: () => string) {
-	return Async.computedFetch(z.array(Ruleset), rulesetFn)
+export type RulesetDetail = z.infer<typeof RulesetDetail>
+export function asyncRulesetDetail(rulesetFullPathFn: () => string) {
+	return Async.computedFetch(RulesetDetail, () => SERVER_PREFIX + `/ruleset-detail/${rulesetFullPathFn()}`)
 }
 
-export function asyncView(pathFn: () => string | undefined) {
-	return Async.computedFetch(z.string(), () => {
-		const path = pathFn()
-		if (!path) return undefined
-		return SERVER_PREFIX + `/fn/view/${path}`
-	})
+export function asyncRulesetViews(rulesetFullPathFn: () => string) {
+	return Async.computedFetch(z.array(z.string()), () => SERVER_PREFIX + `/ruleset-views/${rulesetFullPathFn()}`)
+}
+
+export function asyncViewTemplate(pathFn: () => string) {
+	return Async.computedFetch(z.string(), () => SERVER_PREFIX + `/fn/view/${pathFn()}`)
 }

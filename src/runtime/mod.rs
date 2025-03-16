@@ -87,6 +87,7 @@ static RUNTIME_SNAPSHOT: &[u8] =
 const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 
 
+#[derive(Debug)]
 struct ServerPgOpt(PgOpt);
 struct FnPgOpt {
 	opt: PgOpt,
@@ -99,7 +100,7 @@ impl FnPgOpt {
 	}
 	async fn connect(&mut self) -> Result<&mut sqlx::postgres::PgConnection, sqlx::Error> {
 		if self.connection.is_none() {
-			self.connection = Some(sqlx::postgres::PgConnection::connect_with(&self.opt.options).await?);
+			self.connection = Some(sqlx::postgres::PgConnection::connect_with(&self.opt).await?);
 		}
 		Ok(self.connection.as_mut().unwrap())
 	}
@@ -211,6 +212,7 @@ async fn op_propose_self_replacement(
 	let (actions, views) = validate_candidate(current_full_path, &server_opt.0, &candidate).await?;
 
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	println!("before insert");
 	let candidate_uuid = sqlx::query!(
 		r#"select u as "candidate_uuid!" from votebase_catalog.insert_candidate_replacement($1, $2, $3, $4, $5, $6) as t(u);"#,
 		&current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration,
@@ -221,12 +223,13 @@ async fn op_propose_self_replacement(
 
 fn ruleset_pgschema(full_path: &str) -> String {
 	let full_path = full_path.split(crate::PATH_DELIMITER).collect::<Vec<&str>>().join("_");
+	// TODO this needs to actually be the schema I want, and it needs to be used in `create_ruleset`
 	format!("votebase_ruleset_{full_path}")
 }
 
 async fn validate_candidate(
 	current_full_path: &str,
-	server_opt: &PgOpt,
+	server_opt: &sqlx::postgres::PgConnectOptions,
 	candidate: &CandidateSelfReplacement,
 ) -> Result<(Vec<String>, Vec<String>), deno_error::JsErrorBox> {
 	let mut inner = Runtime::new(&candidate.code).await.map_err(|e| js_err(e.root_cause()))?;
@@ -244,31 +247,32 @@ async fn validate_candidate(
 	}
 
 	let pgschema = ruleset_pgschema(current_full_path);
-	let declared_tempdb = new_tempdb(&pgschema, &format!("{current_full_path}_declared"), &server_opt).await.map_err(js_err)?;
-	let actual_tempdb = new_tempdb(&pgschema, &format!("{current_full_path}_actual"), &server_opt).await.map_err(js_err)?;
+	let (declared_tempdb, declared_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}_declared"), &server_opt).await.map_err(js_err)?;
+	let (actual_tempdb, actual_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}_actual"), &server_opt).await.map_err(js_err)?;
 
 	let result = (|| async {
-		let mut declared_conn = sqlx::PgConnection::connect_with(&declared_tempdb.options).await.map_err(js_err)?;
+		let mut declared_conn = sqlx::PgConnection::connect_with(&declared_tempdb).await.map_err(js_err)?;
 		sqlx::raw_sql(&format!(r#"
 			create schema "{pgschema}";
 		"#)).execute(&mut declared_conn).await.map_err(js_err)?;
 		sqlx::raw_sql(&candidate.db_schema).execute(&mut declared_conn).await.map_err(js_err)?;
 
 		let current_schema = compute_diff(&pgschema, &actual_tempdb, &server_opt).await.map_err(js_err)?;
-		let mut actual_conn = sqlx::PgConnection::connect_with(&actual_tempdb.options).await.map_err(js_err)?;
+		let mut actual_conn = sqlx::PgConnection::connect_with(&actual_tempdb).await.map_err(js_err)?;
 		sqlx::raw_sql(&current_schema).execute(&mut actual_conn).await.map_err(js_err)?;
 		sqlx::raw_sql(&candidate.db_migration).execute(&mut actual_conn).await.map_err(js_err)?;
 
 		let diff = compute_diff(&pgschema, &declared_tempdb, &actual_tempdb).await.map_err(js_err)?;
 		if !diff.is_empty() {
+			log::error!("{}", diff);
 			Err(deno_error::JsErrorBox::generic(format!("candidate for {current_full_path} has misdeclared schema")))
 		}
 		else { Ok(()) }
 	})().await;
 
 	let (drop_declared, drop_actual) = tokio::join!(
-		async { drop_tempdb(declared_tempdb.database, &server_opt).await.map_err(js_err) },
-		async { drop_tempdb(actual_tempdb.database, &server_opt).await.map_err(js_err) },
+		async { drop_tempdb(declared_dbname, &server_opt).await.map_err(js_err) },
+		async { drop_tempdb(actual_dbname, &server_opt).await.map_err(js_err) },
 	);
 	drop_declared?;
 	drop_actual?;
@@ -282,13 +286,13 @@ const TEMP_DB_COMMENT: &'static str = "'TEMP DB CREATED BY votebase'";
 async fn new_tempdb(
 	pgschema: &str,
 	intended_full_path: &str,
-	base_config: &PgOpt,
-) -> Result<PgOpt, sqlx::Error> {
+	base_config: &sqlx::postgres::PgConnectOptions,
+) -> Result<(sqlx::postgres::PgConnectOptions, String), sqlx::Error> {
 	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
 	let intended_full_path = ruleset_pgschema(intended_full_path);
 	let dbname = format!("___votebase_temp__{intended_full_path}__{now}");
 
-	let mut conn = sqlx::PgConnection::connect_with(&base_config.options).await?;
+	let mut conn = sqlx::PgConnection::connect_with(&base_config).await?;
 	sqlx::raw_sql(&format!(r#"
 		create database "{dbname}";
 	"#)).execute(&mut conn).await?;
@@ -298,11 +302,11 @@ async fn new_tempdb(
 	"#)).execute(&mut conn).await?;
 
 	let config = base_config.clone().database(&dbname);
-	Ok(config)
+	Ok((config, dbname))
 }
 
-async fn drop_tempdb(dbname: String, base_config: &PgOpt) -> Result<(), sqlx::Error> {
-	let mut conn = sqlx::PgConnection::connect_with(&base_config.options).await?;
+async fn drop_tempdb(dbname: String, base_config: &sqlx::postgres::PgConnectOptions) -> Result<(), sqlx::Error> {
+	let mut conn = sqlx::PgConnection::connect_with(&base_config).await?;
 	sqlx::raw_sql(&format!(r#"drop database if exists "{dbname}";"#))
 		.execute(&mut conn).await?;
 	Ok(())
@@ -310,8 +314,8 @@ async fn drop_tempdb(dbname: String, base_config: &PgOpt) -> Result<(), sqlx::Er
 
 async fn compute_diff(
 	pgschema: &str,
-	current: &PgOpt,
-	intended: &PgOpt,
+	current: &sqlx::postgres::PgConnectOptions,
+	intended: &sqlx::postgres::PgConnectOptions,
 ) -> Result<String, deno_error::JsErrorBox> {
 	#[cfg(debug_assertions)]
 	let mut command = {
@@ -326,8 +330,8 @@ async fn compute_diff(
 		.arg("--unsafe")
 		.arg("--with-privileges")
 		.arg("--schema").arg(pgschema)
-		.arg(to_connection_string(current))
-		.arg(to_connection_string(intended))
+		.arg(dbg!(convert_db_url(current)))
+		.arg(dbg!(convert_db_url(intended)))
 		.output()
 		.await
 		.map_err(js_err)?;
@@ -339,13 +343,11 @@ async fn compute_diff(
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn to_connection_string(config: &PgOpt) -> String {
-	let username = config.options.get_username();
-	let password = &config.password;
-	let host = config.options.get_host();
-	let port = config.options.get_port();
-	let dbname = config.options.get_database().unwrap_or("");
-	format!("postgresql://{username}:{password}@{host}:{port}/{dbname}")
+fn convert_db_url(url: &sqlx::postgres::PgConnectOptions) -> String {
+	use sqlx::ConnectOptions;
+	String::from(url.to_url_lossy())
+		.replace("postgres://", "postgresql://")
+		.replace("&statement-cache-capacity=100", "")
 }
 
 // pub async fn clean_all_temp_dbs(base_config: &sqlx::postgres::PgConnectOptions) -> Result<(), sqlx::Error> {
