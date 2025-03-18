@@ -22,7 +22,7 @@ fn main() {
 			skip_op_registration: false,
 			extensions: vec![votebase::init_ops_and_esm()],
 			with_runtime_cb: None,
-			extension_transpiler: Some(std::rc::Rc::new(transpile_helpers::transpile_typescript)),
+			extension_transpiler: Some(std::rc::Rc::new(votebase_transpile::transpile_typescript)),
 		},
 		None,
 	)

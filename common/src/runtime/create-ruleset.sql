@@ -9,8 +9,6 @@ alter role "role:{full_path}|view" set search_path to "ruleset:{full_path}";
 
 -- https://www.postgresql.org/docs/current/ddl-priv.html
 
--- TODO have to make sure all the things I *don't* want are also revoked?
-
 -- views
 -- view role should not be able to modify data *at all*
 -- use schema

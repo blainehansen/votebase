@@ -29,7 +29,7 @@ impl Runtime {
 		runtime.set_fn_map();
 		runtime.set_external_allowed(false);
 
-		let (code, _) = transpile_helpers::transpile_typescript(
+		let (code, _) = votebase_transpile::transpile_typescript(
 			deno_core::ascii_str!(MAIN_SPECIFIER).into(),
 			code.to_string().into(),
 		)?;

@@ -1,34 +1,20 @@
-[package]
-name = "votebase"
-version = "0.1.0"
-edition = "2021"
-
 [workspace]
-members = ["transpile_helpers"]
+resolver = "2"
+members = [
+	"transpile",
+	"common",
+	"cli",
+	"server",
+]
 
 [workspace.dependencies]
 deno_core = "0.331.0"
 deno_error = "0.5.5"
-
-[dependencies]
-deno_core = { workspace = true }
-deno_error = { workspace = true }
 serde = { version = "*" }
-actix-web = { version = "4" }
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "macros", "uuid"] }
-# uuid = { version = "*", features = ["serde"] }
-reqwest = "0.12"
 serde_json = { version = "1", default-features = false }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "macros", "uuid"] }
 tokio = { version = "1.40", features = ["full"] }
-transpile_helpers = { path = "./transpile_helpers" }
-thiserror = "2"
-pretty_env_logger = "0.5"
 log = "0.4"
-actix-cors = { version = "0.7.1" }
-
-[build-dependencies]
-deno_core = { workspace = true }
-transpile_helpers = { path = "./transpile_helpers" }
 
 [profile.dev.package.sqlx-macros]
 opt-level = 3

@@ -1,12 +1,9 @@
 #[macro_use] extern crate log;
-mod runtime;
+use votebase_common::{runtime, PgPool};
 
 mod error;
 use error::VotebaseError;
 use actix_web::{web, HttpResponse};
-
-type PgPool = sqlx::Pool<sqlx::Postgres>;
-type PgOpt = sqlx::postgres::PgConnectOptions;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -31,7 +28,7 @@ async fn main() -> std::io::Result<()> {
 	let db_database = std::env::var("DB_DATABASE").expect("DB_DATABASE must be set");
 
 	#[cfg(debug_assertions)]
-	let db_admin_user = std::env::var("VOTEBASE_USER").unwrap_or("dev_user".to_string());
+	let db_admin_user = std::env::var("VOTEBASE_USER").unwrap_or("dev_admin_user".to_string());
 	#[cfg(not(debug_assertions))]
 	let db_admin_user = std::env::var("VOTEBASE_USER").expect("VOTEBASE_USER must be set");
 
@@ -53,16 +50,6 @@ async fn main() -> std::io::Result<()> {
 		// TODO am I sure about even setting this at all?
 		.max_connections(max_connections)
 		.connect_with(database_url).await.unwrap();
-
-	let ruleset_count = sqlx::query!(r#"select coalesce(count("name"), 0) as "ruleset_count!" from votebase_catalog.ruleset;"#)
-		.fetch_one(&pool).await.expect("wasn't able to fetch the count of rulesets").ruleset_count;
-	if ruleset_count == 0 {
-		runtime::create_ruleset(
-			&pool, None, "root",
-			&vec!["__insert_initial".to_string()], &vec![],
-			include_str!("../rulesets/accept-any/ruleset.ts"), "",
-		).await.expect("wasn't able to create root seed ruleset");
-	}
 
 	#[cfg(debug_assertions)]
 	let host = std::env::var("VOTEBASE_HOST").unwrap_or("0.0.0.0".to_string());

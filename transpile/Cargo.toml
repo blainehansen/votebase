@@ -1,5 +1,5 @@
 [package]
-name = "transpile_helpers"
+name = "votebase_transpile"
 version = "0.1.0"
 edition = "2021"
 

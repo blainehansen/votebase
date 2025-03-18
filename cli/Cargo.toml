@@ -1,0 +1,11 @@
+[package]
+name = "votebase_cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# serde = { workspace = true }
+votebase_common = { path = "../common" }
+sqlx = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

@@ -4,7 +4,7 @@ services:
     container_name: db
     environment:
       - POSTGRES_DB=dev_db
-      - POSTGRES_USER=dev_user
+      - POSTGRES_USER=dev_admin_user
       - POSTGRES_PASSWORD=dev_password
     ports:
       - "5432:5432"

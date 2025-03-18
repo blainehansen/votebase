@@ -1,0 +1,19 @@
+[package]
+name = "votebase_common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+deno_core = { workspace = true }
+deno_error = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+reqwest = "0.12"
+votebase_transpile = { path = "../transpile" }
+
+[build-dependencies]
+deno_core = { workspace = true }
+votebase_transpile = { path = "../transpile" }

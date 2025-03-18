@@ -3,6 +3,7 @@
 	"compilerOptions": {
 		"composite": true,
 		"baseUrl": "./",
+		"types": ["../src/runtime/runtime.ts"],
 		"paths": {
 			"votebase": ["../src/runtime/runtime.ts"]
 		}

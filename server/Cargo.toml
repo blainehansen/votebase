@@ -1,0 +1,17 @@
+[package]
+name = "votebase_server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+votebase_common = { path = "../common" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+actix-web = { version = "4" }
+thiserror = "2"
+pretty_env_logger = "0.5"
+actix-cors = { version = "0.7" }
+log = { workspace = true }
+# uuid = { version = "*", features = ["serde"] }

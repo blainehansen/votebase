@@ -1,14 +1,19 @@
+-- this file is meant to be run by an admin role at polity creation time
+-- this means it shouldn't do current_user, but should create a role
+
+create role
+
 alter default privileges revoke all privileges on tables from PUBLIC;
 alter default privileges revoke all privileges on sequences from PUBLIC;
 alter default privileges revoke all privileges on functions from PUBLIC;
 alter default privileges revoke all privileges on types from PUBLIC;
 alter default privileges revoke all privileges on schemas from PUBLIC;
-revoke all privileges on database dev_db from PUBLIC;
-grant connect on database dev_db to PUBLIC;
+revoke all privileges on database {db_database} from PUBLIC;
+grant connect on database {db_database} to PUBLIC;
 revoke all privileges on parameter search_path from PUBLIC;
 
 -- CREATE | CONNECT | TEMPORARY | TEMP
-grant all privileges on database dev_db to current_user;
+grant all privileges on database {db_database} to current_user;
 -- SET | ALTER SYSTEM
 grant all privileges on parameter search_path to current_user;
 -- USAGE | CREATE
