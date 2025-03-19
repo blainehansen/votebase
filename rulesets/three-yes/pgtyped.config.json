@@ -9,5 +9,5 @@
 	"srcDir": "./ruleset-examples/three-yes/",
 	"failOnError": true,
 	"camelCaseColumnNames": false,
-	"dbUrl": "postgres://dev_admin_user:dev_password@localhost:5432/dev_db"
+	"dbUrl": "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db"
 }

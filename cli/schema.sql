@@ -1,35 +1,35 @@
 -- this file is meant to be run by an admin role at polity creation time
--- this means it shouldn't do current_user, but should create a role
-
-create role
+-- this needs the ability to create roles to create new rulesets and their sub roles
+-- and to create databases to do the migration checking
+create role "votebase_server" with createrole createdb nosuperuser noinherit login password '{votebase_server_password}';
 
 alter default privileges revoke all privileges on tables from PUBLIC;
 alter default privileges revoke all privileges on sequences from PUBLIC;
 alter default privileges revoke all privileges on functions from PUBLIC;
 alter default privileges revoke all privileges on types from PUBLIC;
 alter default privileges revoke all privileges on schemas from PUBLIC;
-revoke all privileges on database {db_database} from PUBLIC;
-grant connect on database {db_database} to PUBLIC;
+revoke all privileges on database "{db_database}" from PUBLIC;
+grant connect on database "{db_database}" to PUBLIC;
 revoke all privileges on parameter search_path from PUBLIC;
 
 -- CREATE | CONNECT | TEMPORARY | TEMP
-grant all privileges on database {db_database} to current_user;
+grant all privileges on database "{db_database}" to "votebase_server";
 -- SET | ALTER SYSTEM
-grant all privileges on parameter search_path to current_user;
+grant all privileges on parameter search_path to "votebase_server";
 -- USAGE | CREATE
-alter default privileges grant all privileges on schemas to current_user;
+alter default privileges grant all privileges on schemas to "votebase_server";
 
 drop schema public;
 create schema votebase_catalog;
 
 -- SELECT | INSERT | UPDATE | DELETE | TRUNCATE | REFERENCES | TRIGGER | MAINTAIN
-alter default privileges in schema votebase_catalog grant all privileges on tables to current_user;
+alter default privileges in schema votebase_catalog grant all privileges on tables to "votebase_server";
 -- USAGE | SELECT | UPDATE
-alter default privileges in schema votebase_catalog grant all privileges on sequences to current_user;
+alter default privileges in schema votebase_catalog grant all privileges on sequences to "votebase_server";
 -- EXECUTE
-alter default privileges in schema votebase_catalog grant all privileges on functions to current_user;
+alter default privileges in schema votebase_catalog grant all privileges on functions to "votebase_server";
 -- USAGE
-alter default privileges in schema votebase_catalog grant all privileges on types to current_user;
+alter default privileges in schema votebase_catalog grant all privileges on types to "votebase_server";
 
 create extension if not exists pgcrypto with schema votebase_catalog;
 
@@ -151,13 +151,10 @@ begin
 	set
 		actions = candidate.actions, views = candidate.views,
 		code = candidate.code, db_schema = candidate.db_schema
-	where full_path = v_candidate.candidate_for;
+	where full_path = candidate.candidate_for;
 
 	delete from votebase_catalog.candidate_replacement_ruleset
-	where case
-		when candidate.parent_full_path is null then parent_full_path is null
-		else candidate.parent_full_path = parent_full_path
-	end;
+	where id = candidate_id;
 
 	-- TODO insert into votebase_catalog.ruleset_replacements
 

@@ -4,7 +4,7 @@ mod test;
 use std::{cell::RefCell, rc::Rc};
 use deno_core::{v8, OpState};
 use sqlx::Connection;
-use crate::PgOpt;
+use crate::{PgOpt, FnType, RoleType, format_ruleset_schema, format_ruleset_role};
 
 pub type DenoError = deno_core::error::AnyError;
 
@@ -220,10 +220,6 @@ async fn op_propose_self_replacement(
 	Ok(candidate_uuid.into())
 }
 
-fn ruleset_pgschema(full_path: &str) -> String {
-	format!("ruleset:{full_path}")
-}
-
 async fn validate_candidate(
 	current_full_path: &str,
 	server_opt: &sqlx::postgres::PgConnectOptions,
@@ -243,9 +239,9 @@ async fn validate_candidate(
 		}
 	}
 
-	let pgschema = ruleset_pgschema(current_full_path);
-	let (declared_tempdb, declared_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}_declared"), &server_opt).await.map_err(js_err)?;
-	let (actual_tempdb, actual_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}_actual"), &server_opt).await.map_err(js_err)?;
+	let pgschema = format_ruleset_schema(current_full_path);
+	let (declared_tempdb, declared_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|declared"), &server_opt).await.map_err(js_err)?;
+	let (actual_tempdb, actual_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|actual"), &server_opt).await.map_err(js_err)?;
 
 	let result = (|| async {
 		let mut declared_conn = sqlx::PgConnection::connect_with(&declared_tempdb).await.map_err(js_err)?;
@@ -286,8 +282,8 @@ async fn new_tempdb(
 	base_config: &sqlx::postgres::PgConnectOptions,
 ) -> Result<(sqlx::postgres::PgConnectOptions, String), sqlx::Error> {
 	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-	let intended_full_path = ruleset_pgschema(intended_full_path);
-	let dbname = format!("___votebase_temp__{intended_full_path}__{now}");
+	let intended_full_path = format_ruleset_schema(intended_full_path);
+	let dbname = format!("temp_db:{intended_full_path}|{now}");
 
 	let mut conn = sqlx::PgConnection::connect_with(&base_config).await?;
 	sqlx::raw_sql(&format!(r#"
@@ -401,31 +397,29 @@ pub async fn create_ruleset(
 	"#, parent_full_path, name, action_names, view_names, ruleset_code, db_schema)
 		.fetch_one(&mut *tx).await?;
 
+	let formatted_ruleset_role_migrator = format_ruleset_role(&ruleset.full_path, RoleType::Migrator);
+	let formatted_ruleset_role_action = format_ruleset_role(&ruleset.full_path, RoleType::Action);
+	let formatted_ruleset_role_view = format_ruleset_role(&ruleset.full_path, RoleType::View);
+
 	sqlx::raw_sql(&format!(include_str!("./create-ruleset.sql"),
-		full_path=ruleset.full_path,
-		migrator_pass=ruleset.migrator_pass, action_pass=ruleset.action_pass, view_pass=ruleset.view_pass,
+		formatted_ruleset_schema=format_ruleset_schema(&ruleset.full_path),
+		formatted_ruleset_role_migrator=formatted_ruleset_role_migrator,
+		formatted_ruleset_role_action=formatted_ruleset_role_action,
+		formatted_ruleset_role_view=formatted_ruleset_role_view,
+		migrator_pass=ruleset.migrator_pass,
+		action_pass=ruleset.action_pass,
+		view_pass=ruleset.view_pass,
 	)).execute(&mut *tx).await?;
 	tx.commit().await?;
 
 	let migrator_options = pool.connect_options().as_ref().clone()
-		.username(&format!("role:{}|migrator", ruleset.full_path))
+		.username(&formatted_ruleset_role_migrator)
 		.password(&ruleset.migrator_pass);
 
 	let mut migrator_conn = sqlx::PgConnection::connect_with(&migrator_options).await?;
 	sqlx::raw_sql(&db_schema).execute(&mut migrator_conn).await?;
 
 	Ok(())
-}
-
-#[derive(Copy, Clone, Debug)]
-pub enum FnType { Action, View }
-impl std::fmt::Display for FnType {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			FnType::Action => write!(f, "action"),
-			FnType::View => write!(f, "view"),
-		}
-	}
 }
 
 pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(

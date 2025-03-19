@@ -1,5 +1,5 @@
 #[macro_use] extern crate log;
-use votebase_common::{runtime, PgPool};
+use votebase_common::{runtime, FnType, RoleType, PgPool};
 
 mod error;
 use error::VotebaseError;
@@ -27,22 +27,19 @@ async fn main() -> std::io::Result<()> {
 	#[cfg(not(debug_assertions))]
 	let db_database = std::env::var("DB_DATABASE").expect("DB_DATABASE must be set");
 
-	#[cfg(debug_assertions)]
-	let db_admin_user = std::env::var("VOTEBASE_USER").unwrap_or("dev_admin_user".to_string());
-	#[cfg(not(debug_assertions))]
-	let db_admin_user = std::env::var("VOTEBASE_USER").expect("VOTEBASE_USER must be set");
+	let db_votebase_user = "votebase_server";
 
 	#[cfg(debug_assertions)]
-	let db_admin_pass = std::env::var("VOTEBASE_PASS").unwrap_or("dev_password".to_string());
+	let db_votebase_pass = std::env::var("VOTEBASE_PASS").unwrap_or("votebase_server_dev_pass".to_string());
 	#[cfg(not(debug_assertions))]
-	let db_admin_pass = std::env::var("VOTEBASE_PASS").expect("VOTEBASE_PASS must be set");
+	let db_votebase_pass = std::env::var("VOTEBASE_PASS").expect("VOTEBASE_PASS must be set");
 
 	let database_url = sqlx::postgres::PgConnectOptions::new_without_pgpass()
 		.port(db_port)
 		.host(&db_host)
 		.database(&db_database)
-		.username(&db_admin_user)
-		.password(&db_admin_pass);
+		.username(db_votebase_user)
+		.password(&db_votebase_pass);
 
 	let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
 
@@ -113,10 +110,6 @@ impl actix_web::FromRequest for FnPath {
 
 		std::future::ready(result)
 	}
-}
-
-fn construct_role(fn_path: &FnPath, fn_type: runtime::FnType) -> String {
-	format!("{}|{}|{}", fn_type, fn_path.ruleset_full_path, fn_path.fn_name)
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -201,14 +194,13 @@ async fn execute_action(
 	", &fn_path.ruleset_full_path, &fn_path.fn_name)
 		.fetch_one(pool).await.map_err(|e| map_sqlx_not_found(e, &fn_path))?;
 
-	let fn_type = runtime::FnType::Action;
-	let action_role = construct_role(&fn_path, fn_type);
+	let action_role = votebase_common::format_ruleset_role(&fn_path.ruleset_full_path, RoleType::Action);
 	let action_role_url = server_pg_opt.clone().username(&action_role).password(&action.action_pass);
-	let migrator_role = construct_role(&fn_path, fn_type);
+	let migrator_role = votebase_common::format_ruleset_role(&fn_path.ruleset_full_path, RoleType::Migrator);
 	let migrator_role_url = server_pg_opt.clone().username(&migrator_role).password(&action.migrator_pass);
 
 	let new_ruleset_id = runtime::run_function::<Option<String>>(
-		fn_path.ruleset_full_path, action.code, &fn_path.fn_name, arg.into_inner(), fn_type,
+		fn_path.ruleset_full_path, action.code, &fn_path.fn_name, arg.into_inner(), FnType::Action,
 		action_role_url, server_pg_opt, pool.clone(),
 	).await?;
 
@@ -238,11 +230,10 @@ async fn execute_view(
 	", &fn_path.ruleset_full_path, &fn_path.fn_name)
 		.fetch_one(pool).await.map_err(|e| map_sqlx_not_found(e, &fn_path))?;
 
-	let fn_type = runtime::FnType::View;
-	let view_role = construct_role(&fn_path, fn_type);
+	let view_role = votebase_common::format_ruleset_role(&fn_path.ruleset_full_path, RoleType::View);
 	let view_role_url = server_pg_opt.clone().username(&view_role).password(&view.pass);
 	let return_value: String = runtime::run_function(
-		fn_path.ruleset_full_path, view.code, &fn_path.fn_name, query.into_inner(), fn_type,
+		fn_path.ruleset_full_path, view.code, &fn_path.fn_name, query.into_inner(), FnType::View,
 		view_role_url, server_pg_opt, pool.clone(),
 	).await?;
 	Ok(web::Html::new(return_value))

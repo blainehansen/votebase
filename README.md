@@ -1,3 +1,9 @@
+```
+cargo sqlx prepare --check --workspace
+cargo check --release
+```
+
+
 https://hyper.rs/guides/1/server/echo/
 https://github.com/hyperium/hyper/blob/master/examples/service_struct_impl.rs
 https://github.com/hyperium/hyper/blob/master/examples/hello-http2.rs

@@ -1,6 +1,6 @@
 use super::*;
 
-const DEV_DB_URL: &'static str = "postgres://dev_admin_user:dev_password@localhost:5432/dev_db";
+const DEV_DB_URL: &'static str = "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db";
 fn opt() -> PgOpt {
 	DEV_DB_URL.parse().unwrap()
 }
