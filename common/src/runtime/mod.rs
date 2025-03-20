@@ -169,9 +169,12 @@ pub enum Fn {
 fn op_register_fn(
 	#[state] fn_map: &mut FnMap,
 	#[string] fn_name: &str,
+	// #[serde] schema: serde_json::Value,
 	is_action: bool,
 	#[global] func: v8::Global<v8::Function>,
 ) -> Result<(), deno_error::JsErrorBox> {
+	// let validator = jsonschema::draft7::new(schema)?;
+
 	// if the js side calls zodToJsonSchema and then we use a serde serializer to decode one of these:
 	// https://docs.rs/jsonschema/latest/jsonschema/struct.Validator.html
 	// then we've effectively demanded actions/views to type their inputs!

@@ -1,9 +1,11 @@
 {
-	"type": "module",
+  "type": "module",
   "scripts": {},
   "dependencies": {
-    "zod": "^3.24.2"
+    "zod": "^3.24.2",
+    "zod-to-json-schema": "^3.24.4"
   },
   "devDependencies": {
+    "typescript": "^5.8.2"
   }
 }

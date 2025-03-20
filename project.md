@@ -84,6 +84,8 @@ how much can even be achieved with parent and child systems without communicatio
 
 Rust library that builds validators from json scheme rules
 https://docs.rs/jsonschema/latest/jsonschema/
+https://github.com/StefanTerdell/zod-to-json-schema
+https://github.com/anatine/zod-plugins/tree/main/packages/zod-openapi
 
 Scheduled events, both in creation of ruleset definition and using a runtime function
 A scheduled event is a table in the catalog that has a start date and an interval (and maybe an occurrence count) and an action name to run

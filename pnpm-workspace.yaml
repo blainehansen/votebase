@@ -1,7 +1,9 @@
 packages:
-  - frontend
-  - rulesets
+- frontend
+- rulesets
+
 catalog: null
+
 onlyBuiltDependencies:
-  - '@parcel/watcher'
-  - esbuild
+- '@parcel/watcher'
+- esbuild
