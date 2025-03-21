@@ -73,10 +73,19 @@ deno_core::extension!(
 	votebase,
 	ops = [
 		op_fetch,
-		op_set_timeout,
+		// op_set_timeout,
 		op_sql_execute_many,
 
 		op_register_fn,
+
+		op_register_recurring_action,
+		op_schedule_recurring_action,
+		op_schedule_action,
+		op_unschedule_action,
+		op_enroll_member,
+		op_remove_member_by_email,
+		op_remove_member_by_uuid,
+
 		op_propose_self_replacement,
 	],
 );
@@ -128,16 +137,18 @@ async fn op_fetch(
 	Ok(body)
 }
 
-#[deno_core::op2(async)]
-async fn op_set_timeout(
-	state: Rc<RefCell<OpState>>,
-	delay: f64
-) -> Result<(), deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
+// #[deno_core::op2(async)]
+// async fn op_set_timeout(
+// 	state: Rc<RefCell<OpState>>,
+// 	delay: f64
+// ) -> Result<(), deno_error::JsErrorBox> {
+// 	demand_external_allowed(state.as_ref())?;
+// 	// TODO pretty important to limit these timeouts
+// 	// perhaps don't even allow this? all asynchrony in votebase should occur through scheduled events?
 
-	tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-	Ok(())
-}
+// 	tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
+// 	Ok(())
+// }
 
 
 const ERR_EXTERNAL_NOT_ALLOWED: &'static str = "runtime functions that interact with timers or the outside world (such as database or http operations) aren't allowed outside the context of an action or view";

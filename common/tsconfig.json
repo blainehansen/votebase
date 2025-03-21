@@ -4,10 +4,7 @@
 	"compilerOptions": {
 		"composite": true,
 		"baseUrl": ".",
-		"types": ["../common/src/runtime/runtime.ts"],
-		"paths": {
-			"votebase": ["../common/src/runtime/runtime.ts"]
-		}
+		"lib": ["ES2024"]
 	},
 	"include": ["./**/*.ts"]
 }

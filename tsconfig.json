@@ -1,17 +1,9 @@
 {
 	"$schema": "https://json.schemastore.org/tsconfig",
-	"extends": "@tsconfig/node-lts",
-	"_version": "22.0.0",
-	"compilerOptions": {
-		"checkJs": true,
-		"isolatedModules": false,
-		"esModuleInterop": true,
-		"skipLibCheck": true,
-		"moduleResolution": "nodenext",
-		"lib": ["es2023", "DOM"]
-	},
+	"files": [],
 	"references": [
 		{ "path": "./frontend" },
-		{ "path": "./rulesets" }
+		{ "path": "./rulesets" },
+		{ "path": "./common" },
 	]
 }

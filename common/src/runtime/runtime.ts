@@ -11,82 +11,60 @@ export type CandidateSelfReplacement = {
 	db_migration: string,
 }
 
-export type CandidateRuleset = {
-	code: string,
-	db_schema: string,
-	db_migration: string,
-}
-
-const { core } = globalThis.Deno as unknown as { core: {
+const { core } = (globalThis as any).Deno as { core: {
 	print: (message: string, is_error: boolean) => void,
 	ops: {
 		op_fetch: (url: string) => Promise<string>,
-		op_register_fn: (name: string, isAction: boolean, func: (arg: unknown) => Promise<string | void>) => void,
-		op_set_timeout: (delay: number | undefined) => Promise<void>,
+		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T) => Promise<string | void>) => void,
+		// TODO need to figure out what the necessary rust interfact is
+		op_register_recurring_action: () => void,
+		op_schedule_recurring_action: () => Promise<string>,
+		op_schedule_action: () => Promise<string>,
+		op_unschedule_action: (uuid: string) => Promise<void>,
+
+		op_enroll_member: (email: string) => Promise<string>,
+		op_remove_member_by_email: (email: string) => Promise<void>,
+		op_remove_member_by_uuid: (uuid: string) => Promise<void>,
+
+		// op_set_timeout: (delay: number | undefined) => Promise<void>,
 		op_propose_self_replacement: (candidate: CandidateSelfReplacement) => Promise<string>,
 	},
 } }
+delete (globalThis as any).Deno
 
-export type FnAction<A> = { isAction: true, func: (arg: A) => Promise<string | void> }
-export type FnView<Q> = { isAction: false, func: (query: Q) => Promise<string> }
+export type FnAction<A> = Readonly<{ name: string, isAction: true, func: (arg: A) => Promise<string | void> }>
+export type FnView<Q> = Readonly<{ name: string, isAction: false, func: (query: Q) => Promise<string> }>
 
-export type Fn<T> =
-	| FnAction<T>
-	| FnView<T>
+export type Fn<T> = FnAction<T> | FnView<T>
 
-type BlankFns = { [key: string]: Fn<unknown> }
+export type Hour = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23
 
-type NullActionsOf<Fns extends BlankFns> =
-	{ [K in keyof Fns as Fns[K] extends FnAction<null> ? K : never]: K }
-
-export type RecurringEvent<Fns extends BlankFns> = {
+export type RecurringAction = {
+	description: string,
 	start: Date,
-	// hour?: 1 | 2,
+	hour: Hour,
 	frequencyGranularity: 'day' | 'week' | 'month' | 'year',
 	frequencyMultiplier: number,
-	callAction: keyof NullActionsOf<Fns>,
+	callAction: FnAction<null>,
 }
 
-// votebase.Action()
-
-	// {
-	// 		return { isAction: true, func }
-	// 	}
-
 declare global {
-
-	// function fetch(): void
-
-	// function setTimeout(callback: () => unknown): Promise<string>
-
 	namespace votebase {
-		// TODO fetch should go on the global namespace
-		function fetch(url: string): Promise<string>
+		// schema: z.ZodSchema<Arg>,
+		function Action<Arg>(name: string, func: (arg: Arg) => Promise<string | void>): FnAction<Arg>
+		// schema: z.ZodSchema<Query>,
+		function View<Query>(name: string, func: (query: Query) => Promise<string>): FnView<Query>
 
+		function RecurringAction(definition: RecurringAction): void
 
-		function Action<Arg>(name: string, func: (arg: Arg) => Promise<string | void>): Fn<Arg>
-		function View<Query>(name: string, func: (query: Query) => Promise<string>): Fn<Query>
-
-		// TODO this would be a dramatic departure from how you're doing things now
-		// it's much harder to validate from the rust side?
-		// maybe have Action be the registrar *and* it returns an object that can be reused
-		function defineRuleset<Fns extends BlankFns>(fns: Fns, recurringEvents: RecurringEvent<Fns>): void
-
-		function registerAction(name: string, func: (arg: unknown) => Promise<string | void>): void
-		function registerView(name: string, func: (query: unknown) => Promise<string>): void
-		// function registerAction<Arg>(name: string, schema: z.ZodSchema<Arg>, func: (arg: Arg) => Promise<string | void>): void
-		// function registerView<Query>(name: string, schema: z.ZodSchema<Query>, func: (query: Query) => Promise<string>): void
-
-		// this is only allowed at the top level, intended to be similar to registerAction/View?
-		// TODO this should require a well-typed FnAction<null>, which can only be created by the registration function
-		function registerRecurringEvent(): void
-
-		function scheduleEvent(at: Date, ): void
-		function unscheduleEvent(): void
+		function scheduleRecurringAction(definition: RecurringAction): Promise<{ uuid: string }>
+		function scheduleAction<Arg>(at: Date, action: FnAction<Arg>, arg: Arg): Promise<{ uuid: string }>
+		function unscheduleAction(uuid: string): Promise<void>
 
 		// TODO right now there's only *capability* for a single ruleset, so would it make sense for this to just add it to root no matter what?
-		function enrollMember(email: string): Promise<Result<{ uuid: string }>>
-		function removeMember(memberUuid: string): Promise<Result<void>>
+		function enrollMember(email: string): Promise<{ uuid: string }>
+		function removeMemberByEmail(email: string): Promise<void>
+		function removeMemberByUuid(uuid: string): Promise<void>
 
 		// function addMemberToRuleset(memberUuid: string, rulesetFullPath: string): Promise<Result<void>>
 		// function removeMemberFromRuleset(memberUuid: string, rulesetFullPath: string): Promise<Result<void>>
@@ -96,49 +74,93 @@ declare global {
 
 		// function proposeChildRuleset(): Promise<void>
 		// function instituteChildRuleset(): Promise<void>
-
-		// function scheduleAction(at: Date, actionName: string, arg: unknown): Promise<string>
-		// function cancelAction(uuid: string): Promise<void>
 	}
 }
+globalThis.votebase = {
+	// registerAction(name, schema, func) {
+	Action<Arg>(name: string, func: (arg: Arg) => Promise<string | void>) {
+		// const jsonSchema = zodToJsonSchema(schema)
+		const isAction = true
+		// core.ops.op_register_fn(name, jsonSchema, isAction, func)
+		core.ops.op_register_fn(name, isAction, func)
+		return { name, isAction, func }
+	},
+	// registerView(name, schema, func) {
+	View<Query>(name: string, func: (query: Query) => Promise<string>) {
+		// const jsonSchema = zodToJsonSchema(schema)
+		const isAction = false
+		// core.ops.op_register_fn(name, jsonSchema, isAction, func)
+		core.ops.op_register_fn(name, isAction, func)
+		return { name, isAction, func }
+	},
+	RecurringAction({ description, start, hour, frequencyGranularity, frequencyMultiplier, callAction }) {
+		core.ops.op_register_recurring_action(
+			description, start, hour, frequencyGranularity, frequencyMultiplier, callAction,
+		)
+	},
 
-// globalThis.votebase = {
-// 	fetch(url) {
-// 		return core.ops.op_fetch(url)
-// 	},
-// 	// registerAction(name, schema, func) {
-// 	registerAction(name, func) {
-// 		// const jsonSchema = zodToJsonSchema(schema)
-// 		// core.ops.op_register_fn(name, jsonSchema, true, func)
-// 		core.ops.op_register_fn(name, true, func)
-// 	},
-// 	// registerView(name, schema, func) {
-// 	registerView(name, func) {
-// 		// const jsonSchema = zodToJsonSchema(schema)
-// 		// core.ops.op_register_fn(name, jsonSchema, false, func)
-// 		core.ops.op_register_fn(name, false, func)
-// 	},
-// 	proposeSelfReplacement(candidate) {
-// 		return core.ops.op_propose_self_replacement(candidate)
-// 	},
+	async scheduleRecurringAction({ description, start, hour, frequencyGranularity, frequencyMultiplier, callAction }) {
+		const uuid = await core.ops.op_schedule_recurring_action(
+			description, start, hour, frequencyGranularity, frequencyMultiplier, callAction,
+		)
+		return { uuid }
+	},
+	async scheduleAction(at, action, arg) {
+		const uuid = await core.ops.op_schedule_action(at, action.name, arg)
+		return { uuid }
+	},
+	unscheduleAction(uuid: string) {
+		return core.ops.op_unschedule_action(uuid)
+	},
+
+	async enrollMember(email: string) {
+		const uuid = await core.ops.op_enroll_member(email)
+		return { uuid }
+	},
+	removeMemberByEmail(email) {
+		return core.ops.op_remove_member_by_email(email)
+	},
+	removeMemberByUuid(uuid) {
+		return core.ops.op_remove_member_by_uuid(uuid)
+	},
+
+	proposeSelfReplacement(candidate) {
+		return core.ops.op_propose_self_replacement(candidate)
+	},
+}
+
+declare global {
+	function fetch(url: string): Promise<string>
+}
+globalThis.fetch = function fetch(url) {
+	return core.ops.op_fetch(url)
+}
+
+
+// declare global {
+// 	function setTimeout(callback: () => unknown): Promise<string>
 // }
-
 // globalThis.setTimeout = (callback, delay) => {
 // 	core.ops.op_set_timeout(delay).then(callback)
 // 	return 0
 // }
 
 
-// function argsToMessage(...args: unknown[]) {
-// 	return args.map(arg => JSON.stringify(arg)).join(" ")
-// }
+declare global {
+	namespace console {
+		function log(...args: unknown[]): void
+		function error(...args: unknown[]): void
+	}
+}
+globalThis.console = {
+	log: (...args) => {
+		core.print(`[out]: ${argsToMessage(...args)}\n`, false)
+	},
+	error: (...args) => {
+		core.print(`[err]: ${argsToMessage(...args)}\n`, true)
+	},
+}
 
-// globalThis.console = {
-// 	...globalThis.console,
-// 	log: (...args: unknown[]) => {
-// 		core.print(`[out]: ${argsToMessage(...args)}\n`, false)
-// 	},
-// 	error: (...args: unknown[]) => {
-// 		core.print(`[err]: ${argsToMessage(...args)}\n`, true)
-// 	},
-// }
+function argsToMessage(...args: unknown[]) {
+	return args.map(arg => JSON.stringify(arg)).join(" ")
+}
