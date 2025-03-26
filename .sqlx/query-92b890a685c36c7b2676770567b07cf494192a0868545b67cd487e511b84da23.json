@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from votebase_catalog.member where true;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "92b890a685c36c7b2676770567b07cf494192a0868545b67cd487e511b84da23"
+}

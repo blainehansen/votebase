@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.dependencies]
-deno_core = "0.331.0"
+deno_core = "0.341.0"
 deno_error = "0.5.5"
 serde = { version = "*" }
 serde_json = { version = "1", default-features = false }

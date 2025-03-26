@@ -97,10 +97,10 @@ create table votebase_catalog.candidate_replacement_ruleset (
 -- );
 
 
--- create table votebase_catalog.member (
--- 	email text primary key,
--- 	display_name text not null
--- );
+create table votebase_catalog.member (
+	id uuid primary key default gen_random_uuid(),
+	email text not null unique
+);
 
 -- create table votebase_catalog.member_to_ruleset (
 -- 	member_id uuid not null references votebase_catalog.member(id),

@@ -22,10 +22,10 @@ or perhaps it makes more sense to do this at server startup? it checks to see if
   - X action route (without migration)
   - X ruleset replacement proposal (in runtime)
     - X ruleset migration checking
-  - ruleset replacement enaction
+  - X ruleset replacement enaction
     - X ruleset migrations
-    - action role
-    - view role
+    - X action role
+    - X view role
   - events
     - recurring declared in ruleset itself
     - one off
@@ -42,8 +42,8 @@ or perhaps it makes more sense to do this at server startup? it checks to see if
 - client site
   - nuxt static generated?
   - login/auth nonsense
-  - async list views
-  - async call and display view html (views are responsible for rendering controls to call actions)
+  - X async list views
+  - X async call and display view html (views are responsible for rendering controls to call actions)
 - could release?
 
 - parent and child rulesets, but without any communication or data sharing

@@ -78,10 +78,10 @@ deno_core::extension!(
 
 		op_register_fn,
 
-		op_register_recurring_action,
-		op_schedule_recurring_action,
-		op_schedule_action,
-		op_unschedule_action,
+		// op_register_recurring_action,
+		// op_schedule_recurring_action,
+		// op_schedule_action,
+		// op_unschedule_action,
 		op_enroll_member,
 		op_remove_member_by_email,
 		op_remove_member_by_uuid,
@@ -204,6 +204,59 @@ fn op_register_fn(
 			Err(deno_error::JsErrorBox::generic(format!("already a view or action with name {}", &fn_name)))
 		}
 	}
+}
+
+#[deno_core::op2(async)]
+#[string]
+async fn op_enroll_member(
+	state: Rc<RefCell<OpState>>,
+	#[string] email: String,
+) -> Result<String, deno_error::JsErrorBox> {
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
+	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+
+	let id = sqlx::query!(
+		r#"insert into votebase_catalog.member (email) values ($1) returning id;"#,
+		email,
+	).fetch_one(server_role_pool).await.map_err(js_err)?.id;
+
+	Ok(id.to_string())
+}
+
+#[deno_core::op2(async)]
+async fn op_remove_member_by_email(
+	state: Rc<RefCell<OpState>>,
+	#[string] email: String,
+) -> Result<(), deno_error::JsErrorBox> {
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
+	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+
+	sqlx::query!(
+		r#"delete from votebase_catalog.member where email = $1"#,
+		email,
+	).execute(server_role_pool).await.map_err(js_err)?;
+
+	Ok(())
+}
+#[deno_core::op2(async)]
+async fn op_remove_member_by_uuid(
+	state: Rc<RefCell<OpState>>,
+	#[string] uuid: String,
+) -> Result<(), deno_error::JsErrorBox> {
+	demand_external_allowed(state.as_ref())?;
+	let uuid: sqlx::types::Uuid = uuid.parse().map_err(js_err)?;
+
+	let state = state.as_ref().borrow();
+	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+
+	sqlx::query!(
+		r#"delete from votebase_catalog.member where id = $1"#,
+		uuid,
+	).execute(server_role_pool).await.map_err(js_err)?;
+
+	Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]

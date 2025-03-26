@@ -16,7 +16,7 @@ const { core } = (globalThis as any).Deno as { core: {
 	ops: {
 		op_fetch: (url: string) => Promise<string>,
 		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T) => Promise<string | void>) => void,
-		// TODO need to figure out what the necessary rust interfact is
+		// TODO need to figure out what the necessary rust interface is
 		op_register_recurring_action: () => void,
 		op_schedule_recurring_action: () => Promise<string>,
 		op_schedule_action: () => Promise<string>,
@@ -30,8 +30,8 @@ const { core } = (globalThis as any).Deno as { core: {
 		op_propose_self_replacement: (candidate: CandidateSelfReplacement) => Promise<string>,
 	},
 } }
-delete (globalThis as any).Deno
 
+// make these have truly private members? or add some special symbol?
 export type FnAction<A> = Readonly<{ name: string, isAction: true, func: (arg: A) => Promise<string | void> }>
 export type FnView<Q> = Readonly<{ name: string, isAction: false, func: (query: Q) => Promise<string> }>
 
@@ -55,14 +55,14 @@ declare global {
 		// schema: z.ZodSchema<Query>,
 		function View<Query>(name: string, func: (query: Query) => Promise<string>): FnView<Query>
 
-		function RecurringAction(definition: RecurringAction): void
+		// function RecurringAction(definition: RecurringAction): void
 
-		function scheduleRecurringAction(definition: RecurringAction): Promise<{ uuid: string }>
-		function scheduleAction<Arg>(at: Date, action: FnAction<Arg>, arg: Arg): Promise<{ uuid: string }>
-		function unscheduleAction(uuid: string): Promise<void>
+		// function scheduleRecurringAction(definition: RecurringAction): Promise<{ uuid: string }>
+		// function scheduleAction<Arg>(at: Date, action: FnAction<Arg>, arg: Arg): Promise<{ uuid: string }>
+		// function unscheduleAction(uuid: string): Promise<void>
 
 		// TODO right now there's only *capability* for a single ruleset, so would it make sense for this to just add it to root no matter what?
-		function enrollMember(email: string): Promise<{ uuid: string }>
+		function enrollMember(email: string): Promise<string>
 		function removeMemberByEmail(email: string): Promise<void>
 		function removeMemberByUuid(uuid: string): Promise<void>
 
@@ -93,29 +93,28 @@ globalThis.votebase = {
 		core.ops.op_register_fn(name, isAction, func)
 		return { name, isAction, func }
 	},
-	RecurringAction({ description, start, hour, frequencyGranularity, frequencyMultiplier, callAction }) {
-		core.ops.op_register_recurring_action(
-			description, start, hour, frequencyGranularity, frequencyMultiplier, callAction,
-		)
-	},
+	// RecurringAction({ description, start, hour, frequencyGranularity, frequencyMultiplier, callAction }) {
+	// 	core.ops.op_register_recurring_action(
+	// 		description, start, hour, frequencyGranularity, frequencyMultiplier, callAction,
+	// 	)
+	// },
 
-	async scheduleRecurringAction({ description, start, hour, frequencyGranularity, frequencyMultiplier, callAction }) {
-		const uuid = await core.ops.op_schedule_recurring_action(
-			description, start, hour, frequencyGranularity, frequencyMultiplier, callAction,
-		)
-		return { uuid }
-	},
-	async scheduleAction(at, action, arg) {
-		const uuid = await core.ops.op_schedule_action(at, action.name, arg)
-		return { uuid }
-	},
-	unscheduleAction(uuid: string) {
-		return core.ops.op_unschedule_action(uuid)
-	},
+	// async scheduleRecurringAction({ description, start, hour, frequencyGranularity, frequencyMultiplier, callAction }) {
+	// 	const uuid = await core.ops.op_schedule_recurring_action(
+	// 		description, start, hour, frequencyGranularity, frequencyMultiplier, callAction,
+	// 	)
+	// 	return { uuid }
+	// },
+	// async scheduleAction(at, action, arg) {
+	// 	const uuid = await core.ops.op_schedule_action(at, action.name, arg)
+	// 	return { uuid }
+	// },
+	// unscheduleAction(uuid: string) {
+	// 	return core.ops.op_unschedule_action(uuid)
+	// },
 
-	async enrollMember(email: string) {
-		const uuid = await core.ops.op_enroll_member(email)
-		return { uuid }
+	enrollMember(email: string) {
+		return core.ops.op_enroll_member(email)
 	},
 	removeMemberByEmail(email) {
 		return core.ops.op_remove_member_by_email(email)

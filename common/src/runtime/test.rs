@@ -29,12 +29,12 @@ async fn test_propose_self_replacement() {
 
 	run_function::<()>(
 		current_full_path.to_string(), r#"
-			votebase.registerAction("test_action", async () => {
+			votebase.Action("test_action", async () => {
 				const u = await votebase.proposeSelfReplacement({
 					code: `
-						votebase.registerAction("action1", () => {});
-						votebase.registerAction("action2", () => {});
-						votebase.registerView("view1", () => {});
+						votebase.Action("action1", () => {});
+						votebase.Action("action2", () => {});
+						votebase.View("view1", () => {});
 					`,
 					db_schema: "create table stuff (id uuid primary key, color text not null);",
 					db_migration: "alter table stuff add column color text not null;",
@@ -55,9 +55,9 @@ async fn test_propose_self_replacement() {
 	assert_eq!(result.actions, &["action1", "action2"]);
 	assert_eq!(result.views, &["view1"]);
 	assert_eq!(boil_string(&result.code), boil_string(r#"
-		votebase.registerAction("action1", () => {});
-		votebase.registerAction("action2", () => {});
-		votebase.registerView("view1", () => {});
+		votebase.Action("action1", () => {});
+		votebase.Action("action2", () => {});
+		votebase.View("view1", () => {});
 	"#));
 	assert_eq!(result.db_schema, "create table stuff (id uuid primary key, color text not null);");
 	assert_eq!(result.db_migration, "alter table stuff add column color text not null;");
@@ -65,7 +65,7 @@ async fn test_propose_self_replacement() {
 
 	let result = run_function::<()>(
 		current_full_path.to_string(), r#"
-			votebase.registerAction("test_action", async () => {
+			votebase.Action("test_action", async () => {
 				await votebase.proposeSelfReplacement({
 					code: '',
 					db_schema: "create table stuff (id uuid primary key, color text not null);",
@@ -84,7 +84,7 @@ async fn run_function_basics() {
 		"".into(),
 		r#"
 			await Deno.core.ops.op_sql_execute_many("select 1")
-			votebase.registerAction("test_action", async () => {
+			votebase.Action("test_action", async () => {
 				return true
 			})
 		"#.to_string(),
@@ -94,7 +94,7 @@ async fn run_function_basics() {
 
 	let result = run_function::<u32>(
 		"".into(), r#"
-			votebase.registerAction("test_action", async () => {
+			votebase.Action("test_action", async () => {
 				return await Deno.core.ops.op_sql_execute_many("select 1")
 			})
 		"#.to_string(),
@@ -105,7 +105,7 @@ async fn run_function_basics() {
 	let result = run_function::<u32>(
 		"".into(), r#"
 			await Deno.core.ops.op_sql_execute_many("select 1")
-			votebase.registerView("test_view", async () => {
+			votebase.View("test_view", async () => {
 				return true
 			})
 		"#.to_string(),
@@ -115,11 +115,38 @@ async fn run_function_basics() {
 
 	let result = run_function::<u32>(
 		"".into(), r#"
-			votebase.registerView("test_view", async () => {
+			votebase.View("test_view", async () => {
 				return await Deno.core.ops.op_sql_execute_many("select 1")
 			})
 		"#.to_string(),
 		"test_view", serde_json::json!(null), FnType::View, opt(), opt(), pool.clone(),
 	).await.unwrap();
 	assert_eq!(result, 1);
+
+	sqlx::query!(r#"delete from votebase_catalog.member where true;"#).execute(&pool).await.unwrap();
+	let luke = run_function::<String>(
+		"".into(), r#"
+			votebase.Action("test_action", async () => {
+				const [luke, leia, vader] = await Promise.all([
+					votebase.enrollMember("luke@rebels.org"),
+					votebase.enrollMember("leia@rebels.org"),
+					votebase.enrollMember("vader@rebels.org"),
+				])
+				if (typeof luke !== 'string' || luke.length !== 36) throw new Error(`enrollMember didn't return uuid: ${luke}`)
+				if (typeof leia !== 'string' || leia.length !== 36) throw new Error(`enrollMember didn't return uuid: ${leia}`)
+				if (typeof vader !== 'string' || vader.length !== 36) throw new Error(`enrollMember didn't return uuid: ${vader}`)
+
+				await Promise.all([
+					votebase.removeMemberByEmail("vader@rebels.org"),
+					votebase.removeMemberByUuid(leia),
+				])
+
+				return luke
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),
+	).await.unwrap();
+	let result = sqlx::query!(r#"select id, email from votebase_catalog.member"#).fetch_one(&pool).await.unwrap();
+	assert_eq!(result.id, luke.parse::<sqlx::types::Uuid>().unwrap());
+	assert_eq!(result.email, "luke@rebels.org");
 }
