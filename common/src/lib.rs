@@ -30,6 +30,6 @@ pub fn format_ruleset_schema(full_path: &str) -> String {
 	format!("ruleset:{full_path}")
 }
 
-pub fn format_ruleset_role(full_path: &str, fn_type: RoleType) -> String {
-	format!("role:{full_path}|{fn_type}")
+pub fn format_ruleset_role(full_path: &str, role_type: RoleType) -> String {
+	format!("role:{full_path}|{role_type}")
 }

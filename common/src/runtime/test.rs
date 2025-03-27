@@ -149,4 +149,47 @@ async fn run_function_basics() {
 	let result = sqlx::query!(r#"select id, email from votebase_catalog.member"#).fetch_one(&pool).await.unwrap();
 	assert_eq!(result.id, luke.parse::<sqlx::types::Uuid>().unwrap());
 	assert_eq!(result.email, "luke@rebels.org");
+
+	sqlx::raw_sql(r#"
+		delete from votebase_catalog.detached_scheduled_action where true;
+		delete from votebase_catalog.ruleset where true;
+		insert into votebase_catalog.ruleset (
+			parent_full_path, "name", actions, views, code, db_schema
+		) values (
+			null, 'root', ARRAY[]::text[], ARRAY[]::text[], '', ''
+		) returning full_path, migrator_pass, action_pass, view_pass;
+	"#).execute(&pool).await.unwrap();
+	let uuid = run_function::<String>(
+		"root".into(), r#"
+			const a = votebase.Action("call_action", async () => {
+				// do nothing
+			})
+
+			votebase.Action("test_action", async () => {
+				const d = new Date()
+				d.setDate(d.getDate() + 1)
+
+				const [sch1, sch2] = await Promise.all([
+					votebase.scheduleAction("call_action with 1", d, a, 1),
+					votebase.scheduleAction("call_action with 2", d, a, 2),
+				])
+				if (typeof sch1 !== 'string' || sch1.length !== 36) throw new Error(`scheduleAction didn't return uuid: ${sch1}`)
+				if (typeof sch2 !== 'string' || sch2.length !== 36) throw new Error(`scheduleAction didn't return uuid: ${sch2}`)
+
+				await votebase.unscheduleAction(sch2)
+				return sch1
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),
+	).await.unwrap();
+	let result = sqlx::query!(r#"
+		select id, description, scheduled_time, full_path, action_name, action_arg
+		from votebase_catalog.detached_scheduled_action
+	"#).fetch_one(&pool).await.unwrap();
+	assert_eq!(result.id, uuid.parse::<sqlx::types::Uuid>().unwrap());
+	assert_eq!(result.description, "call_action with 1");
+	assert_eq!(result.scheduled_time.date_naive(), chrono::Utc::now().date_naive() + ::chrono::Days::new(1));
+	assert_eq!(result.full_path, "root");
+	assert_eq!(result.action_name, "call_action");
+	assert_eq!(result.action_arg, serde_json::json!(1));
 }

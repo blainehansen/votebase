@@ -12,7 +12,9 @@ deno_core = "0.341.0"
 deno_error = "0.5.5"
 serde = { version = "*" }
 serde_json = { version = "1", default-features = false }
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "macros", "uuid"] }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "macros", "uuid", "chrono"] }
+uuid = { version = "*", features = ["serde", "v4"] }
+chrono = { version = "*", features = ["serde"] }
 tokio = { version = "1.40", features = ["full"] }
 log = "0.4"
 

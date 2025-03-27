@@ -3,7 +3,7 @@ mod test;
 
 use std::{cell::RefCell, rc::Rc};
 use deno_core::{v8, OpState};
-use sqlx::Connection;
+use sqlx::{Connection, types::chrono};
 use crate::{PgOpt, FnType, RoleType, format_ruleset_schema, format_ruleset_role};
 
 pub type DenoError = deno_core::error::AnyError;
@@ -80,8 +80,8 @@ deno_core::extension!(
 
 		// op_register_recurring_action,
 		// op_schedule_recurring_action,
-		// op_schedule_action,
-		// op_unschedule_action,
+		op_schedule_action,
+		op_unschedule_action,
 		op_enroll_member,
 		op_remove_member_by_email,
 		op_remove_member_by_uuid,
@@ -208,6 +208,47 @@ fn op_register_fn(
 
 #[deno_core::op2(async)]
 #[string]
+async fn op_schedule_action(
+	state: Rc<RefCell<OpState>>,
+	#[string] description: String,
+	#[serde] scheduled_time: chrono::DateTime<chrono::Utc>,
+	#[string] action_name: String,
+	#[serde] action_arg: serde_json::Value,
+) -> Result<String, deno_error::JsErrorBox> {
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
+	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
+
+	let id = sqlx::query!(r#"
+		insert into votebase_catalog.detached_scheduled_action (description, scheduled_time, full_path, action_name, action_arg)
+		values ($1, $2, $3, $4, $5)
+		returning id;
+	"#, description, scheduled_time, current_full_path, action_name, action_arg).fetch_one(server_role_pool).await.map_err(js_err)?.id;
+
+	Ok(id.to_string())
+}
+
+#[deno_core::op2(async)]
+#[string]
+async fn op_unschedule_action(
+	state: Rc<RefCell<OpState>>,
+	#[serde] scheduled_action_uuid: sqlx::types::Uuid,
+) -> Result<(), deno_error::JsErrorBox> {
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
+	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+
+	sqlx::query!(r#"
+		delete from votebase_catalog.detached_scheduled_action
+		where id = $1;
+	"#, scheduled_action_uuid).execute(server_role_pool).await.map_err(js_err)?;
+
+	Ok(())
+}
+
+#[deno_core::op2(async)]
+#[string]
 async fn op_enroll_member(
 	state: Rc<RefCell<OpState>>,
 	#[string] email: String,
@@ -243,17 +284,15 @@ async fn op_remove_member_by_email(
 #[deno_core::op2(async)]
 async fn op_remove_member_by_uuid(
 	state: Rc<RefCell<OpState>>,
-	#[string] uuid: String,
+	#[serde] member_uuid: sqlx::types::Uuid,
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
-	let uuid: sqlx::types::Uuid = uuid.parse().map_err(js_err)?;
-
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 
 	sqlx::query!(
 		r#"delete from votebase_catalog.member where id = $1"#,
-		uuid,
+		member_uuid,
 	).execute(server_role_pool).await.map_err(js_err)?;
 
 	Ok(())
@@ -524,6 +563,7 @@ pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	runtime.set_pg_pool(server_role_pool);
 	runtime.set_current_full_path(current_full_path);
 
+	// TODO also pass user_id here, maybe with some other context in the future
 	let call = runtime.js_runtime.call_with_args(function, &[function_arg]);
 	let call_return_value = runtime.js_runtime
 		.with_event_loop_promise(call, deno_core::PollEventLoopOptions::default())

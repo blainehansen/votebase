@@ -9,6 +9,8 @@ deno_error = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 reqwest = "0.12"

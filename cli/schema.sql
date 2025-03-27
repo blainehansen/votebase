@@ -40,7 +40,7 @@ create table votebase_catalog.ruleset (
 	end) stored,
 		-- constraint well_formed_path check (full_path = votebase_catalog.make_full_path(parent_full_path, "name"))
 		-- default votebase_catalog.make_full_path(parent_full_path, "name"),
-	parent_full_path text references votebase_catalog.ruleset(full_path),
+	parent_full_path text references votebase_catalog.ruleset(full_path) on delete cascade,
 	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
 
 	actions text[] not null,
@@ -56,7 +56,7 @@ create table votebase_catalog.ruleset (
 );
 
 -- create table votebase_catalog.ruleset_replacements (
--- 	full_path text not null references votebase_catalog.ruleset(full_path),
+-- 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 
 -- 	old_actions text[] not null,
 -- 	old_views text[] not null,
@@ -72,7 +72,7 @@ where parent_full_path is null;
 
 create table votebase_catalog.candidate_replacement_ruleset (
 	id uuid primary key default gen_random_uuid(),
-	candidate_for text not null references votebase_catalog.ruleset(full_path),
+	candidate_for text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 
 	actions text[] not null,
 	views text[] not null,
@@ -85,7 +85,7 @@ create table votebase_catalog.candidate_replacement_ruleset (
 
 -- create table votebase_catalog.candidate_child_ruleset (
 -- 	id uuid primary key default gen_random_uuid(),
--- 	candidate_for text not null references votebase_catalog.ruleset(full_path),
+-- 	candidate_for text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 
 -- 	actions text[] not null,
 -- 	views text[] not null,
@@ -96,17 +96,6 @@ create table votebase_catalog.candidate_replacement_ruleset (
 -- 	db_migration text not null
 -- );
 
-
-create table votebase_catalog.member (
-	id uuid primary key default gen_random_uuid(),
-	email text not null unique
-);
-
--- create table votebase_catalog.member_to_ruleset (
--- 	member_id uuid not null references votebase_catalog.member(id),
--- 	ruleset_full_path text not null references votebase_catalog.ruleset(full_path),
--- 	primary key (member_id, ruleset_full_path)
--- );
 
 create or replace function votebase_catalog.insert_candidate_replacement(
 	p_candidate_for text, p_actions text[], p_views text[],
@@ -163,3 +152,41 @@ begin
 	return candidate.db_migration;
 end;
 $$ language plpgsql;
+
+
+create table votebase_catalog.member (
+	id uuid primary key default gen_random_uuid(),
+	email text not null unique
+);
+
+-- create table votebase_catalog.member_to_ruleset (
+-- 	member_id uuid not null references votebase_catalog.member(id) on delete cascade,
+-- 	ruleset_full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
+-- 	primary key (member_id, ruleset_full_path)
+-- );
+
+
+create table votebase_catalog.detached_scheduled_action (
+	id uuid primary key default gen_random_uuid(),
+	description text not null,
+	scheduled_time timestamptz not null,
+	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
+	action_name text not null,
+	-- it makes fine sense to allow scheduled actions to supply an argument
+	action_arg json not null,
+	executing bool not null default false
+);
+
+create or replace function votebase_catalog.attempt_lock_detached_scheduled_action(scheduled_action_uuid uuid) returns bool as $$
+	with updated as (
+	  update votebase_catalog.detached_scheduled_action
+	  set executing = true
+	  where executing = false and id = scheduled_action_uuid
+	  returning true as update_performed
+	)
+	select coalesce((select update_performed from updated limit 1), false);
+$$ language sql;
+
+-- create table votebase_catalog.detached_recurring_action ();
+
+-- current_timestamp

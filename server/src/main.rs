@@ -133,10 +133,10 @@ async fn get_rulesets(
 
 #[actix_web::get("/ruleset-views/{ruleset_full_path}")]
 async fn get_ruleset_views(
-	path: web::Path<String>,
+	ruleset_full_path: web::Path<String>,
 	pool: web::Data<PgPool>,
 ) -> Result<web::Json<Vec<String>>, VotebaseError> {
-	let ruleset_full_path = path.into_inner();
+	let ruleset_full_path = ruleset_full_path.into_inner();
 	let pool = pool.get_ref();
 
 	let r = sqlx::query!(r#"
@@ -160,10 +160,10 @@ struct RulesetDetail {
 
 #[actix_web::get("/ruleset-detail/{ruleset_full_path}")]
 async fn get_ruleset_detail(
-	path: web::Path<String>,
+	ruleset_full_path: web::Path<String>,
 	pool: web::Data<PgPool>,
 ) -> Result<web::Json<RulesetDetail>, VotebaseError> {
-	let ruleset_full_path = path.into_inner();
+	let ruleset_full_path = ruleset_full_path.into_inner();
 	let pool = pool.get_ref();
 
 	let ruleset = sqlx::query_as!(RulesetDetail, r#"

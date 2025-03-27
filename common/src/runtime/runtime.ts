@@ -11,15 +11,19 @@ export type CandidateSelfReplacement = {
 	db_migration: string,
 }
 
+export type JsonPrimitive = string | number | boolean | null
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
+
 const { core } = (globalThis as any).Deno as { core: {
 	print: (message: string, is_error: boolean) => void,
 	ops: {
 		op_fetch: (url: string) => Promise<string>,
+		// TODO add userId: string arg to all the actions/views
 		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T) => Promise<string | void>) => void,
 		// TODO need to figure out what the necessary rust interface is
 		op_register_recurring_action: () => void,
 		op_schedule_recurring_action: () => Promise<string>,
-		op_schedule_action: () => Promise<string>,
+		op_schedule_action: (description: string, scheduled_time: string, action_name: string, action_arg: JsonValue) => Promise<string>,
 		op_unschedule_action: (uuid: string) => Promise<void>,
 
 		op_enroll_member: (email: string) => Promise<string>,
@@ -32,10 +36,10 @@ const { core } = (globalThis as any).Deno as { core: {
 } }
 
 // make these have truly private members? or add some special symbol?
-export type FnAction<A> = Readonly<{ name: string, isAction: true, func: (arg: A) => Promise<string | void> }>
-export type FnView<Q> = Readonly<{ name: string, isAction: false, func: (query: Q) => Promise<string> }>
+export type FnAction<A extends JsonValue> = Readonly<{ name: string, isAction: true, func: (arg: A) => Promise<string | void> }>
+export type FnView<Q extends JsonValue> = Readonly<{ name: string, isAction: false, func: (query: Q) => Promise<string> }>
 
-export type Fn<T> = FnAction<T> | FnView<T>
+export type Fn<T extends JsonValue> = FnAction<T> | FnView<T>
 
 export type Hour = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23
 
@@ -51,15 +55,15 @@ export type RecurringAction = {
 declare global {
 	namespace votebase {
 		// schema: z.ZodSchema<Arg>,
-		function Action<Arg>(name: string, func: (arg: Arg) => Promise<string | void>): FnAction<Arg>
+		function Action<Arg extends JsonValue>(name: string, func: (arg: Arg) => Promise<string | void>): FnAction<Arg>
 		// schema: z.ZodSchema<Query>,
-		function View<Query>(name: string, func: (query: Query) => Promise<string>): FnView<Query>
+		function View<Query extends JsonValue>(name: string, func: (query: Query) => Promise<string>): FnView<Query>
 
 		// function RecurringAction(definition: RecurringAction): void
 
 		// function scheduleRecurringAction(definition: RecurringAction): Promise<{ uuid: string }>
-		// function scheduleAction<Arg>(at: Date, action: FnAction<Arg>, arg: Arg): Promise<{ uuid: string }>
-		// function unscheduleAction(uuid: string): Promise<void>
+		function scheduleAction<Arg extends JsonValue>(description: string, at: Date, action: FnAction<Arg>, arg: Arg): Promise<string>
+		function unscheduleAction(uuid: string): Promise<void>
 
 		// TODO right now there's only *capability* for a single ruleset, so would it make sense for this to just add it to root no matter what?
 		function enrollMember(email: string): Promise<string>
@@ -105,13 +109,13 @@ globalThis.votebase = {
 	// 	)
 	// 	return { uuid }
 	// },
-	// async scheduleAction(at, action, arg) {
-	// 	const uuid = await core.ops.op_schedule_action(at, action.name, arg)
-	// 	return { uuid }
-	// },
-	// unscheduleAction(uuid: string) {
-	// 	return core.ops.op_unschedule_action(uuid)
-	// },
+	scheduleAction<A extends JsonValue>(description: string, at: Date, action: FnAction<A>, arg: A) {
+		// TODO check that the date is in the future
+		return core.ops.op_schedule_action(description, at.toISOString(), action.name, arg)
+	},
+	unscheduleAction(uuid: string) {
+		return core.ops.op_unschedule_action(uuid)
+	},
 
 	enrollMember(email: string) {
 		return core.ops.op_enroll_member(email)
