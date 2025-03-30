@@ -1,5 +1,5 @@
 #[macro_use] extern crate log;
-use votebase_common::{runtime, FnType, RoleType, PgPool};
+use votebase_common::{runtime, PgPool};
 
 mod error;
 use error::VotebaseError;
@@ -47,6 +47,28 @@ async fn main() -> std::io::Result<()> {
 		// TODO am I sure about even setting this at all?
 		.max_connections(max_connections)
 		.connect_with(database_url).await.unwrap();
+
+	let queue_pool = pool.clone();
+	tokio::task::spawn(async move {
+		let result = sqlx::query!(r#"
+			select id, scheduled_time
+			from votebase_catalog.detached_scheduled_action;
+		"#).fetch_all(&queue_pool).await;
+
+		match result {
+			Err(e) => { error!("failed to fetch detached_scheduled_actions: {}", e) },
+			Ok(detached_scheduled_actions) => {
+				info!("queuing {} detached_scheduled_actions", detached_scheduled_actions.len());
+				let server_pg_opt = queue_pool.connect_options().as_ref().clone();
+				for scheduled_action in detached_scheduled_actions {
+					runtime::queue_scheduled_action(
+						queue_pool.clone(), server_pg_opt.clone(),
+						scheduled_action.id, scheduled_action.scheduled_time,
+					);
+				}
+			},
+		}
+	});
 
 	#[cfg(debug_assertions)]
 	let host = std::env::var("VOTEBASE_HOST").unwrap_or("0.0.0.0".to_string());
@@ -194,21 +216,10 @@ async fn execute_action(
 	", &fn_path.ruleset_full_path, &fn_path.fn_name)
 		.fetch_one(pool).await.map_err(|e| map_sqlx_not_found(e, &fn_path))?;
 
-	let action_role = votebase_common::format_ruleset_role(&fn_path.ruleset_full_path, RoleType::Action);
-	let action_role_url = server_pg_opt.clone().username(&action_role).password(&action.action_pass);
-	let migrator_role = votebase_common::format_ruleset_role(&fn_path.ruleset_full_path, RoleType::Migrator);
-	let migrator_role_url = server_pg_opt.clone().username(&migrator_role).password(&action.migrator_pass);
-
-	let new_ruleset_id = runtime::run_function::<Option<String>>(
-		fn_path.ruleset_full_path, action.code, &fn_path.fn_name, arg.into_inner(), FnType::Action,
-		action_role_url, server_pg_opt, pool.clone(),
+	runtime::run_action(
+		fn_path.ruleset_full_path, action.code, &fn_path.fn_name, &action.action_pass, &action.migrator_pass, arg.into_inner(),
+		server_pg_opt, pool,
 	).await?;
-
-	if let Some(new_ruleset_id) = new_ruleset_id {
-		let new_ruleset_id = new_ruleset_id.parse::<sqlx::types::Uuid>()?;
-		info!("apply_candidate {new_ruleset_id}");
-		runtime::replace_ruleset(pool, migrator_role_url, new_ruleset_id).await?;
-	}
 
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
 }
@@ -230,11 +241,9 @@ async fn execute_view(
 	", &fn_path.ruleset_full_path, &fn_path.fn_name)
 		.fetch_one(pool).await.map_err(|e| map_sqlx_not_found(e, &fn_path))?;
 
-	let view_role = votebase_common::format_ruleset_role(&fn_path.ruleset_full_path, RoleType::View);
-	let view_role_url = server_pg_opt.clone().username(&view_role).password(&view.pass);
-	let return_value: String = runtime::run_function(
-		fn_path.ruleset_full_path, view.code, &fn_path.fn_name, query.into_inner(), FnType::View,
-		view_role_url, server_pg_opt, pool.clone(),
+	let return_value = runtime::run_view(
+		fn_path.ruleset_full_path, view.code, &fn_path.fn_name, &view.pass, query.into_inner(),
+		server_pg_opt, pool,
 	).await?;
 	Ok(web::Html::new(return_value))
 }

@@ -55,6 +55,18 @@ create table votebase_catalog.ruleset (
 	db_schema text not null
 );
 
+-- create type fn_type as enum('Action', 'View');
+
+-- create table votebase_catalog.ruleset_fn (
+-- 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
+-- 	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
+-- 	primary key (full_path, "name"),
+-- 	"type" fn_type not null,
+-- 	input_schema jsonb not null
+-- 	-- trigger_on_slack bool not null default false,
+-- 	-- trigger_on_github bool not null default false,
+-- );
+
 -- create table votebase_catalog.ruleset_replacements (
 -- 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 
@@ -165,6 +177,21 @@ create table votebase_catalog.member (
 -- 	primary key (member_id, ruleset_full_path)
 -- );
 
+create type granularity_enum as enum('Day', 'Week', 'Month', 'Year');
+create type hour_enum as enum('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23')
+
+create table votebase_catalog.detached_recurring_action (
+	id uuid primary key default gen_random_uuid(),
+	description text not null,
+	"start" date not null,
+	"hour" hour_enum not null,
+	recurrence_granularity granularity_enum not null,
+	recurrence_multiplier smallint not null,
+	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
+	action_name text not null,
+	action_arg json not null,
+	executed_count int not null default 0
+);
 
 create table votebase_catalog.detached_scheduled_action (
 	id uuid primary key default gen_random_uuid(),
@@ -172,21 +199,6 @@ create table votebase_catalog.detached_scheduled_action (
 	scheduled_time timestamptz not null,
 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 	action_name text not null,
-	-- it makes fine sense to allow scheduled actions to supply an argument
 	action_arg json not null,
 	executing bool not null default false
 );
-
-create or replace function votebase_catalog.attempt_lock_detached_scheduled_action(scheduled_action_uuid uuid) returns bool as $$
-	with updated as (
-	  update votebase_catalog.detached_scheduled_action
-	  set executing = true
-	  where executing = false and id = scheduled_action_uuid
-	  returning true as update_performed
-	)
-	select coalesce((select update_performed from updated limit 1), false);
-$$ language sql;
-
--- create table votebase_catalog.detached_recurring_action ();
-
--- current_timestamp

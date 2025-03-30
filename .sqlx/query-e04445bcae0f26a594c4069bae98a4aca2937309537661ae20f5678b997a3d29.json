@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from votebase_catalog.detached_scheduled_action where id = $1;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e04445bcae0f26a594c4069bae98a4aca2937309537661ae20f5678b997a3d29"
+}

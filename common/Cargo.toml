@@ -16,6 +16,9 @@ log = { workspace = true }
 reqwest = "0.12"
 votebase_transpile = { path = "../transpile" }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
 [build-dependencies]
 deno_core = { workspace = true }
 votebase_transpile = { path = "../transpile" }

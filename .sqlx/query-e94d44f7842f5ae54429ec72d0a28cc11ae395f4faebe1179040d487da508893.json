@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n\t\twith updated as (\n\t\t\tupdate votebase_catalog.detached_scheduled_action\n\t\t\tset executing = true\n\t\t\twhere executing = false and id = $1\n\t\t\treturning description, scheduled_time, full_path, action_arg as arg\n\t\t)\n\t\tselect \"name\", code, action_pass, migrator_pass, updated.*\n\t\tfrom updated inner join votebase_catalog.ruleset as r\n\t\t\ton updated.full_path = r.full_path;\n\t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "action_pass",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "migrator_pass",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "scheduled_time",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "full_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "arg",
+        "type_info": "Json"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e94d44f7842f5ae54429ec72d0a28cc11ae395f4faebe1179040d487da508893"
+}

@@ -22,7 +22,9 @@ const { core } = (globalThis as any).Deno as { core: {
 		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T) => Promise<string | void>) => void,
 		// TODO need to figure out what the necessary rust interface is
 		op_register_recurring_action: () => void,
-		op_schedule_recurring_action: () => Promise<string>,
+		op_create_recurring_action: () => Promise<string>,
+		op_remove_recurring_action: (uuid: string) => Promise<void>,
+
 		op_schedule_action: (description: string, scheduled_time: string, action_name: string, action_arg: JsonValue) => Promise<string>,
 		op_unschedule_action: (uuid: string) => Promise<void>,
 
@@ -47,8 +49,8 @@ export type RecurringAction = {
 	description: string,
 	start: Date,
 	hour: Hour,
-	frequencyGranularity: 'day' | 'week' | 'month' | 'year',
-	frequencyMultiplier: number,
+	recurrenceGranularity: 'Day' | 'Week' | 'Month' | 'Year',
+	recurrenceMultiplier: number,
 	callAction: FnAction<null>,
 }
 
@@ -61,7 +63,8 @@ declare global {
 
 		// function RecurringAction(definition: RecurringAction): void
 
-		// function scheduleRecurringAction(definition: RecurringAction): Promise<{ uuid: string }>
+		// function createRecurringAction(definition: RecurringAction): Promise<{ uuid: string }>
+		// function removeRecurringAction(definition: RecurringAction): Promise<{ uuid: string }>
 		function scheduleAction<Arg extends JsonValue>(description: string, at: Date, action: FnAction<Arg>, arg: Arg): Promise<string>
 		function unscheduleAction(uuid: string): Promise<void>
 

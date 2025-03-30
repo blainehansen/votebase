@@ -9,6 +9,43 @@ fn boil_string(s: &str) -> String {
 	s.split_whitespace().collect::<Vec<&str>>().join(" ")
 }
 
+#[test]
+fn test_convert_db_url() {
+	assert_eq!(convert_db_url(&opt()), "postgresql://dev_admin_user:dev%5Fadmin%5Fpassword@localhost:5432/dev_db");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_compute_time_until() {
+	use ::chrono::TimeDelta;
+	use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+	let now = chrono::Utc::now();
+	let should_complete_time = compute_time_until(now + TimeDelta::days(2));
+	let should_not_complete_time = compute_time_until(now + TimeDelta::days(2) + TimeDelta::milliseconds(2));
+
+	let should_complete = Arc::new(AtomicBool::new(false));
+	tokio::spawn({
+		let should_complete = should_complete.clone();
+		async move {
+			tokio::time::sleep_until(should_complete_time).await;
+			should_complete.store(true, Ordering::Relaxed);
+		}
+	});
+
+	let should_not_complete = Arc::new(AtomicBool::new(false));
+	tokio::spawn({
+		let should_not_complete = should_not_complete.clone();
+		async move {
+			tokio::time::sleep_until(should_not_complete_time).await;
+			should_not_complete.store(true, Ordering::Relaxed);
+		}
+	});
+
+	tokio::time::sleep((TimeDelta::days(2) + TimeDelta::milliseconds(1)).to_std().unwrap()).await;
+	assert!(should_complete.load(Ordering::Relaxed));
+	assert!(!should_not_complete.load(Ordering::Relaxed));
+}
+
 #[tokio::test]
 async fn test_propose_self_replacement() {
 	let pool = sqlx::postgres::PgPoolOptions::new().connect(DEV_DB_URL).await.unwrap();

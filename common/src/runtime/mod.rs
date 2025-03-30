@@ -3,7 +3,7 @@ mod test;
 
 use std::{cell::RefCell, rc::Rc};
 use deno_core::{v8, OpState};
-use sqlx::{Connection, types::chrono};
+use sqlx::{Connection, types::chrono, types::Uuid};
 use crate::{PgOpt, FnType, RoleType, format_ruleset_schema, format_ruleset_role};
 
 pub type DenoError = deno_core::error::AnyError;
@@ -226,6 +226,9 @@ async fn op_schedule_action(
 		returning id;
 	"#, description, scheduled_time, current_full_path, action_name, action_arg).fetch_one(server_role_pool).await.map_err(js_err)?.id;
 
+	let server_pg_opt = server_role_pool.connect_options().as_ref().clone();
+	queue_scheduled_action(server_role_pool.clone(), server_pg_opt, id, scheduled_time);
+
 	Ok(id.to_string())
 }
 
@@ -233,7 +236,7 @@ async fn op_schedule_action(
 #[string]
 async fn op_unschedule_action(
 	state: Rc<RefCell<OpState>>,
-	#[serde] scheduled_action_uuid: sqlx::types::Uuid,
+	#[serde] scheduled_action_uuid: Uuid,
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
@@ -262,6 +265,8 @@ async fn op_enroll_member(
 		email,
 	).fetch_one(server_role_pool).await.map_err(js_err)?.id;
 
+	// TODO perhaps at some point there's a notification email sent to this person here or something
+
 	Ok(id.to_string())
 }
 
@@ -279,12 +284,14 @@ async fn op_remove_member_by_email(
 		email,
 	).execute(server_role_pool).await.map_err(js_err)?;
 
+	// TODO perhaps at some point there's a notification email sent to this person here or something
+
 	Ok(())
 }
 #[deno_core::op2(async)]
 async fn op_remove_member_by_uuid(
 	state: Rc<RefCell<OpState>>,
-	#[serde] member_uuid: sqlx::types::Uuid,
+	#[serde] member_uuid: Uuid,
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
@@ -294,6 +301,8 @@ async fn op_remove_member_by_uuid(
 		r#"delete from votebase_catalog.member where id = $1"#,
 		member_uuid,
 	).execute(server_role_pool).await.map_err(js_err)?;
+
+	// TODO perhaps at some point there's a notification email sent to this person here or something
 
 	Ok(())
 }
@@ -314,8 +323,8 @@ async fn op_propose_self_replacement(
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
-	let server_opt = deno_core::_ops::opstate_borrow::<ServerPgOpt>(&state);
-	let (actions, views) = validate_candidate(current_full_path, &server_opt.0, &candidate).await?;
+	let server_pg_opt = deno_core::_ops::opstate_borrow::<ServerPgOpt>(&state);
+	let (actions, views) = validate_candidate(current_full_path, &server_pg_opt.0, &candidate).await?;
 
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 	let candidate_uuid = sqlx::query!(
@@ -328,7 +337,7 @@ async fn op_propose_self_replacement(
 
 async fn validate_candidate(
 	current_full_path: &str,
-	server_opt: &sqlx::postgres::PgConnectOptions,
+	server_pg_opt: &sqlx::postgres::PgConnectOptions,
 	candidate: &CandidateSelfReplacement,
 ) -> Result<(Vec<String>, Vec<String>), deno_error::JsErrorBox> {
 	let mut inner = Runtime::new(&candidate.code).await.map_err(|e| js_err(e.root_cause()))?;
@@ -346,8 +355,8 @@ async fn validate_candidate(
 	}
 
 	let pgschema = format_ruleset_schema(current_full_path);
-	let (declared_tempdb, declared_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|declared"), &server_opt).await.map_err(js_err)?;
-	let (actual_tempdb, actual_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|actual"), &server_opt).await.map_err(js_err)?;
+	let (declared_tempdb, declared_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|declared"), &server_pg_opt).await.map_err(js_err)?;
+	let (actual_tempdb, actual_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|actual"), &server_pg_opt).await.map_err(js_err)?;
 
 	let result = (|| async {
 		let mut declared_conn = sqlx::PgConnection::connect_with(&declared_tempdb).await.map_err(js_err)?;
@@ -356,7 +365,7 @@ async fn validate_candidate(
 		"#)).execute(&mut declared_conn).await.map_err(js_err)?;
 		sqlx::raw_sql(&candidate.db_schema).execute(&mut declared_conn).await.map_err(js_err)?;
 
-		let current_schema = compute_diff(&pgschema, &actual_tempdb, &server_opt).await.map_err(js_err)?;
+		let current_schema = compute_diff(&pgschema, &actual_tempdb, &server_pg_opt).await.map_err(js_err)?;
 		let mut actual_conn = sqlx::PgConnection::connect_with(&actual_tempdb).await.map_err(js_err)?;
 		sqlx::raw_sql(&current_schema).execute(&mut actual_conn).await.map_err(js_err)?;
 		sqlx::raw_sql(&candidate.db_migration).execute(&mut actual_conn).await.map_err(js_err)?;
@@ -370,8 +379,8 @@ async fn validate_candidate(
 	})().await;
 
 	let (drop_declared, drop_actual) = tokio::join!(
-		async { drop_tempdb(declared_dbname, &server_opt).await.map_err(js_err) },
-		async { drop_tempdb(actual_dbname, &server_opt).await.map_err(js_err) },
+		async { drop_tempdb(declared_dbname, &server_pg_opt).await.map_err(js_err) },
+		async { drop_tempdb(actual_dbname, &server_pg_opt).await.map_err(js_err) },
 	);
 	drop_declared?;
 	drop_actual?;
@@ -444,9 +453,10 @@ async fn compute_diff(
 
 fn convert_db_url(url: &sqlx::postgres::PgConnectOptions) -> String {
 	use sqlx::ConnectOptions;
-	String::from(url.to_url_lossy())
-		.replace("postgres://", "postgresql://")
-		.replace("&statement-cache-capacity=100", "")
+	let mut url = url.to_url_lossy();
+	url.set_scheme("postgresql").unwrap();
+	url.set_query(None);
+	String::from(url)
 }
 
 // pub async fn clean_all_temp_dbs(base_config: &sqlx::postgres::PgConnectOptions) -> Result<(), sqlx::Error> {
@@ -474,7 +484,7 @@ fn convert_db_url(url: &sqlx::postgres::PgConnectOptions) -> String {
 pub async fn replace_ruleset(
 	pool: &crate::PgPool,
 	migrator_role_url: PgOpt,
-	new_ruleset_id: sqlx::types::Uuid,
+	new_ruleset_id: Uuid,
 ) -> Result<(), sqlx::Error> {
 	let db_migration = sqlx::query!(
 		r#"select m as "db_migration!" from votebase_catalog.apply_candidate($1) as t(m);"#,
@@ -528,14 +538,131 @@ pub async fn create_ruleset(
 	Ok(())
 }
 
-pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
+// #[derive(Debug)]
+// struct ScheduledAction {
+// 	id: Uuid,
+// 	description: String,
+// 	scheduled_time: chrono::DateTime<chrono::Utc>,
+// 	// full_path: String,
+// 	action_name: (),
+// 	action_arg: (),
+// 	executing: (),
+// }
+
+fn compute_time_until(scheduled_time: chrono::DateTime<chrono::Utc>) -> tokio::time::Instant {
+	let duration_until = scheduled_time.signed_duration_since(chrono::Utc::now()).to_std().unwrap();
+	tokio::time::Instant::now() + duration_until
+}
+
+pub fn queue_scheduled_action(
+	server_role_pool: crate::PgPool,
+	server_pg_opt: crate::PgOpt,
+	scheduled_action_uuid: Uuid,
+	scheduled_time: chrono::DateTime<chrono::Utc>,
+) {
+	let scheduled_time = compute_time_until(scheduled_time);
+
+	tokio::task::spawn_local(async move {
+		tokio::time::sleep_until(scheduled_time).await;
+		let result = execute_scheduled_action(&server_role_pool, server_pg_opt, &scheduled_action_uuid).await;
+		if let Err(e) = result {
+			error!("failed to execute scheduled action {}; {}", scheduled_action_uuid, e);
+		}
+	});
+}
+
+pub async fn execute_scheduled_action(
+	server_role_pool: &crate::PgPool,
+	server_pg_opt: crate::PgOpt,
+	scheduled_action_uuid: &Uuid,
+) -> Result<(), DenoError> {
+	let action = sqlx::query!(r#"
+		with updated as (
+			update votebase_catalog.detached_scheduled_action
+			set executing = true
+			where executing = false and id = $1
+			returning description, scheduled_time, full_path, action_arg as arg
+		)
+		select "name", code, action_pass, migrator_pass, updated.*
+		from updated inner join votebase_catalog.ruleset as r
+			on updated.full_path = r.full_path;
+	"#, &scheduled_action_uuid).fetch_optional(server_role_pool).await?;
+
+	match action {
+		None => { info!("wasn't able to acquire scheduled action {}", scheduled_action_uuid); Ok(()) },
+		Some(action) => {
+			let scheduled = action.scheduled_time;
+			let now = chrono::Utc::now();
+			let diff = scheduled - now;
+			log::info!("scheduled: {}; actual: {}; difference: {}", scheduled, now, diff);
+
+			run_action(
+				action.full_path, action.code, &action.name, &action.action_pass, &action.migrator_pass, action.arg,
+				server_pg_opt, server_role_pool,
+			).await?;
+
+			sqlx::query!(r#"delete from votebase_catalog.detached_scheduled_action where id = $1;"#, &scheduled_action_uuid)
+				.execute(server_role_pool).await?;
+
+			Ok(())
+		},
+	}
+}
+
+pub async fn run_action(
+	current_full_path: String,
+	ruleset_code: String,
+	action_name: &str,
+	action_pass: &str,
+	migrator_pass: &str,
+	arg: serde_json::Value,
+	server_pg_opt: PgOpt,
+	server_role_pool: &crate::PgPool,
+) -> Result<(), DenoError> {
+	let action_role = format_ruleset_role(&current_full_path, RoleType::Action);
+	let action_role_url = server_pg_opt.clone().username(&action_role).password(action_pass);
+	let migrator_role = format_ruleset_role(&current_full_path, RoleType::Migrator);
+	let migrator_role_url = server_pg_opt.clone().username(&migrator_role).password(migrator_pass);
+
+	let new_ruleset_id = run_function::<Option<String>>(
+		current_full_path, ruleset_code, action_name, arg, FnType::Action,
+		action_role_url, server_pg_opt, server_role_pool.clone(),
+	).await?;
+
+	if let Some(new_ruleset_id) = new_ruleset_id {
+		let new_ruleset_id = new_ruleset_id.parse::<sqlx::types::Uuid>()?;
+		info!("apply_candidate {new_ruleset_id}");
+		replace_ruleset(&server_role_pool, migrator_role_url, new_ruleset_id).await?;
+	}
+
+	Ok(())
+}
+
+pub async fn run_view(
+	current_full_path: String,
+	ruleset_code: String,
+	view_name: &str,
+	view_pass: &str,
+	query: serde_json::Value,
+	server_pg_opt: PgOpt,
+	server_role_pool: &crate::PgPool,
+) -> Result<String, DenoError> {
+	let view_role = format_ruleset_role(&current_full_path, RoleType::View);
+	let view_role_url = server_pg_opt.clone().username(&view_role).password(view_pass);
+	run_function(
+		current_full_path, ruleset_code, view_name, query, FnType::View,
+		view_role_url, server_pg_opt, server_role_pool.clone(),
+	).await
+}
+
+async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	current_full_path: String,
 	ruleset_code: String,
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
 	fn_role_url: PgOpt,
-	server_opt: PgOpt,
+	server_pg_opt: PgOpt,
 	server_role_pool: crate::PgPool,
 ) -> Result<V, DenoError> {
 	let mut runtime = Runtime::new(&ruleset_code).await?;
@@ -559,7 +686,7 @@ pub async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 
 	runtime.set_external_allowed(true);
 	runtime.set_fn_opt(fn_role_url);
-	runtime.set_server_opt(server_opt);
+	runtime.set_server_opt(server_pg_opt);
 	runtime.set_pg_pool(server_role_pool);
 	runtime.set_current_full_path(current_full_path);
 
