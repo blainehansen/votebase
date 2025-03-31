@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n\t\t\tselect id, next_scheduled_time\n\t\t\tfrom votebase_catalog.detached_recurring_action as a\n\t\t\twhere not executing;\n\t\t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "next_scheduled_time",
+        "type_info": "Timestamp"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "2843b538f0af5b9ccddace83593a6a3b81e2047bf0b6db66cd1a27efc968abe7"
+}

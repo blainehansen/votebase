@@ -177,20 +177,25 @@ create table votebase_catalog.member (
 -- 	primary key (member_id, ruleset_full_path)
 -- );
 
-create type granularity_enum as enum('Day', 'Week', 'Month', 'Year');
-create type hour_enum as enum('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23')
+create type votebase_catalog.granularity_enum as enum('Day', 'Week', 'Month', 'Year');
 
 create table votebase_catalog.detached_recurring_action (
 	id uuid primary key default gen_random_uuid(),
 	description text not null,
-	"start" date not null,
-	"hour" hour_enum not null,
-	recurrence_granularity granularity_enum not null,
-	recurrence_multiplier smallint not null,
+	"start" timestamp not null,
+	recurrence_granularity votebase_catalog.granularity_enum not null,
+	recurrence_multiplier smallint not null check(recurrence_multiplier > 0),
 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 	action_name text not null,
 	action_arg json not null,
-	executed_count int not null default 0
+	executing bool not null default false,
+	executed_count int not null default 0,
+	next_scheduled_time timestamp not null generated always as ("start" + ((case recurrence_granularity
+		when 'Day' then '1 day'::interval
+		when 'Week' then '1 week'::interval
+		when 'Month' then '1 month'::interval
+		when 'Year' then '1 year'::interval
+	end) * recurrence_multiplier * executed_count)) stored
 );
 
 create table votebase_catalog.detached_scheduled_action (

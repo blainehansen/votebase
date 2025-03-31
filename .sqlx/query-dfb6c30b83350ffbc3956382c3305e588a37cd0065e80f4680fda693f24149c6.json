@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n\t\t\twith updated as (\n\t\t\t\tupdate votebase_catalog.detached_recurring_action\n\t\t\t\tset executing = true\n\t\t\t\twhere executing = false and id = $1\n\t\t\t\treturning description, next_scheduled_time, full_path, action_name, action_arg as arg\n\t\t\t)\n\t\t\tselect code, action_pass, migrator_pass, updated.*\n\t\t\tfrom updated inner join votebase_catalog.ruleset as r on updated.full_path = r.full_path;\n\t\t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "action_pass",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "migrator_pass",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "next_scheduled_time",
+        "type_info": "Timestamp"
+      },
+      {
+        "ordinal": 5,
+        "name": "full_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "action_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "arg",
+        "type_info": "Json"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dfb6c30b83350ffbc3956382c3305e588a37cd0065e80f4680fda693f24149c6"
+}

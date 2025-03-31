@@ -1,4 +1,3 @@
-#[macro_use] extern crate log;
 use votebase_common::{runtime, PgPool};
 
 mod error;
@@ -56,18 +55,42 @@ async fn main() -> std::io::Result<()> {
 		"#).fetch_all(&queue_pool).await;
 
 		match result {
-			Err(e) => { error!("failed to fetch detached_scheduled_actions: {}", e) },
+			Err(e) => { log::error!("failed to fetch detached_scheduled_actions: {}", e) },
 			Ok(detached_scheduled_actions) => {
-				info!("queuing {} detached_scheduled_actions", detached_scheduled_actions.len());
+				log::info!("queuing {} detached_scheduled_actions", detached_scheduled_actions.len());
 				let server_pg_opt = queue_pool.connect_options().as_ref().clone();
-				for scheduled_action in detached_scheduled_actions {
+				for action in detached_scheduled_actions {
 					runtime::queue_scheduled_action(
-						queue_pool.clone(), server_pg_opt.clone(),
-						scheduled_action.id, scheduled_action.scheduled_time,
+						queue_pool.clone(), server_pg_opt.clone(), votebase_common::ScheduledActionKind::DetachedRecurring,
+						action.id, action.scheduled_time,
 					);
 				}
 			},
 		}
+
+		let result = sqlx::query!(r#"
+			select id, next_scheduled_time
+			from votebase_catalog.detached_recurring_action as a
+			where not executing;
+		"#).fetch_all(&queue_pool).await;
+
+		match result {
+			Err(e) => { log::error!("failed to fetch detached_recurring_actions: {}", e) },
+			Ok(detached_recurring_actions) => {
+				log::info!("queuing {} detached_recurring_actions", detached_recurring_actions.len());
+				let server_pg_opt = queue_pool.connect_options().as_ref().clone();
+				for action in detached_recurring_actions {
+					runtime::queue_scheduled_action(
+						queue_pool.clone(), server_pg_opt.clone(), votebase_common::ScheduledActionKind::DetachedRecurring,
+						action.id, action.next_scheduled_time.and_utc(),
+					);
+				}
+			},
+		}
+
+		// insert into votebase_catalog.detached_recurring_action
+		// (description, "start", recurrence_granularity, recurrence_multiplier, full_path, action_name, action_arg)
+		// values ('', current_timestamp, 'Day', 1, 'root', 'my_action', 'null'::json);
 	});
 
 	#[cfg(debug_assertions)]

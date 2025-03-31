@@ -4,7 +4,7 @@ mod test;
 use std::{cell::RefCell, rc::Rc};
 use deno_core::{v8, OpState};
 use sqlx::{Connection, types::chrono, types::Uuid};
-use crate::{PgOpt, FnType, RoleType, format_ruleset_schema, format_ruleset_role};
+use crate::{PgOpt, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role};
 
 pub type DenoError = deno_core::error::AnyError;
 
@@ -227,7 +227,7 @@ async fn op_schedule_action(
 	"#, description, scheduled_time, current_full_path, action_name, action_arg).fetch_one(server_role_pool).await.map_err(js_err)?.id;
 
 	let server_pg_opt = server_role_pool.connect_options().as_ref().clone();
-	queue_scheduled_action(server_role_pool.clone(), server_pg_opt, id, scheduled_time);
+	queue_scheduled_action(server_role_pool.clone(), server_pg_opt, ScheduledActionKind::DetachedScheduled, id, scheduled_time);
 
 	Ok(id.to_string())
 }
@@ -538,17 +538,6 @@ pub async fn create_ruleset(
 	Ok(())
 }
 
-// #[derive(Debug)]
-// struct ScheduledAction {
-// 	id: Uuid,
-// 	description: String,
-// 	scheduled_time: chrono::DateTime<chrono::Utc>,
-// 	// full_path: String,
-// 	action_name: (),
-// 	action_arg: (),
-// 	executing: (),
-// }
-
 fn compute_time_until(scheduled_time: chrono::DateTime<chrono::Utc>) -> tokio::time::Instant {
 	let duration_until = scheduled_time.signed_duration_since(chrono::Utc::now()).to_std().unwrap();
 	tokio::time::Instant::now() + duration_until
@@ -557,6 +546,7 @@ fn compute_time_until(scheduled_time: chrono::DateTime<chrono::Utc>) -> tokio::t
 pub fn queue_scheduled_action(
 	server_role_pool: crate::PgPool,
 	server_pg_opt: crate::PgOpt,
+	scheduled_action_kind: ScheduledActionKind,
 	scheduled_action_uuid: Uuid,
 	scheduled_time: chrono::DateTime<chrono::Utc>,
 ) {
@@ -564,29 +554,112 @@ pub fn queue_scheduled_action(
 
 	tokio::task::spawn_local(async move {
 		tokio::time::sleep_until(scheduled_time).await;
-		let result = execute_scheduled_action(&server_role_pool, server_pg_opt, &scheduled_action_uuid).await;
+
+		log::info!("attempting action {} of type {}", scheduled_action_uuid, &scheduled_action_kind);
+		let result = match scheduled_action_kind {
+			ScheduledActionKind::Recurring => {
+				execute_recurring_action(server_role_pool, server_pg_opt, false, scheduled_action_uuid).await
+			},
+			ScheduledActionKind::DetachedRecurring => {
+				execute_recurring_action(server_role_pool, server_pg_opt, true, scheduled_action_uuid).await
+			},
+			ScheduledActionKind::DetachedScheduled => {
+				execute_scheduled_action(server_role_pool, server_pg_opt, scheduled_action_uuid).await
+			},
+		};
+
 		if let Err(e) = result {
 			error!("failed to execute scheduled action {}; {}", scheduled_action_uuid, e);
 		}
 	});
 }
 
-pub async fn execute_scheduled_action(
-	server_role_pool: &crate::PgPool,
+#[derive(Debug)]
+struct ExecutableRecurringAction {
+	code: String,
+	action_pass: String,
+	migrator_pass: String,
+	description: String,
+	next_scheduled_time: chrono::NaiveDateTime,
+	full_path: String,
+	action_name: String,
+	arg: serde_json::Value,
+}
+
+pub async fn execute_recurring_action(
+	server_role_pool: crate::PgPool,
 	server_pg_opt: crate::PgOpt,
-	scheduled_action_uuid: &Uuid,
+	is_detached: bool,
+	scheduled_action_uuid: Uuid,
+) -> Result<(), DenoError> {
+	let scheduled_action_kind = if is_detached { ScheduledActionKind::DetachedRecurring } else { ScheduledActionKind::Recurring };
+
+	let action = if is_detached {
+		sqlx::query_as!(ExecutableRecurringAction, r#"
+			with updated as (
+				update votebase_catalog.detached_recurring_action
+				set executing = true
+				where executing = false and id = $1
+				returning description, next_scheduled_time, full_path, action_name, action_arg as arg
+			)
+			select code, action_pass, migrator_pass, updated.*
+			from updated inner join votebase_catalog.ruleset as r on updated.full_path = r.full_path;
+		"#, &scheduled_action_uuid).fetch_optional(&server_role_pool).await?
+	} else {
+		unimplemented!()
+	};
+
+	match action {
+		None => { info!("wasn't able to acquire scheduled action {}", scheduled_action_uuid); Ok(()) },
+		Some(action) => {
+			let scheduled = action.next_scheduled_time.and_utc();
+			let now = chrono::Utc::now();
+			let diff = scheduled - now;
+			log::info!("scheduled: {}; actual: {}; difference: {}", scheduled, now, diff);
+			if diff < ::chrono::TimeDelta::zero() {
+				log::info!("not doing it yet");
+				queue_scheduled_action(server_role_pool, server_pg_opt, scheduled_action_kind, scheduled_action_uuid, scheduled);
+				return Ok(())
+			}
+
+			run_action(
+				action.full_path, action.code, &action.action_name, &action.action_pass, &action.migrator_pass, action.arg,
+				server_pg_opt.clone(), &server_role_pool,
+			).await?;
+
+			let next_scheduled_time = if is_detached {
+				sqlx::query!(r#"
+					update votebase_catalog.detached_recurring_action
+					set executing = false, executed_count = executed_count + 1
+					where id = $1
+					returning next_scheduled_time;
+				"#, &scheduled_action_uuid).fetch_one(&server_role_pool).await?.next_scheduled_time.and_utc()
+			} else {
+				unimplemented!()
+			};
+
+			queue_scheduled_action(server_role_pool, server_pg_opt, scheduled_action_kind, scheduled_action_uuid, next_scheduled_time);
+
+			Ok(())
+		},
+	}
+}
+
+pub async fn execute_scheduled_action(
+	server_role_pool: crate::PgPool,
+	server_pg_opt: crate::PgOpt,
+	scheduled_action_uuid: Uuid,
 ) -> Result<(), DenoError> {
 	let action = sqlx::query!(r#"
 		with updated as (
 			update votebase_catalog.detached_scheduled_action
 			set executing = true
 			where executing = false and id = $1
-			returning description, scheduled_time, full_path, action_arg as arg
+			returning description, scheduled_time, full_path, action_name, action_arg as arg
 		)
-		select "name", code, action_pass, migrator_pass, updated.*
-		from updated inner join votebase_catalog.ruleset as r
-			on updated.full_path = r.full_path;
-	"#, &scheduled_action_uuid).fetch_optional(server_role_pool).await?;
+		select code, action_pass, migrator_pass, updated.*
+		from updated inner join votebase_catalog.ruleset as r on updated.full_path = r.full_path;
+	"#, &scheduled_action_uuid).fetch_optional(&server_role_pool).await?;
 
 	match action {
 		None => { info!("wasn't able to acquire scheduled action {}", scheduled_action_uuid); Ok(()) },
@@ -597,12 +670,14 @@ pub async fn execute_scheduled_action(
 			log::info!("scheduled: {}; actual: {}; difference: {}", scheduled, now, diff);
 
 			run_action(
-				action.full_path, action.code, &action.name, &action.action_pass, &action.migrator_pass, action.arg,
-				server_pg_opt, server_role_pool,
+				action.full_path, action.code, &action.action_name, &action.action_pass, &action.migrator_pass, action.arg,
+				server_pg_opt, &server_role_pool,
 			).await?;
 
-			sqlx::query!(r#"delete from votebase_catalog.detached_scheduled_action where id = $1;"#, &scheduled_action_uuid)
-				.execute(server_role_pool).await?;
+			sqlx::query!(r#"
+				delete from votebase_catalog.detached_scheduled_action
+				where id = $1;
+			"#, &scheduled_action_uuid).execute(&server_role_pool).await?;
 
 			Ok(())
 		},

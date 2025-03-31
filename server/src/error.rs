@@ -19,7 +19,7 @@ pub enum VotebaseError {
 
 impl VotebaseError {
 	fn respond(&self, status_code: actix_web::http::StatusCode) -> HttpResponse {
-		error!("{:?}", self);
+		log::error!("{:?}", self);
 		let res = HttpResponse::new(status_code);
 		res.into()
 

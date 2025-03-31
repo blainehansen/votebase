@@ -43,12 +43,9 @@ export type FnView<Q extends JsonValue> = Readonly<{ name: string, isAction: fal
 
 export type Fn<T extends JsonValue> = FnAction<T> | FnView<T>
 
-export type Hour = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23
-
 export type RecurringAction = {
 	description: string,
 	start: Date,
-	hour: Hour,
 	recurrenceGranularity: 'Day' | 'Week' | 'Month' | 'Year',
 	recurrenceMultiplier: number,
 	callAction: FnAction<null>,
