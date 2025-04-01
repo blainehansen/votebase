@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n\t\tdelete from votebase_catalog.detached_recurring_action\n\t\twhere id = $1;\n\t",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "42057b1097d09b6bf19217684602fe10a35f72620a20bc40a7e9761c655dc116"
+}

@@ -229,4 +229,7 @@ async fn run_function_basics() {
 	assert_eq!(result.full_path, "root");
 	assert_eq!(result.action_name, "call_action");
 	assert_eq!(result.action_arg, serde_json::json!(1));
+
+	// TODO find a way to test the real thing now that scheduleAction will actually queue a tokio task
+	assert!(false);
 }

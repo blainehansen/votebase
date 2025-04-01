@@ -77,9 +77,10 @@ deno_core::extension!(
 		op_sql_execute_many,
 
 		op_register_fn,
-
 		// op_register_recurring_action,
-		// op_schedule_recurring_action,
+
+		op_create_recurring_action,
+		op_remove_recurring_action,
 		op_schedule_action,
 		op_unschedule_action,
 		op_enroll_member,
@@ -206,6 +207,59 @@ fn op_register_fn(
 	}
 }
 
+#[derive(Debug, deno_core::serde::Deserialize, sqlx::Type)]
+#[sqlx(type_name = "votebase_catalog.granularity_enum")]
+enum RecurrenceGranularity { Day, Week, Month, Year }
+
+#[deno_core::op2(async)]
+#[string]
+async fn op_create_recurring_action(
+	state: Rc<RefCell<OpState>>,
+	#[string] description: String,
+	#[serde] start: chrono::DateTime<chrono::Utc>,
+	#[serde] recurrence_granularity: RecurrenceGranularity,
+	recurrence_multiplier: i16,
+	#[string] action_name: String,
+	#[serde] action_arg: serde_json::Value,
+) -> Result<String, deno_error::JsErrorBox> {
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
+	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
+
+	let action = sqlx::query!(r#"
+		insert into votebase_catalog.detached_recurring_action
+			(full_path, description, "start", recurrence_granularity, recurrence_multiplier, action_name, action_arg)
+		values ($1, $2, $3, $4, $5, $6, $7)
+		returning id, next_scheduled_time;
+	"#, current_full_path, description, start.naive_utc(), recurrence_granularity as RecurrenceGranularity, recurrence_multiplier, action_name, action_arg)
+		.fetch_one(server_role_pool).await.map_err(js_err)?;
+
+	let server_pg_opt = server_role_pool.connect_options().as_ref().clone();
+	queue_scheduled_action(server_role_pool.clone(), server_pg_opt, ScheduledActionKind::DetachedRecurring, action.id, action.next_scheduled_time.and_utc());
+
+	Ok(action.id.to_string())
+}
+
+#[deno_core::op2(async)]
+#[string]
+async fn op_remove_recurring_action(
+	state: Rc<RefCell<OpState>>,
+	#[serde] scheduled_action_uuid: Uuid,
+) -> Result<(), deno_error::JsErrorBox> {
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
+	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+
+	sqlx::query!(r#"
+		delete from votebase_catalog.detached_recurring_action
+		where id = $1;
+	"#, scheduled_action_uuid).execute(server_role_pool).await.map_err(js_err)?;
+
+	Ok(())
+}
+
+
 #[deno_core::op2(async)]
 #[string]
 async fn op_schedule_action(
@@ -221,10 +275,10 @@ async fn op_schedule_action(
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 
 	let id = sqlx::query!(r#"
-		insert into votebase_catalog.detached_scheduled_action (description, scheduled_time, full_path, action_name, action_arg)
+		insert into votebase_catalog.detached_scheduled_action (full_path, description, scheduled_time, action_name, action_arg)
 		values ($1, $2, $3, $4, $5)
 		returning id;
-	"#, description, scheduled_time, current_full_path, action_name, action_arg).fetch_one(server_role_pool).await.map_err(js_err)?.id;
+	"#, current_full_path, description, scheduled_time, action_name, action_arg).fetch_one(server_role_pool).await.map_err(js_err)?.id;
 
 	let server_pg_opt = server_role_pool.connect_options().as_ref().clone();
 	queue_scheduled_action(server_role_pool.clone(), server_pg_opt, ScheduledActionKind::DetachedScheduled, id, scheduled_time);
@@ -615,9 +669,9 @@ pub async fn execute_recurring_action(
 			let scheduled = action.next_scheduled_time.and_utc();
 			let now = chrono::Utc::now();
 			let diff = scheduled - now;
-			log::info!("scheduled: {}; actual: {}; difference: {}", scheduled, now, diff);
+			log::info!("{} scheduled: {}; actual: {}; difference: {}; {}", scheduled_action_uuid, scheduled, now, diff, action.description);
 			if diff < ::chrono::TimeDelta::zero() {
-				log::info!("not doing it yet");
+				log::info!("{} not doing it yet", scheduled_action_uuid);
 				queue_scheduled_action(server_role_pool, server_pg_opt, scheduled_action_kind, scheduled_action_uuid, scheduled);
 				return Ok(())
 			}
@@ -636,6 +690,12 @@ pub async fn execute_recurring_action(
 				"#, &scheduled_action_uuid).fetch_one(&server_role_pool).await?.next_scheduled_time.and_utc()
 			} else {
 				unimplemented!()
+				// sqlx::query!(r#"
+				// 	update votebase_catalog.recurring_action
+				// 	set executing = false, executed_count = executed_count + 1
+				// 	where id = $1
+				// 	returning next_scheduled_time;
+				// "#, &scheduled_action_uuid).fetch_one(&server_role_pool).await?.next_scheduled_time.and_utc()
 			};
 
 			queue_scheduled_action(server_role_pool, server_pg_opt, scheduled_action_kind, scheduled_action_uuid, next_scheduled_time);
@@ -667,7 +727,7 @@ pub async fn execute_scheduled_action(
 			let scheduled = action.scheduled_time;
 			let now = chrono::Utc::now();
 			let diff = scheduled - now;
-			log::info!("scheduled: {}; actual: {}; difference: {}", scheduled, now, diff);
+			log::info!("{} ({}): scheduled: {}; actual: {}; difference: {}", scheduled_action_uuid, action.description, scheduled, now, diff);
 
 			run_action(
 				action.full_path, action.code, &action.action_name, &action.action_pass, &action.migrator_pass, action.arg,

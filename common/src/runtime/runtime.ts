@@ -21,8 +21,8 @@ const { core } = (globalThis as any).Deno as { core: {
 		// TODO add userId: string arg to all the actions/views
 		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T) => Promise<string | void>) => void,
 		// TODO need to figure out what the necessary rust interface is
-		op_register_recurring_action: () => void,
-		op_create_recurring_action: () => Promise<string>,
+		// op_register_recurring_action: (name: string, ) => void,
+		op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
 		op_remove_recurring_action: (uuid: string) => Promise<void>,
 
 		op_schedule_action: (description: string, scheduled_time: string, action_name: string, action_arg: JsonValue) => Promise<string>,
@@ -43,12 +43,15 @@ export type FnView<Q extends JsonValue> = Readonly<{ name: string, isAction: fal
 
 export type Fn<T extends JsonValue> = FnAction<T> | FnView<T>
 
-export type RecurringAction = {
+export type RecurrenceGranularity = 'Day' | 'Week' | 'Month' | 'Year'
+
+export type RecurringAction<Arg extends JsonValue> = {
 	description: string,
 	start: Date,
-	recurrenceGranularity: 'Day' | 'Week' | 'Month' | 'Year',
+	recurrenceGranularity: RecurrenceGranularity,
 	recurrenceMultiplier: number,
-	callAction: FnAction<null>,
+	action: FnAction<Arg>,
+	arg: Arg,
 }
 
 declare global {
@@ -60,8 +63,8 @@ declare global {
 
 		// function RecurringAction(definition: RecurringAction): void
 
-		// function createRecurringAction(definition: RecurringAction): Promise<{ uuid: string }>
-		// function removeRecurringAction(definition: RecurringAction): Promise<{ uuid: string }>
+		function createRecurringAction<Arg extends JsonValue>(definition: RecurringAction<Arg>): Promise<string>
+		function removeRecurringAction(uuid: string): Promise<void>
 		function scheduleAction<Arg extends JsonValue>(description: string, at: Date, action: FnAction<Arg>, arg: Arg): Promise<string>
 		function unscheduleAction(uuid: string): Promise<void>
 
@@ -103,21 +106,23 @@ globalThis.votebase = {
 	// 	)
 	// },
 
-	// async scheduleRecurringAction({ description, start, hour, frequencyGranularity, frequencyMultiplier, callAction }) {
-	// 	const uuid = await core.ops.op_schedule_recurring_action(
-	// 		description, start, hour, frequencyGranularity, frequencyMultiplier, callAction,
-	// 	)
-	// 	return { uuid }
-	// },
-	scheduleAction<A extends JsonValue>(description: string, at: Date, action: FnAction<A>, arg: A) {
+	createRecurringAction({ description, start, recurrenceGranularity, recurrenceMultiplier, action, arg }) {
+		return core.ops.op_create_recurring_action(
+			description, start.toISOString(), recurrenceGranularity, recurrenceMultiplier, action.name, arg,
+		)
+	},
+	removeRecurringAction(uuid) {
+		return core.ops.op_remove_recurring_action(uuid)
+	},
+	scheduleAction(description, at, action, arg) {
 		// TODO check that the date is in the future
 		return core.ops.op_schedule_action(description, at.toISOString(), action.name, arg)
 	},
-	unscheduleAction(uuid: string) {
+	unscheduleAction(uuid) {
 		return core.ops.op_unschedule_action(uuid)
 	},
 
-	enrollMember(email: string) {
+	enrollMember(email) {
 		return core.ops.op_enroll_member(email)
 	},
 	removeMemberByEmail(email) {
