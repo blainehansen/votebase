@@ -34,6 +34,12 @@ const { core } = (globalThis as any).Deno as { core: {
 
 		// op_set_timeout: (delay: number | undefined) => Promise<void>,
 		op_propose_self_replacement: (candidate: CandidateSelfReplacement) => Promise<string>,
+
+		op_sql_execute_statements: (sql: string, params?: JsonValue[]) => Promise<number>,
+		op_sql_fetch_all: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T[]>,
+		op_sql_fetch_scalar: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T>,
+		op_sql_fetch_one: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T>,
+		op_sql_fetch_optional: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T | null>,
 	},
 } }
 
@@ -81,6 +87,12 @@ declare global {
 
 		// function proposeChildRuleset(): Promise<void>
 		// function instituteChildRuleset(): Promise<void>
+
+		function sqlExecuteStatements(sql: string, params?: JsonValue[]): Promise<number>
+		function sqlFetchScalar<T extends JsonValue>(query: string, params?: JsonValue[]): Promise<T>
+		function sqlFetchAll<T extends JsonValue>(query: string, params?: JsonValue[]): Promise<T[]>
+		function sqlFetchOne<T extends JsonValue>(query: string, params?: JsonValue[]): Promise<T>
+		function sqlFetchOptional<T extends JsonValue>(query: string, params?: JsonValue[]): Promise<T | null>
 	}
 }
 globalThis.votebase = {
@@ -135,6 +147,22 @@ globalThis.votebase = {
 	proposeSelfReplacement(candidate) {
 		return core.ops.op_propose_self_replacement(candidate)
 	},
+
+	sqlExecuteStatements(sql, params) {
+		return core.ops.op_sql_execute_statements(sql, params)
+	},
+	sqlFetchAll(query, params) {
+		return core.ops.op_sql_fetch_all(query, params)
+	},
+	sqlFetchScalar(query, params) {
+		return core.ops.op_sql_fetch_scalar(query, params)
+	},
+	sqlFetchOne(query, params) {
+		return core.ops.op_sql_fetch_one(query, params)
+	},
+	sqlFetchOptional(query, params) {
+		return core.ops.op_sql_fetch_optional(query, params)
+	}
 }
 
 declare global {

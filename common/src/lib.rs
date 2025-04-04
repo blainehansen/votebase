@@ -38,11 +38,11 @@ pub fn format_ruleset_role(full_path: &str, role_type: RoleType) -> String {
 
 
 #[derive(Copy, Clone, Debug)]
-pub enum ScheduledActionKind { Recurring, DetachedRecurring, DetachedScheduled }
+pub enum ScheduledActionKind { /*Recurring,*/ DetachedRecurring, DetachedScheduled }
 impl std::fmt::Display for ScheduledActionKind {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			ScheduledActionKind::Recurring => write!(f, "Recurring"),
+			// ScheduledActionKind::Recurring => write!(f, "Recurring"),
 			ScheduledActionKind::DetachedRecurring => write!(f, "DetachedRecurring"),
 			ScheduledActionKind::DetachedScheduled => write!(f, "DetachedScheduled"),
 		}

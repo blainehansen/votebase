@@ -3,7 +3,7 @@ mod test;
 
 use std::{cell::RefCell, rc::Rc};
 use deno_core::{v8, OpState};
-use sqlx::{Connection, types::chrono, types::Uuid};
+use sqlx::{types::{chrono, Uuid}, Connection};
 use crate::{PgOpt, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role};
 
 pub type DenoError = deno_core::error::AnyError;
@@ -74,7 +74,10 @@ deno_core::extension!(
 	ops = [
 		op_fetch,
 		// op_set_timeout,
-		op_sql_execute_many,
+		op_sql_execute_statements,
+		op_sql_fetch_all,
+		op_sql_fetch_one,
+		op_sql_fetch_optional,
 
 		op_register_fn,
 		// op_register_recurring_action,
@@ -152,12 +155,57 @@ async fn op_fetch(
 // }
 
 
-const ERR_EXTERNAL_NOT_ALLOWED: &'static str = "runtime functions that interact with timers or the outside world (such as database or http operations) aren't allowed outside the context of an action or view";
+const ERR_EXTERNAL_NOT_ALLOWED: &'static str = "runtime functions that interact with timers or the outside world (such as database or http operations) aren't allowed outside of an action or view";
+
+// #[deno_core::op2(async)]
+// async fn op_sql_execute_many(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[string] sql: String,
+// ) -> Result<u32, deno_error::JsErrorBox> {
+// 	let state = state.as_ref();
+// 	demand_external_allowed(state)?;
+// 	let mut state = state.borrow_mut();
+// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+// 		.connect().await.map_err(js_err)?;
+
+// 	let result = sqlx::raw_sql(&sql).execute(connection).await.map_err(js_err)?;
+// 	Ok(result.rows_affected().try_into().map_err(js_err)?)
+// }
+
+
+fn make_args(params: Option<Vec<serde_json::Value>>) -> Result<sqlx::postgres::PgArguments, sqlx::error::BoxDynError> {
+	let mut args = sqlx::postgres::PgArguments::default();
+	use sqlx::Arguments;
+	match params {
+		None => Ok(args),
+		Some(params) => {
+			for param in params {
+				match param {
+					serde_json::Value::Null => { args.add(None::<bool>)?; },
+					serde_json::Value::Bool(param) => { args.add(param)?; },
+					serde_json::Value::Number(param) => {
+						if param.is_f64() {
+							args.add(param.as_f64())?;
+						} else {
+							args.add(param.as_i64())?;
+						}
+					},
+					serde_json::Value::String(param) => { args.add(param)?; },
+					serde_json::Value::Array(param) => { args.add(param)?; },
+					param => { args.add(param)?; },
+				}
+			}
+
+			Ok(args)
+		},
+	}
+}
 
 #[deno_core::op2(async)]
-async fn op_sql_execute_many(
+async fn op_sql_execute_statements(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
+	#[serde] params: Option<Vec<serde_json::Value>>,
 ) -> Result<u32, deno_error::JsErrorBox> {
 	let state = state.as_ref();
 	demand_external_allowed(state)?;
@@ -165,8 +213,104 @@ async fn op_sql_execute_many(
 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
 		.connect().await.map_err(js_err)?;
 
-	let result = sqlx::raw_sql(&sql).execute(connection).await.map_err(js_err)?;
+	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+	let result = sqlx::query_with(&sql, args).execute(connection).await.map_err(js_err)?;
+
 	Ok(result.rows_affected().try_into().map_err(js_err)?)
+}
+
+#[deno_core::op2(async)]
+#[serde]
+async fn op_sql_fetch_all(
+	state: Rc<RefCell<OpState>>,
+	#[string] query: String,
+	#[serde] params: Option<Vec<serde_json::Value>>,
+) -> Result<Vec<serde_json::Value>, deno_error::JsErrorBox> {
+	let state = state.as_ref();
+	demand_external_allowed(state)?;
+	let mut state = state.borrow_mut();
+	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+		.connect().await.map_err(js_err)?;
+
+	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+	let rows = sqlx::query_with(&query, args).fetch_all(connection).await.map_err(js_err)?;
+
+	Ok(rows.into_iter().map(|row| {
+		use sqlx::{Row, Column};
+		let columns = row.columns();
+		serde_json::Value::Object(
+			columns.iter().map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect()
+		)
+	}).collect())
+}
+
+#[deno_core::op2(async)]
+#[serde]
+async fn op_sql_fetch_scalar(
+	state: Rc<RefCell<OpState>>,
+	#[string] query: String,
+	#[serde] params: Option<Vec<serde_json::Value>>,
+) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+	let state = state.as_ref();
+	demand_external_allowed(state)?;
+	let mut state = state.borrow_mut();
+	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+		.connect().await.map_err(js_err)?;
+
+	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+	sqlx::query_scalar_with(&query, args).fetch_one(connection).await.map_err(js_err)
+}
+
+#[deno_core::op2(async)]
+#[serde]
+async fn op_sql_fetch_one(
+	state: Rc<RefCell<OpState>>,
+	#[string] query: String,
+	#[serde] params: Option<Vec<serde_json::Value>>,
+) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+	let state = state.as_ref();
+	demand_external_allowed(state)?;
+	let mut state = state.borrow_mut();
+	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+		.connect().await.map_err(js_err)?;
+
+	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+	let row = sqlx::query_with(&query, args).fetch_one(connection).await.map_err(js_err)?;
+
+	use sqlx::{Row, Column};
+	let columns = row.columns();
+	Ok(serde_json::Value::Object(
+		columns.iter().map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect()
+	))
+}
+
+#[deno_core::op2(async)]
+#[serde]
+async fn op_sql_fetch_optional(
+	state: Rc<RefCell<OpState>>,
+	#[string] query: String,
+	#[serde] params: Option<Vec<serde_json::Value>>,
+) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
+	let state = state.as_ref();
+	demand_external_allowed(state)?;
+	let mut state = state.borrow_mut();
+	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+		.connect().await.map_err(js_err)?;
+
+	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+	let row = sqlx::query_with(&query, args).fetch_optional(connection).await.map_err(js_err)?;
+
+	match row {
+		None => Ok(None),
+		Some(row) => {
+			use sqlx::{Row, Column};
+			let columns = row.columns();
+			let obj: serde_json::Map<String, serde_json::Value> =
+				columns.iter().map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect();
+
+			Ok(Some(obj.into()))
+		},
+	}
 }
 
 pub type FnMap = std::collections::HashMap<String, Fn>;
@@ -611,11 +755,11 @@ pub fn queue_scheduled_action(
 
 		log::info!("attempting action {} of type {}", scheduled_action_uuid, &scheduled_action_kind);
 		let result = match scheduled_action_kind {
-			ScheduledActionKind::Recurring => {
-				execute_recurring_action(server_role_pool, server_pg_opt, false, scheduled_action_uuid).await
-			},
+			// ScheduledActionKind::Recurring => {
+			// 	execute_recurring_action(server_role_pool, server_pg_opt, false, scheduled_action_uuid).await
+			// },
 			ScheduledActionKind::DetachedRecurring => {
-				execute_recurring_action(server_role_pool, server_pg_opt, true, scheduled_action_uuid).await
+				execute_recurring_action(server_role_pool, server_pg_opt, scheduled_action_uuid).await
 			},
 			ScheduledActionKind::DetachedScheduled => {
 				execute_scheduled_action(server_role_pool, server_pg_opt, scheduled_action_uuid).await
@@ -643,25 +787,27 @@ struct ExecutableRecurringAction {
 pub async fn execute_recurring_action(
 	server_role_pool: crate::PgPool,
 	server_pg_opt: crate::PgOpt,
-	is_detached: bool,
+	// is_detached: bool,
 	scheduled_action_uuid: Uuid,
 ) -> Result<(), DenoError> {
-	let scheduled_action_kind = if is_detached { ScheduledActionKind::DetachedRecurring } else { ScheduledActionKind::Recurring };
+	// let scheduled_action_kind = if is_detached { ScheduledActionKind::DetachedRecurring } else { ScheduledActionKind::Recurring };
+	let scheduled_action_kind = ScheduledActionKind::DetachedRecurring;
 
-	let action = if is_detached {
-		sqlx::query_as!(ExecutableRecurringAction, r#"
-			with updated as (
-				update votebase_catalog.detached_recurring_action
-				set executing = true
-				where executing = false and id = $1
-				returning description, next_scheduled_time, full_path, action_name, action_arg as arg
-			)
-			select code, action_pass, migrator_pass, updated.*
-			from updated inner join votebase_catalog.ruleset as r on updated.full_path = r.full_path;
-		"#, &scheduled_action_uuid).fetch_optional(&server_role_pool).await?
-	} else {
-		unimplemented!()
-	};
+	let action = sqlx::query_as!(ExecutableRecurringAction, r#"
+		with updated as (
+			update votebase_catalog.detached_recurring_action
+			set executing = true
+			where executing = false and id = $1
+			returning description, next_scheduled_time, full_path, action_name, action_arg as arg
+		)
+		select code, action_pass, migrator_pass, updated.*
+		from updated inner join votebase_catalog.ruleset as r on updated.full_path = r.full_path;
+	"#, &scheduled_action_uuid).fetch_optional(&server_role_pool).await?;
+
+	// if is_detached {
+	// } else {
+	// 	unimplemented!()
+	// };
 
 	match action {
 		None => { info!("wasn't able to acquire scheduled action {}", scheduled_action_uuid); Ok(()) },
@@ -681,22 +827,22 @@ pub async fn execute_recurring_action(
 				server_pg_opt.clone(), &server_role_pool,
 			).await?;
 
-			let next_scheduled_time = if is_detached {
-				sqlx::query!(r#"
-					update votebase_catalog.detached_recurring_action
-					set executing = false, executed_count = executed_count + 1
-					where id = $1
-					returning next_scheduled_time;
-				"#, &scheduled_action_uuid).fetch_one(&server_role_pool).await?.next_scheduled_time.and_utc()
-			} else {
-				unimplemented!()
+			let next_scheduled_time = sqlx::query!(r#"
+				update votebase_catalog.detached_recurring_action
+				set executing = false, executed_count = executed_count + 1
+				where id = $1
+				returning next_scheduled_time;
+			"#, &scheduled_action_uuid).fetch_one(&server_role_pool).await?.next_scheduled_time.and_utc();
+			// if is_detached {
+			// } else {
+			// 	unimplemented!()
 				// sqlx::query!(r#"
 				// 	update votebase_catalog.recurring_action
 				// 	set executing = false, executed_count = executed_count + 1
 				// 	where id = $1
 				// 	returning next_scheduled_time;
 				// "#, &scheduled_action_uuid).fetch_one(&server_role_pool).await?.next_scheduled_time.and_utc()
-			};
+			// };
 
 			queue_scheduled_action(server_role_pool, server_pg_opt, scheduled_action_kind, scheduled_action_uuid, next_scheduled_time);
 

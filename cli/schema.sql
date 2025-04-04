@@ -179,25 +179,25 @@ create table votebase_catalog.member (
 
 create type votebase_catalog.granularity_enum as enum('Day', 'Week', 'Month', 'Year');
 
-create table votebase_catalog.recurring_action (
-	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
-	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
-	primary key (full_path, "name"),
-	description text not null,
-	"start" timestamp not null,
-	recurrence_granularity votebase_catalog.granularity_enum not null,
-	recurrence_multiplier smallint not null check(recurrence_multiplier > 0),
-	action_name text not null,
-	action_arg json not null,
-	executing bool not null default false,
-	executed_count int not null default 0,
-	next_scheduled_time timestamp not null generated always as ("start" + ((case recurrence_granularity
-		when 'Day' then '1 day'::interval
-		when 'Week' then '1 week'::interval
-		when 'Month' then '1 month'::interval
-		when 'Year' then '1 year'::interval
-	end) * recurrence_multiplier * executed_count)) stored
-);
+-- create table votebase_catalog.recurring_action (
+-- 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
+-- 	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
+-- 	primary key (full_path, "name"),
+-- 	description text not null,
+-- 	"start" timestamp not null,
+-- 	recurrence_granularity votebase_catalog.granularity_enum not null,
+-- 	recurrence_multiplier smallint not null check(recurrence_multiplier > 0),
+-- 	action_name text not null,
+-- 	action_arg json not null,
+-- 	executing bool not null default false,
+-- 	executed_count int not null default 0,
+-- 	next_scheduled_time timestamp not null generated always as ("start" + ((case recurrence_granularity
+-- 		when 'Day' then '1 day'::interval
+-- 		when 'Week' then '1 week'::interval
+-- 		when 'Month' then '1 month'::interval
+-- 		when 'Year' then '1 year'::interval
+-- 	end) * recurrence_multiplier * executed_count)) stored
+-- );
 
 create table votebase_catalog.detached_recurring_action (
 	id uuid primary key default gen_random_uuid(),

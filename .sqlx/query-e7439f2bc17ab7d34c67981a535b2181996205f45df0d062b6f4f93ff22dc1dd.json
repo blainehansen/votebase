@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n\t\t\twith updated as (\n\t\t\t\tupdate votebase_catalog.detached_recurring_action\n\t\t\t\tset executing = true\n\t\t\t\twhere executing = false and id = $1\n\t\t\t\treturning description, next_scheduled_time, full_path, action_name, action_arg as arg\n\t\t\t)\n\t\t\tselect code, action_pass, migrator_pass, updated.*\n\t\t\tfrom updated inner join votebase_catalog.ruleset as r on updated.full_path = r.full_path;\n\t\t",
+  "query": "\n\t\twith updated as (\n\t\t\tupdate votebase_catalog.detached_recurring_action\n\t\t\tset executing = true\n\t\t\twhere executing = false and id = $1\n\t\t\treturning description, next_scheduled_time, full_path, action_name, action_arg as arg\n\t\t)\n\t\tselect code, action_pass, migrator_pass, updated.*\n\t\tfrom updated inner join votebase_catalog.ruleset as r on updated.full_path = r.full_path;\n\t",
   "describe": {
     "columns": [
       {
@@ -60,5 +60,5 @@
       false
     ]
   },
-  "hash": "dfb6c30b83350ffbc3956382c3305e588a37cd0065e80f4680fda693f24149c6"
+  "hash": "e7439f2bc17ab7d34c67981a535b2181996205f45df0d062b6f4f93ff22dc1dd"
 }

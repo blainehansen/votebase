@@ -120,7 +120,7 @@ async fn run_function_basics() {
 	let result = run_function::<u32>(
 		"".into(),
 		r#"
-			await Deno.core.ops.op_sql_execute_many("select 1")
+			await votebase.sqlFetchScalar("select 1")
 			votebase.Action("test_action", async () => {
 				return true
 			})
@@ -132,7 +132,7 @@ async fn run_function_basics() {
 	let result = run_function::<u32>(
 		"".into(), r#"
 			votebase.Action("test_action", async () => {
-				return await Deno.core.ops.op_sql_execute_many("select 1")
+				return await votebase.sqlFetchScalar("select 1")
 			})
 		"#.to_string(),
 		"test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),
@@ -141,7 +141,7 @@ async fn run_function_basics() {
 
 	let result = run_function::<u32>(
 		"".into(), r#"
-			await Deno.core.ops.op_sql_execute_many("select 1")
+			await votebase.sqlFetchScalar("select 1")
 			votebase.View("test_view", async () => {
 				return true
 			})
@@ -153,7 +153,7 @@ async fn run_function_basics() {
 	let result = run_function::<u32>(
 		"".into(), r#"
 			votebase.View("test_view", async () => {
-				return await Deno.core.ops.op_sql_execute_many("select 1")
+				return await votebase.sqlFetchScalar("select 1")
 			})
 		"#.to_string(),
 		"test_view", serde_json::json!(null), FnType::View, opt(), opt(), pool.clone(),

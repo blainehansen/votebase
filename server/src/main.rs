@@ -70,7 +70,7 @@ async fn main() -> std::io::Result<()> {
 
 		let result = sqlx::query!(r#"
 			select id, next_scheduled_time
-			from votebase_catalog.detached_recurring_action as a
+			from votebase_catalog.detached_recurring_action
 			where not executing;
 		"#).fetch_all(&queue_pool).await;
 
