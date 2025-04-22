@@ -132,7 +132,9 @@ async fn run_function_basics() {
 	let result = run_function::<u32>(
 		"".into(), r#"
 			votebase.Action("test_action", async () => {
-				return await votebase.sqlFetchScalar("select 1")
+				const v = await votebase.sqlFetchScalar("select 1")
+				console.log(v)
+				return v
 			})
 		"#.to_string(),
 		"test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),

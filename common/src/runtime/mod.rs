@@ -76,6 +76,7 @@ deno_core::extension!(
 		// op_set_timeout,
 		op_sql_execute_statements,
 		op_sql_fetch_all,
+		op_sql_fetch_scalar,
 		op_sql_fetch_one,
 		op_sql_fetch_optional,
 
@@ -219,6 +220,24 @@ async fn op_sql_execute_statements(
 	Ok(result.rows_affected().try_into().map_err(js_err)?)
 }
 
+// https://github.com/postgres/postgres/blob/master/src/include/catalog/pg_type.dat
+fn convert_unknown_pg_value(
+	row: &sqlx::postgres::PgRow,
+	column: &sqlx::postgres::PgColumn,
+) -> Result<(String, serde_json::Value), deno_error::JsErrorBox> {
+	use sqlx::{Row, Column};
+	let type_info = column.type_info();
+	// type_info.kind()
+	// TODO need to map all oids (or pr against sqlx to make existing constants public), and handle edge cases like enums etc
+	let value = if type_info.type_eq(&sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(23))) {
+		row.get::<i32, usize>(column.ordinal()).into()
+	} else {
+		row.get(column.ordinal())
+	};
+
+	Ok((column.name().to_owned(), value))
+}
+
 #[deno_core::op2(async)]
 #[serde]
 async fn op_sql_fetch_all(
@@ -237,9 +256,11 @@ async fn op_sql_fetch_all(
 
 	Ok(rows.into_iter().map(|row| {
 		use sqlx::{Row, Column};
-		let columns = row.columns();
+		// TODO use this everywhere
+		// convert_unknown_pg_value(&row, column)
 		serde_json::Value::Object(
-			columns.iter().map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect()
+			row.columns().iter()
+				.map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect()
 		)
 	}).collect())
 }
@@ -258,7 +279,13 @@ async fn op_sql_fetch_scalar(
 		.connect().await.map_err(js_err)?;
 
 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-	sqlx::query_scalar_with(&query, args).fetch_one(connection).await.map_err(js_err)
+	let row = sqlx::query_with(&query, args).fetch_one(connection).await.map_err(js_err)?;
+
+	use sqlx::Row;
+	if row.len() > 1 {
+		return Err(deno_error::JsErrorBox::type_error("query doesn't return single scalar value"))
+	}
+	Ok(convert_unknown_pg_value(&row, row.column(0))?.1)
 }
 
 #[deno_core::op2(async)]
@@ -277,10 +304,10 @@ async fn op_sql_fetch_one(
 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
 	let row = sqlx::query_with(&query, args).fetch_one(connection).await.map_err(js_err)?;
 
-	use sqlx::{Row, Column};
+	use sqlx::Row;
 	let columns = row.columns();
 	Ok(serde_json::Value::Object(
-		columns.iter().map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect()
+		columns.iter().map(|column| convert_unknown_pg_value(&row, column)).collect::<Result<_, _>>()?
 	))
 }
 
