@@ -220,24 +220,6 @@ async fn op_sql_execute_statements(
 	Ok(result.rows_affected().try_into().map_err(js_err)?)
 }
 
-// https://github.com/postgres/postgres/blob/master/src/include/catalog/pg_type.dat
-fn convert_unknown_pg_value(
-	row: &sqlx::postgres::PgRow,
-	column: &sqlx::postgres::PgColumn,
-) -> Result<(String, serde_json::Value), deno_error::JsErrorBox> {
-	use sqlx::{Row, Column};
-	let type_info = column.type_info();
-	// type_info.kind()
-	// TODO need to map all oids (or pr against sqlx to make existing constants public), and handle edge cases like enums etc
-	let value = if type_info.type_eq(&sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(23))) {
-		row.get::<i32, usize>(column.ordinal()).into()
-	} else {
-		row.get(column.ordinal())
-	};
-
-	Ok((column.name().to_owned(), value))
-}
-
 #[deno_core::op2(async)]
 #[serde]
 async fn op_sql_fetch_all(
