@@ -61,32 +61,101 @@ pub fn convert_pg_row(row: tokio_postgres::Row, want_scalar: bool) -> Result<Val
 			return Err(deno_error::JsErrorBox::type_error("query doesn't return single scalar value"))
 		}
 
-		let row = columns[0];
+		let col = &columns[0];
+		return convert_pg_column(&row, col, 0);
 	}
 
-	Ok(())
+	unimplemented!()
 }
 
+
 pub fn convert_pg_column(
-	row: tokio_postgres::Row,
-	column: tokio_postgres::Column,
+	row: &tokio_postgres::Row,
+	column: &tokio_postgres::Column,
 	index: usize,
 ) -> Result<Val, deno_error::JsErrorBox> {
-	use tokio_postgres::types::{Type, Kind};
+	use tokio_postgres::types::{Kind, ToSql};
 
 	let type_ = column.type_();
+	// https://docs.rs/postgres-types/0.2.9/src/postgres_types/lib.rs.html#456
 	match type_.kind() {
 		Kind::Simple => {
-			if type_ == &Type::BOOL {
-				Ok(Val::Bool(row.try_get(index).map_err(js_err)?))
+			if <bool as ToSql>::accepts(type_) {
+				let value: Option<bool> = row.try_get(index).map_err(js_err)?;
+				Ok(value.map_or(Val::Null, Val::Bool))
 			}
-			else { Err(deno_error::JsErrorBox::generic("don't know how to convert")) }
+			else if <i8 as ToSql>::accepts(type_) {
+				let value: Option<i8> = row.try_get(index).map_err(js_err)?;
+				Ok(value.map_or(Val::Null, |v| v.into()))
+			}
+			else if <i16 as ToSql>::accepts(type_) {
+				let value: Option<i16> = row.try_get(index).map_err(js_err)?;
+				Ok(value.map_or(Val::Null, |v| v.into()))
+			}
+			else if <i32 as ToSql>::accepts(type_) {
+				let value: Option<i32> = row.try_get(index).map_err(js_err)?;
+				Ok(value.map_or(Val::Null, |v| v.into()))
+			}
+			else if <i64 as ToSql>::accepts(type_) {
+				let value: Option<i64> = row.try_get(index).map_err(js_err)?;
+				Ok(value.map_or(Val::Null, |v| v.into()))
+			}
+			else if <u32 as ToSql>::accepts(type_) {
+				let value: Option<u32> = row.try_get(index).map_err(js_err)?;
+				Ok(value.map_or(Val::Null, |v| v.into()))
+			}
+			else if <f32 as ToSql>::accepts(type_) {
+				let value: Option<f32> = row.try_get(index).map_err(js_err)?;
+				Ok(value.map_or(Val::Null, |v| v.into()))
+			}
+			else if <f64 as ToSql>::accepts(type_) {
+				let value: Option<f64> = row.try_get(index).map_err(js_err)?;
+				Ok(value.map_or(Val::Null, |v| v.into()))
+			}
+			else if <String as ToSql>::accepts(type_) {
+				let value: Option<String> = row.try_get(index).map_err(js_err)?;
+				Ok(value.map_or(Val::Null, Val::String))
+			}
+			// /// | `&[u8]`/`Vec<u8>`                 | BYTEA                                         |
+			// /// | `HashMap<String, Option<String>>` | HSTORE                                        |
+			// /// | `SystemTime`                      | TIMESTAMP, TIMESTAMP WITH TIME ZONE           |
+			// /// | `IpAddr`                          | INET
+			// /// | `chrono::NaiveDateTime`         | TIMESTAMP                           |
+			// /// | `chrono::DateTime<Utc>`         | TIMESTAMP WITH TIME ZONE            |
+			// /// | `chrono::DateTime<Local>`       | TIMESTAMP WITH TIME ZONE            |
+			// /// | `chrono::DateTime<FixedOffset>` | TIMESTAMP WITH TIME ZONE            |
+			// /// | `chrono::NaiveDate`             | DATE                                |
+			// /// | `chrono::NaiveTime`             | TIME                                |
+			// /// | `cidr::IpCidr`                  | CIDR                                |
+			// /// | `cidr::IpInet`                  | INET                                |
+			// /// | `time::PrimitiveDateTime`       | TIMESTAMP                           |
+			// /// | `time::OffsetDateTime`          | TIMESTAMP WITH TIME ZONE            |
+			// /// | `time::Date`                    | DATE                                |
+			// /// | `time::Time`                    | TIME                                |
+			// /// | `jiff::civil::Date`             | DATE                                |
+			// /// | `jiff::civil::DateTime`         | TIMESTAMP                           |
+			// /// | `jiff::civil::Time`             | TIME                                |
+			// /// | `jiff::Timestamp`               | TIMESTAMP WITH TIME ZONE            |
+			// /// | `eui48::MacAddress`             | MACADDR                             |
+			// /// | `geo_types::Point<f64>`         | POINT                               |
+			// /// | `geo_types::Rect<f64>`          | BOX                                 |
+			// /// | `geo_types::LineString<f64>`    | PATH                                |
+			// /// | `serde_json::Value`             | JSON, JSONB                         |
+			// /// | `uuid::Uuid`                    | UUID                                |
+			// /// | `bit_vec::BitVec`               | BIT, VARBIT                         |
+			// /// | `eui48::MacAddress`             | MACADDR                             |
+			// /// | `cidr::InetCidr`                | CIDR                                |
+			// /// | `cidr::InetAddr`                | INET                                |
+			else { Err(deno_error::JsErrorBox::generic(format!("don't know how to convert {}", type_.name()))) }
 
 		},
-		Kind::Enum(_) => { Ok(Val::String(row.try_get(index).map_err(js_err)?)) },
-		Kind::Array(inner) => {},
-		Kind::Range(inner) => {},
-		Kind::Composite(fields) => {},
+		Kind::Enum(_) => {
+			let value: Option<String> = row.try_get(index).map_err(js_err)?;
+			Ok(value.map_or(Val::Null, Val::String))
+		},
+		// Kind::Array(inner) => {},
+		// Kind::Range(inner) => {},
+		// Kind::Composite(fields) => {},
 		// TODO add oid?
 		// Kind::Multirange(inner) => {},
 		// Kind::Domain(inner) => {},

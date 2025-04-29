@@ -56,8 +56,11 @@ impl Runtime {
 	pub fn set_server_opt(&mut self, opt: crate::PgOpt) {
 		self.js_runtime.op_state().borrow_mut().put(ServerPgOpt(opt));
 	}
-	pub fn set_fn_opt(&mut self, opt: crate::PgOpt) {
-		self.js_runtime.op_state().borrow_mut().put(FnPgOpt::new(opt));
+	// pub fn set_fn_opt(&mut self, opt: crate::PgOpt) {
+	// 	self.js_runtime.op_state().borrow_mut().put(FnPgOpt::new(opt));
+	// }
+	pub fn set_fn_config(&mut self, config: tokio_postgres::Config) {
+		self.js_runtime.op_state().borrow_mut().put(config);
 	}
 
 	pub fn set_pg_pool(&mut self, pool: crate::PgPool) {
@@ -74,11 +77,11 @@ deno_core::extension!(
 	ops = [
 		op_fetch,
 		// op_set_timeout,
-		op_sql_execute_statements,
-		op_sql_fetch_all,
+		// op_sql_execute_statements,
+		// op_sql_fetch_all,
 		op_sql_fetch_scalar,
-		op_sql_fetch_one,
-		op_sql_fetch_optional,
+		// op_sql_fetch_one,
+		// op_sql_fetch_optional,
 
 		op_register_fn,
 		// op_register_recurring_action,
@@ -103,23 +106,6 @@ const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 
 #[derive(Debug)]
 struct ServerPgOpt(PgOpt);
-struct FnPgOpt {
-	opt: PgOpt,
-	connection: Option<sqlx::postgres::PgConnection>,
-}
-
-impl FnPgOpt {
-	fn new(opt: PgOpt) -> FnPgOpt {
-		FnPgOpt { opt, connection: None }
-	}
-	async fn connect(&mut self) -> Result<&mut sqlx::postgres::PgConnection, sqlx::Error> {
-		if self.connection.is_none() {
-			self.connection = Some(sqlx::postgres::PgConnection::connect_with(&self.opt).await?);
-		}
-		Ok(self.connection.as_mut().unwrap())
-	}
-}
-
 
 fn demand_external_allowed(state: &RefCell<OpState>) -> Result<(), deno_error::JsErrorBox> {
 	let state = state.borrow();
@@ -173,79 +159,50 @@ const ERR_EXTERNAL_NOT_ALLOWED: &'static str = "runtime functions that interact 
 // 	Ok(result.rows_affected().try_into().map_err(js_err)?)
 // }
 
+// #[deno_core::op2(async)]
+// async fn op_sql_execute_statements(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[string] sql: String,
+// 	#[serde] params: Option<Vec<serde_json::Value>>,
+// ) -> Result<u32, deno_error::JsErrorBox> {
+// 	let state = state.as_ref();
+// 	demand_external_allowed(state)?;
+// 	let mut state = state.borrow_mut();
+// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+// 		.connect().await.map_err(js_err)?;
 
-fn make_args(params: Option<Vec<serde_json::Value>>) -> Result<sqlx::postgres::PgArguments, sqlx::error::BoxDynError> {
-	let mut args = sqlx::postgres::PgArguments::default();
-	use sqlx::Arguments;
-	match params {
-		None => Ok(args),
-		Some(params) => {
-			for param in params {
-				match param {
-					serde_json::Value::Null => { args.add(None::<bool>)?; },
-					serde_json::Value::Bool(param) => { args.add(param)?; },
-					serde_json::Value::Number(param) => {
-						if param.is_f64() {
-							args.add(param.as_f64())?;
-						} else {
-							args.add(param.as_i64())?;
-						}
-					},
-					serde_json::Value::String(param) => { args.add(param)?; },
-					serde_json::Value::Array(param) => { args.add(param)?; },
-					param => { args.add(param)?; },
-				}
-			}
+// 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+// 	let result = sqlx::query_with(&sql, args).execute(connection).await.map_err(js_err)?;
 
-			Ok(args)
-		},
-	}
-}
+// 	Ok(result.rows_affected().try_into().map_err(js_err)?)
+// }
 
-#[deno_core::op2(async)]
-async fn op_sql_execute_statements(
-	state: Rc<RefCell<OpState>>,
-	#[string] sql: String,
-	#[serde] params: Option<Vec<serde_json::Value>>,
-) -> Result<u32, deno_error::JsErrorBox> {
-	let state = state.as_ref();
-	demand_external_allowed(state)?;
-	let mut state = state.borrow_mut();
-	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-		.connect().await.map_err(js_err)?;
+// #[deno_core::op2(async)]
+// #[serde]
+// async fn op_sql_fetch_all(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[string] query: String,
+// 	#[serde] params: Option<Vec<serde_json::Value>>,
+// ) -> Result<Vec<serde_json::Value>, deno_error::JsErrorBox> {
+// 	let state = state.as_ref();
+// 	demand_external_allowed(state)?;
+// 	let mut state = state.borrow_mut();
+// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+// 		.connect().await.map_err(js_err)?;
 
-	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-	let result = sqlx::query_with(&sql, args).execute(connection).await.map_err(js_err)?;
+// 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+// 	let rows = sqlx::query_with(&query, args).fetch_all(connection).await.map_err(js_err)?;
 
-	Ok(result.rows_affected().try_into().map_err(js_err)?)
-}
-
-#[deno_core::op2(async)]
-#[serde]
-async fn op_sql_fetch_all(
-	state: Rc<RefCell<OpState>>,
-	#[string] query: String,
-	#[serde] params: Option<Vec<serde_json::Value>>,
-) -> Result<Vec<serde_json::Value>, deno_error::JsErrorBox> {
-	let state = state.as_ref();
-	demand_external_allowed(state)?;
-	let mut state = state.borrow_mut();
-	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-		.connect().await.map_err(js_err)?;
-
-	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-	let rows = sqlx::query_with(&query, args).fetch_all(connection).await.map_err(js_err)?;
-
-	Ok(rows.into_iter().map(|row| {
-		use sqlx::{Row, Column};
-		// TODO use this everywhere
-		// convert_unknown_pg_value(&row, column)
-		serde_json::Value::Object(
-			row.columns().iter()
-				.map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect()
-		)
-	}).collect())
-}
+// 	Ok(rows.into_iter().map(|row| {
+// 		use sqlx::{Row, Column};
+// 		// TODO use this everywhere
+// 		// convert_unknown_pg_value(&row, column)
+// 		serde_json::Value::Object(
+// 			row.columns().iter()
+// 				.map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect()
+// 		)
+// 	}).collect())
+// }
 
 #[deno_core::op2(async)]
 #[serde]
@@ -257,70 +214,80 @@ async fn op_sql_fetch_scalar(
 	let state = state.as_ref();
 	demand_external_allowed(state)?;
 	let mut state = state.borrow_mut();
-	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-		.connect().await.map_err(js_err)?;
+	let (client, connection) = deno_core::_ops::opstate_borrow_mut::<tokio_postgres::Config>(std::ops::DerefMut::deref_mut(&mut state))
+		.connect(tokio_postgres::NoTls).await.map_err(js_err)?;
 
-	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-	let row = sqlx::query_with(&query, args).fetch_one(connection).await.map_err(js_err)?;
+	tokio::spawn(async move {
+		if let Err(e) = connection.await {
+			log::error!("connection error: {}", e);
+		}
+	});
 
-	use sqlx::Row;
-	if row.len() > 1 {
-		return Err(deno_error::JsErrorBox::type_error("query doesn't return single scalar value"))
-	}
-	Ok(convert_unknown_pg_value(&row, row.column(0))?.1)
+	// let params = make_params(params);
+	let row = client.query_one(&query, &[]).await.map_err(js_err)?;
+	crate::convert_pg_row(row, true)
+
+	// let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+	// let row = sqlx::query_with(&query, args).fetch_one(connection).await.map_err(js_err)?;
+
+	// use sqlx::Row;
+	// if row.len() > 1 {
+	// 	return Err(deno_error::JsErrorBox::type_error("query doesn't return single scalar value"))
+	// }
+	// Ok(convert_unknown_pg_value(&row, row.column(0))?.1)
 }
 
-#[deno_core::op2(async)]
-#[serde]
-async fn op_sql_fetch_one(
-	state: Rc<RefCell<OpState>>,
-	#[string] query: String,
-	#[serde] params: Option<Vec<serde_json::Value>>,
-) -> Result<serde_json::Value, deno_error::JsErrorBox> {
-	let state = state.as_ref();
-	demand_external_allowed(state)?;
-	let mut state = state.borrow_mut();
-	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-		.connect().await.map_err(js_err)?;
+// #[deno_core::op2(async)]
+// #[serde]
+// async fn op_sql_fetch_one(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[string] query: String,
+// 	#[serde] params: Option<Vec<serde_json::Value>>,
+// ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+// 	let state = state.as_ref();
+// 	demand_external_allowed(state)?;
+// 	let mut state = state.borrow_mut();
+// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+// 		.connect().await.map_err(js_err)?;
 
-	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-	let row = sqlx::query_with(&query, args).fetch_one(connection).await.map_err(js_err)?;
+// 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+// 	let row = sqlx::query_with(&query, args).fetch_one(connection).await.map_err(js_err)?;
 
-	use sqlx::Row;
-	let columns = row.columns();
-	Ok(serde_json::Value::Object(
-		columns.iter().map(|column| convert_unknown_pg_value(&row, column)).collect::<Result<_, _>>()?
-	))
-}
+// 	use sqlx::Row;
+// 	let columns = row.columns();
+// 	Ok(serde_json::Value::Object(
+// 		columns.iter().map(|column| convert_unknown_pg_value(&row, column)).collect::<Result<_, _>>()?
+// 	))
+// }
 
-#[deno_core::op2(async)]
-#[serde]
-async fn op_sql_fetch_optional(
-	state: Rc<RefCell<OpState>>,
-	#[string] query: String,
-	#[serde] params: Option<Vec<serde_json::Value>>,
-) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
-	let state = state.as_ref();
-	demand_external_allowed(state)?;
-	let mut state = state.borrow_mut();
-	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-		.connect().await.map_err(js_err)?;
+// #[deno_core::op2(async)]
+// #[serde]
+// async fn op_sql_fetch_optional(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[string] query: String,
+// 	#[serde] params: Option<Vec<serde_json::Value>>,
+// ) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
+// 	let state = state.as_ref();
+// 	demand_external_allowed(state)?;
+// 	let mut state = state.borrow_mut();
+// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
+// 		.connect().await.map_err(js_err)?;
 
-	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-	let row = sqlx::query_with(&query, args).fetch_optional(connection).await.map_err(js_err)?;
+// 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
+// 	let row = sqlx::query_with(&query, args).fetch_optional(connection).await.map_err(js_err)?;
 
-	match row {
-		None => Ok(None),
-		Some(row) => {
-			use sqlx::{Row, Column};
-			let columns = row.columns();
-			let obj: serde_json::Map<String, serde_json::Value> =
-				columns.iter().map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect();
+// 	match row {
+// 		None => Ok(None),
+// 		Some(row) => {
+// 			use sqlx::{Row, Column};
+// 			let columns = row.columns();
+// 			let obj: serde_json::Map<String, serde_json::Value> =
+// 				columns.iter().map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect();
 
-			Ok(Some(obj.into()))
-		},
-	}
-}
+// 			Ok(Some(obj.into()))
+// 		},
+// 	}
+// }
 
 pub type FnMap = std::collections::HashMap<String, Fn>;
 
@@ -544,7 +511,7 @@ async fn op_propose_self_replacement(
 
 async fn validate_candidate(
 	current_full_path: &str,
-	server_pg_opt: &sqlx::postgres::PgConnectOptions,
+	server_pg_opt: &PgOpt,
 	candidate: &CandidateSelfReplacement,
 ) -> Result<(Vec<String>, Vec<String>), deno_error::JsErrorBox> {
 	let mut inner = Runtime::new(&candidate.code).await.map_err(|e| js_err(e.root_cause()))?;
@@ -601,8 +568,8 @@ const TEMP_DB_COMMENT: &'static str = "'TEMP DB CREATED BY votebase'";
 async fn new_tempdb(
 	pgschema: &str,
 	intended_full_path: &str,
-	base_config: &sqlx::postgres::PgConnectOptions,
-) -> Result<(sqlx::postgres::PgConnectOptions, String), sqlx::Error> {
+	base_config: &PgOpt,
+) -> Result<(PgOpt, String), sqlx::Error> {
 	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
 	let intended_full_path = format_ruleset_schema(intended_full_path);
 	let dbname = format!("temp_db:{intended_full_path}|{now}");
@@ -620,7 +587,7 @@ async fn new_tempdb(
 	Ok((config, dbname))
 }
 
-async fn drop_tempdb(dbname: String, base_config: &sqlx::postgres::PgConnectOptions) -> Result<(), sqlx::Error> {
+async fn drop_tempdb(dbname: String, base_config: &PgOpt) -> Result<(), sqlx::Error> {
 	let mut conn = sqlx::PgConnection::connect_with(&base_config).await?;
 	sqlx::raw_sql(&format!(r#"drop database if exists "{dbname}";"#))
 		.execute(&mut conn).await?;
@@ -629,8 +596,8 @@ async fn drop_tempdb(dbname: String, base_config: &sqlx::postgres::PgConnectOpti
 
 async fn compute_diff(
 	pgschema: &str,
-	current: &sqlx::postgres::PgConnectOptions,
-	intended: &sqlx::postgres::PgConnectOptions,
+	current: &PgOpt,
+	intended: &PgOpt,
 ) -> Result<String, deno_error::JsErrorBox> {
 	#[cfg(debug_assertions)]
 	let mut command = {
@@ -658,7 +625,7 @@ async fn compute_diff(
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn convert_db_url(url: &sqlx::postgres::PgConnectOptions) -> String {
+fn convert_db_url(url: &PgOpt) -> String {
 	use sqlx::ConnectOptions;
 	let mut url = url.to_url_lossy();
 	url.set_scheme("postgresql").unwrap();
@@ -666,7 +633,7 @@ fn convert_db_url(url: &sqlx::postgres::PgConnectOptions) -> String {
 	String::from(url)
 }
 
-// pub async fn clean_all_temp_dbs(base_config: &sqlx::postgres::PgConnectOptions) -> Result<(), sqlx::Error> {
+// pub async fn clean_all_temp_dbs(base_config: &PgOpt) -> Result<(), sqlx::Error> {
 // 	let mut conn = sqlx::PgConnection::connect_with(base_config).await?;
 
 // 	let temp_dbs = sqlx::query!(
@@ -938,7 +905,14 @@ pub async fn run_view(
 	server_role_pool: &crate::PgPool,
 ) -> Result<String, DenoError> {
 	let view_role = format_ruleset_role(&current_full_path, RoleType::View);
-	let view_role_url = server_pg_opt.clone().username(&view_role).password(view_pass);
+	// let view_role_url = convert_db_url(&fn_role_url).parse().unwrap();
+	// let view_role_url = server_pg_opt.clone().username(&view_role).password(view_pass);
+	let mut view_role_url = tokio_postgres::Config::new();
+	view_role_url
+		.dbname(server_pg_opt.get_database().unwrap())
+		.port(server_pg_opt.get_port()).host(server_pg_opt.get_host())
+		.user(view_role).password(view_pass);
+
 	run_function(
 		current_full_path, ruleset_code, view_name, query, FnType::View,
 		view_role_url, server_pg_opt, server_role_pool.clone(),
@@ -951,7 +925,7 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
-	fn_role_url: PgOpt,
+	fn_role_url: tokio_postgres::Config,
 	server_pg_opt: PgOpt,
 	server_role_pool: crate::PgPool,
 ) -> Result<V, DenoError> {
@@ -975,9 +949,9 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	};
 
 	runtime.set_external_allowed(true);
-	runtime.set_fn_opt(fn_role_url);
 	runtime.set_server_opt(server_pg_opt);
 	runtime.set_pg_pool(server_role_pool);
+	runtime.set_fn_config(fn_role_url);
 	runtime.set_current_full_path(current_full_path);
 
 	// TODO also pass user_id here, maybe with some other context in the future
