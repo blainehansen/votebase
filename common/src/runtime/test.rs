@@ -4,6 +4,9 @@ const DEV_DB_URL: &'static str = "postgres://dev_admin_user:dev_admin_password@l
 fn opt() -> PgOpt {
 	DEV_DB_URL.parse().unwrap()
 }
+fn conf() -> tokio_postgres::Config {
+	DEV_DB_URL.parse().unwrap()
+}
 
 fn boil_string(s: &str) -> String {
 	s.split_whitespace().collect::<Vec<&str>>().join(" ")
@@ -79,7 +82,7 @@ async fn test_propose_self_replacement() {
 				if (typeof u !== 'string' || u.length !== 36)
 					throw new Error(`proposeSelfReplacement didn't return uuid: ${u}`)
 			})
-		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),
+		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
 	).await.unwrap();
 
 	let mut result = sqlx::query!(r#"
@@ -109,7 +112,7 @@ async fn test_propose_self_replacement() {
 					db_migration: "alter table stuff add column color text;",
 				})
 			})
-		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),
+		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
 	).await.unwrap_err();
 	assert!(result.to_string().contains("candidate for root has misdeclared schema"));
 }
@@ -125,7 +128,7 @@ async fn run_function_basics() {
 	// 			return true
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),
+	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
 	// ).await.unwrap_err();
 	// assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
@@ -137,7 +140,7 @@ async fn run_function_basics() {
 				return v
 			})
 		"#.to_string(),
-		"test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
 	).await.unwrap();
 	assert_eq!(result, 1);
 
@@ -148,7 +151,7 @@ async fn run_function_basics() {
 	// 			return true
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_view", serde_json::json!(null), FnType::View, opt(), opt(), pool.clone(),
+	// 	"test_view", serde_json::json!(null), FnType::View, conf(), opt(), pool.clone(),
 	// ).await.unwrap_err();
 	// assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
@@ -158,7 +161,7 @@ async fn run_function_basics() {
 	// 			return await votebase.sqlFetchScalar("select 1")
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_view", serde_json::json!(null), FnType::View, opt(), opt(), pool.clone(),
+	// 	"test_view", serde_json::json!(null), FnType::View, conf(), opt(), pool.clone(),
 	// ).await.unwrap();
 	// assert_eq!(result, 1);
 
@@ -183,7 +186,7 @@ async fn run_function_basics() {
 	// 			return luke
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),
+	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
 	// ).await.unwrap();
 	// let result = sqlx::query!(r#"select id, email from votebase_catalog.member"#).fetch_one(&pool).await.unwrap();
 	// assert_eq!(result.id, luke.parse::<sqlx::types::Uuid>().unwrap());
@@ -219,7 +222,7 @@ async fn run_function_basics() {
 	// 			return sch1
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_action", serde_json::json!(null), FnType::Action, opt(), opt(), pool.clone(),
+	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
 	// ).await.unwrap();
 	// let result = sqlx::query!(r#"
 	// 	select id, description, scheduled_time, full_path, action_name, action_arg

@@ -47,6 +47,14 @@ async fn main() -> std::io::Result<()> {
 		.max_connections(max_connections)
 		.connect_with(database_url).await.unwrap();
 
+	let mut fn_config = tokio_postgres::Config::new();
+	fn_config
+		.port(db_port)
+		.host(&db_host)
+		.database(&db_database)
+		.username(db_votebase_user)
+		.password(&db_votebase_pass);
+
 	let queue_pool = pool.clone();
 	tokio::task::spawn(async move {
 		let result = sqlx::query!(r#"

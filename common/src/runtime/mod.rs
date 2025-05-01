@@ -873,13 +873,15 @@ pub async fn run_action(
 	action_pass: &str,
 	migrator_pass: &str,
 	arg: serde_json::Value,
+	mut action_role_url: tokio_postgres::Config,
 	server_pg_opt: PgOpt,
 	server_role_pool: &crate::PgPool,
 ) -> Result<(), DenoError> {
-	let action_role = format_ruleset_role(&current_full_path, RoleType::Action);
-	let action_role_url = server_pg_opt.clone().username(&action_role).password(action_pass);
 	let migrator_role = format_ruleset_role(&current_full_path, RoleType::Migrator);
-	let migrator_role_url = server_pg_opt.clone().username(&migrator_role).password(migrator_pass);
+	let mut migrator_role_url = action_role_url.clone();
+	migrator_role_url.user(&migrator_role).password(migrator_pass);
+	let action_role = format_ruleset_role(&current_full_path, RoleType::Action);
+	action_role_url.user(&action_role).password(action_pass);
 
 	let new_ruleset_id = run_function::<Option<String>>(
 		current_full_path, ruleset_code, action_name, arg, FnType::Action,
@@ -901,17 +903,12 @@ pub async fn run_view(
 	view_name: &str,
 	view_pass: &str,
 	query: serde_json::Value,
+	mut view_role_url: tokio_postgres::Config,
 	server_pg_opt: PgOpt,
 	server_role_pool: &crate::PgPool,
 ) -> Result<String, DenoError> {
 	let view_role = format_ruleset_role(&current_full_path, RoleType::View);
-	// let view_role_url = convert_db_url(&fn_role_url).parse().unwrap();
-	// let view_role_url = server_pg_opt.clone().username(&view_role).password(view_pass);
-	let mut view_role_url = tokio_postgres::Config::new();
-	view_role_url
-		.dbname(server_pg_opt.get_database().unwrap())
-		.port(server_pg_opt.get_port()).host(server_pg_opt.get_host())
-		.user(view_role).password(view_pass);
+	view_role_url.user(view_role).password(view_pass);
 
 	run_function(
 		current_full_path, ruleset_code, view_name, query, FnType::View,
