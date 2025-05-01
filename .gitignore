@@ -8,6 +8,9 @@ node_modules
 frontend/.vitepress/cache
 frontend/.vitepress/dist
 
+# generated sql query code
+queries
+
 # Added by cargo
 
 /target

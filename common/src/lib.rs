@@ -2,8 +2,11 @@
 
 pub mod runtime;
 
-pub type PgPool = sqlx::Pool<sqlx::Postgres>;
-pub type PgOpt = sqlx::postgres::PgConnectOptions;
+pub use votebase_queries::{queries, deadpool_postgres as deadpool, tokio_postgres as postgres};
+
+pub type PgPool = deadpool::Pool;
+pub type PgClient = deadpool::Client;
+pub type PgOpt = postgres::Config;
 
 #[derive(Copy, Clone, Debug)]
 pub enum RoleType { Migrator, Action, View }
@@ -51,10 +54,10 @@ impl std::fmt::Display for ScheduledActionKind {
 
 
 use runtime::js_err;
-// use tokio_postgres::Client;
+// use postgres::Client;
 use serde_json::Value as Val;
 
-pub fn convert_pg_row(row: tokio_postgres::Row, want_scalar: bool) -> Result<Val, deno_error::JsErrorBox> {
+pub fn convert_pg_row(row: postgres::Row, want_scalar: bool) -> Result<Val, deno_error::JsErrorBox> {
 	let columns = row.columns();
 	if want_scalar {
 		if columns.len() != 1 {
@@ -70,11 +73,11 @@ pub fn convert_pg_row(row: tokio_postgres::Row, want_scalar: bool) -> Result<Val
 
 
 pub fn convert_pg_column(
-	row: &tokio_postgres::Row,
-	column: &tokio_postgres::Column,
+	row: &postgres::Row,
+	column: &postgres::Column,
 	index: usize,
 ) -> Result<Val, deno_error::JsErrorBox> {
-	use tokio_postgres::types::{Kind, ToSql};
+	use postgres::types::{Kind, ToSql};
 
 	let type_ = column.type_();
 	// https://docs.rs/postgres-types/0.2.9/src/postgres_types/lib.rs.html#456
@@ -216,7 +219,7 @@ pub fn convert_pg_column(
 
 // let url = "postgresql://dev_admin_user:dev%5Fadmin%5Fpassword@localhost:5432/dev_db";
 
-// 	let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls).await.unwrap();
+// 	let (client, connection) = postgres::connect(url, postgres::NoTls).await.unwrap();
 
 // 	tokio::spawn(async move {
 // 		if let Err(e) = connection.await {

@@ -3,8 +3,7 @@ mod test;
 
 use std::{cell::RefCell, rc::Rc};
 use deno_core::{v8, OpState};
-use sqlx::{types::{chrono, Uuid}, Connection};
-use crate::{PgOpt, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role};
+use crate::{queries, PgOpt, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role};
 
 pub type DenoError = deno_core::error::AnyError;
 
@@ -761,25 +760,16 @@ struct ExecutableRecurringAction {
 }
 
 pub async fn execute_recurring_action(
-	server_role_pool: crate::PgPool,
+	server_role_pool: crate::PgClient,
 	server_pg_opt: crate::PgOpt,
 	// is_detached: bool,
-	scheduled_action_uuid: Uuid,
+	scheduled_action_uuid: uuid::Uuid,
 ) -> Result<(), DenoError> {
 	// let scheduled_action_kind = if is_detached { ScheduledActionKind::DetachedRecurring } else { ScheduledActionKind::Recurring };
 	let scheduled_action_kind = ScheduledActionKind::DetachedRecurring;
 
-	let action = sqlx::query_as!(ExecutableRecurringAction, r#"
-		with updated as (
-			update votebase_catalog.detached_recurring_action
-			set executing = true
-			where executing = false and id = $1
-			returning description, next_scheduled_time, full_path, action_name, action_arg as arg
-		)
-		select code, action_pass, migrator_pass, updated.*
-		from updated inner join votebase_catalog.ruleset as r on updated.full_path = r.full_path;
-	"#, &scheduled_action_uuid).fetch_optional(&server_role_pool).await?;
-
+	let action = queries::common::acquire_detached_recurring_action()
+		.bind(&server_role_pool, &scheduled_action_uuid).opt().await?;
 	// if is_detached {
 	// } else {
 	// 	unimplemented!()
@@ -803,12 +793,8 @@ pub async fn execute_recurring_action(
 				server_pg_opt.clone(), &server_role_pool,
 			).await?;
 
-			let next_scheduled_time = sqlx::query!(r#"
-				update votebase_catalog.detached_recurring_action
-				set executing = false, executed_count = executed_count + 1
-				where id = $1
-				returning next_scheduled_time;
-			"#, &scheduled_action_uuid).fetch_one(&server_role_pool).await?.next_scheduled_time.and_utc();
+			let next_scheduled_time = queries::common::release_detached_recurring_action()
+				.bind(&server_role_pool, &scheduled_action_uuid).one().await?.and_utc();
 			// if is_detached {
 			// } else {
 			// 	unimplemented!()
@@ -830,7 +816,7 @@ pub async fn execute_recurring_action(
 pub async fn execute_scheduled_action(
 	server_role_pool: crate::PgPool,
 	server_pg_opt: crate::PgOpt,
-	scheduled_action_uuid: Uuid,
+	scheduled_action_uuid: uuid::Uuid,
 ) -> Result<(), DenoError> {
 	let action = sqlx::query!(r#"
 		with updated as (
@@ -889,7 +875,7 @@ pub async fn run_action(
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
-		let new_ruleset_id = new_ruleset_id.parse::<sqlx::types::Uuid>()?;
+		let new_ruleset_id = new_ruleset_id.parse::<uuid::Uuid>()?;
 		info!("apply_candidate {new_ruleset_id}");
 		replace_ruleset(&server_role_pool, migrator_role_url, new_ruleset_id).await?;
 	}

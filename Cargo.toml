@@ -5,19 +5,15 @@ members = [
 	"common",
 	"cli",
 	"server",
+	"queries",
 ]
 
 [workspace.dependencies]
 deno_core = "0.341.0"
 deno_error = "0.5.5"
-serde = { version = "*" }
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", default-features = false }
-sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "macros", "uuid", "chrono"] }
-tokio-postgres = { version = "0.7" }
 uuid = { version = "*", features = ["serde", "v4"] }
 chrono = { version = "*", features = ["serde"] }
 tokio = { version = "1.40", features = ["full"] }
 log = "0.4"
-
-[profile.dev.package.sqlx-macros]
-opt-level = 3
