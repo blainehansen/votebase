@@ -10,10 +10,12 @@ pub enum VotebaseError {
 
 	#[error("internal error")]
 	DenoError(#[from] runtime::DenoError),
-	#[error("internal error")]
-	SqlxError(#[from] sqlx::Error),
+	#[error("internal postgres error")]
+	PostgresError(#[from] tokio_postgres::Error),
+	#[error("internal pool error")]
+	PoolError(#[from] deadpool_postgres::PoolError),
 	#[error("interal uuid error")]
-	UuidParseError(#[from] sqlx::types::uuid::Error)
+	UuidParseError(#[from] uuid::Error)
 }
 
 
@@ -38,7 +40,8 @@ impl actix_web::ResponseError for VotebaseError {
 		match self {
 			Self::FnNotFoundError(_) | Self::RulesetNotFoundError(_) => actix_web::http::StatusCode::NOT_FOUND,
 			| Self::DenoError(_)
-			| Self::SqlxError(_)
+			| Self::PostgresError(_)
+			| Self::PoolError(_)
 			| Self::UuidParseError(_)
 				=> actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
 		}

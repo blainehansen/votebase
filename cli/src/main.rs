@@ -1,11 +1,21 @@
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+use votebase_common::{postgres, deadpool};
+use std::str::FromStr;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let args: Vec<String> = std::env::args().skip(1).collect();
 	let admin_connection_string = args.get(0).expect("first and only parameter should be a database url");
 
-	let db_url: sqlx::postgres::PgConnectOptions = admin_connection_string.parse().expect("invalid db url");
-	let db_database = db_url.get_database().unwrap().to_owned();
-	let pool = sqlx::PgPool::connect_with(db_url).await.expect("unable to connect");
+	let config = postgres::Config::from_str(admin_connection_string)?;
+	let db_database = config.get_dbname().unwrap().to_owned();
+
+	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls))
+		.max_size(5) // Adjust pool size as needed
+		.build()?;
+
+	let mut client = pool.get().await?;
 
 	#[cfg(debug_assertions)]
 	let votebase_server_password = "votebase_server_dev_pass".to_string();
@@ -19,14 +29,17 @@ async fn main() -> std::io::Result<()> {
 		base64::prelude::BASE64_STANDARD.encode(random_bytes)
 	};
 
-	sqlx::raw_sql(&format!(include_str!("../schema.sql"), db_database=db_database, votebase_server_password=votebase_server_password))
-		.execute(&pool).await.expect("wasn't able to execute schema.sql");
+	let schema_sql = format!(include_str!("../schema.sql"), db_database=db_database, votebase_server_password=votebase_server_password);
+	client.batch_execute(&schema_sql).await?;
 
+	// Note: create_ruleset needs refactoring itself to use deadpool client instead of pool
+	// For now, we pass the pool, but the function implementation needs updating later.
 	votebase_common::runtime::create_ruleset(
-		&pool, None, "root",
+		&pool, // Pass the pool for now, needs refactor in create_ruleset
+		None, "root",
 		&vec!["__insert_initial".to_string()], &vec![],
 		include_str!("../../rulesets/accept-any/ruleset.ts"), "",
-	).await.expect("wasn't able to create root seed ruleset");
+	).await?;
 
 	println!("{votebase_server_password}");
 

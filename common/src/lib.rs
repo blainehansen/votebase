@@ -52,7 +52,6 @@ impl std::fmt::Display for ScheduledActionKind {
 	}
 }
 
-
 use runtime::js_err;
 // use postgres::Client;
 use serde_json::Value as Val;

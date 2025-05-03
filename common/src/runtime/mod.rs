@@ -3,7 +3,8 @@ mod test;
 
 use std::{cell::RefCell, rc::Rc};
 use deno_core::{v8, OpState};
-use crate::{queries, PgOpt, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role};
+use uuid::Uuid;
+use crate::{queries, PgOpt, PgPool, PgClient, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role, postgres};
 
 pub type DenoError = deno_core::error::AnyError;
 
@@ -52,19 +53,23 @@ impl Runtime {
 		self.js_runtime.op_state().borrow_mut().put(allowed);
 	}
 
+	pub fn set_fn_client(&mut self, client: PgClient) {
+		self.js_runtime.op_state().borrow_mut().put(client);
+	}
+
 	pub fn set_server_opt(&mut self, opt: crate::PgOpt) {
 		self.js_runtime.op_state().borrow_mut().put(ServerPgOpt(opt));
 	}
 	// pub fn set_fn_opt(&mut self, opt: crate::PgOpt) {
 	// 	self.js_runtime.op_state().borrow_mut().put(FnPgOpt::new(opt));
 	// }
-	pub fn set_fn_config(&mut self, config: tokio_postgres::Config) {
+	pub fn set_fn_config(&mut self, config: postgres::Config) {
 		self.js_runtime.op_state().borrow_mut().put(config);
 	}
 
-	pub fn set_pg_pool(&mut self, pool: crate::PgPool) {
-		self.js_runtime.op_state().borrow_mut().put(pool);
-	}
+	// pub fn set_pg_pool(&mut self, pool: crate::PgPool) {
+	// 	self.js_runtime.op_state().borrow_mut().put(pool);
+	// }
 
 	pub fn set_current_full_path(&mut self, path: String) {
 		self.js_runtime.op_state().borrow_mut().put(path);
@@ -212,28 +217,15 @@ async fn op_sql_fetch_scalar(
 ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
 	let state = state.as_ref();
 	demand_external_allowed(state)?;
-	let mut state = state.borrow_mut();
-	let (client, connection) = deno_core::_ops::opstate_borrow_mut::<tokio_postgres::Config>(std::ops::DerefMut::deref_mut(&mut state))
-		.connect(tokio_postgres::NoTls).await.map_err(js_err)?;
-
-	tokio::spawn(async move {
-		if let Err(e) = connection.await {
-			log::error!("connection error: {}", e);
-		}
-	});
+	let state = state.borrow();
+	// TODO the possible downside to putting a client directly in here is that we'll connect even when we don't need to
+	// I'm hoping that the pooling library just solves that for us! as in no actual connection is acquired until the actual query happens
+	let client = deno_core::_ops::opstate_borrow::<PgClient>(&state);
 
 	// let params = make_params(params);
+	// let params = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
 	let row = client.query_one(&query, &[]).await.map_err(js_err)?;
 	crate::convert_pg_row(row, true)
-
-	// let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-	// let row = sqlx::query_with(&query, args).fetch_one(connection).await.map_err(js_err)?;
-
-	// use sqlx::Row;
-	// if row.len() > 1 {
-	// 	return Err(deno_error::JsErrorBox::type_error("query doesn't return single scalar value"))
-	// }
-	// Ok(convert_unknown_pg_value(&row, row.column(0))?.1)
 }
 
 // #[deno_core::op2(async)]
@@ -326,17 +318,13 @@ fn op_register_fn(
 	}
 }
 
-#[derive(Debug, deno_core::serde::Deserialize, sqlx::Type)]
-#[sqlx(type_name = "votebase_catalog.granularity_enum")]
-enum RecurrenceGranularity { Day, Week, Month, Year }
-
 #[deno_core::op2(async)]
 #[string]
 async fn op_create_recurring_action(
 	state: Rc<RefCell<OpState>>,
 	#[string] description: String,
 	#[serde] start: chrono::DateTime<chrono::Utc>,
-	#[serde] recurrence_granularity: RecurrenceGranularity,
+	#[serde] recurrence_granularity: votebase_queries::types::votebase_catalog::GranularityEnum,
 	recurrence_multiplier: i16,
 	#[string] action_name: String,
 	#[serde] action_arg: serde_json::Value,
@@ -346,15 +334,12 @@ async fn op_create_recurring_action(
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 
-	let action = sqlx::query!(r#"
-		insert into votebase_catalog.detached_recurring_action
-			(full_path, description, "start", recurrence_granularity, recurrence_multiplier, action_name, action_arg)
-		values ($1, $2, $3, $4, $5, $6, $7)
-		returning id, next_scheduled_time;
-	"#, current_full_path, description, start.naive_utc(), recurrence_granularity as RecurrenceGranularity, recurrence_multiplier, action_name, action_arg)
-		.fetch_one(server_role_pool).await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(js_err)?;
+	let action = queries::scheduled::create_detached_recurring_action()
+		.bind(&client, &current_full_path, &description, &start.naive_utc(), &recurrence_granularity, &recurrence_multiplier, &action_name, &action_arg)
+		.one().await.map_err(js_err)?;
 
-	let server_pg_opt = server_role_pool.connect_options().as_ref().clone();
+	// let server_pg_opt = server_role_pool.config().clone();
 	queue_scheduled_action(server_role_pool.clone(), server_pg_opt, ScheduledActionKind::DetachedRecurring, action.id, action.next_scheduled_time.and_utc());
 
 	Ok(action.id.to_string())
@@ -370,10 +355,9 @@ async fn op_remove_recurring_action(
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 
-	sqlx::query!(r#"
-		delete from votebase_catalog.detached_recurring_action
-		where id = $1;
-	"#, scheduled_action_uuid).execute(server_role_pool).await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(js_err)?;
+	queries::scheduled::remove_detached_recurring_action()
+		.bind(&client, &scheduled_action_uuid).await.map_err(js_err)?;
 
 	Ok(())
 }
@@ -393,13 +377,12 @@ async fn op_schedule_action(
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 
-	let id = sqlx::query!(r#"
-		insert into votebase_catalog.detached_scheduled_action (full_path, description, scheduled_time, action_name, action_arg)
-		values ($1, $2, $3, $4, $5)
-		returning id;
-	"#, current_full_path, description, scheduled_time, action_name, action_arg).fetch_one(server_role_pool).await.map_err(js_err)?.id;
+	let mut client = server_role_pool.get().await.map_err(js_err)?;
+	let id = queries::scheduled::create_detached_scheduled_action()
+		.bind(&client, &current_full_path, &description, &scheduled_time.fixed_offset(), &action_name, &action_arg)
+		.one().await.map_err(js_err)?;
 
-	let server_pg_opt = server_role_pool.connect_options().as_ref().clone();
+	// let server_pg_opt = server_role_pool.manager().
 	queue_scheduled_action(server_role_pool.clone(), server_pg_opt, ScheduledActionKind::DetachedScheduled, id, scheduled_time);
 
 	Ok(id.to_string())
@@ -415,10 +398,9 @@ async fn op_unschedule_action(
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 
-	sqlx::query!(r#"
-		delete from votebase_catalog.detached_scheduled_action
-		where id = $1;
-	"#, scheduled_action_uuid).execute(server_role_pool).await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(js_err)?;
+	queries::scheduled::remove_detached_scheduled_action()
+		.bind(&client, &scheduled_action_uuid).await.map_err(js_err)?;
 
 	Ok(())
 }
@@ -433,10 +415,10 @@ async fn op_enroll_member(
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 
-	let id = sqlx::query!(
-		r#"insert into votebase_catalog.member (email) values ($1) returning id;"#,
-		email,
-	).fetch_one(server_role_pool).await.map_err(js_err)?.id;
+	let client = server_role_pool.get().await.map_err(js_err)?;
+	let id = queries::members::enroll_member()
+		.bind(&client, &email)
+		.one().await.map_err(js_err)?;
 
 	// TODO perhaps at some point there's a notification email sent to this person here or something
 
@@ -452,10 +434,9 @@ async fn op_remove_member_by_email(
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 
-	sqlx::query!(
-		r#"delete from votebase_catalog.member where email = $1"#,
-		email,
-	).execute(server_role_pool).await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(js_err)?;
+	queries::members::remove_member_by_email()
+		.bind(&client, &email).await.map_err(js_err)?;
 
 	// TODO perhaps at some point there's a notification email sent to this person here or something
 
@@ -468,12 +449,11 @@ async fn op_remove_member_by_uuid(
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
 
-	sqlx::query!(
-		r#"delete from votebase_catalog.member where id = $1"#,
-		member_uuid,
-	).execute(server_role_pool).await.map_err(js_err)?;
+	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let client = server_role_pool.get().await.map_err(js_err)?;
+	queries::members::remove_member_by_uuid()
+		.bind(&client, &member_uuid).await.map_err(js_err)?;
 
 	// TODO perhaps at some point there's a notification email sent to this person here or something
 
@@ -500,17 +480,19 @@ async fn op_propose_self_replacement(
 	let (actions, views) = validate_candidate(current_full_path, &server_pg_opt.0, &candidate).await?;
 
 	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
-	let candidate_uuid = sqlx::query!(
-		r#"select u as "candidate_uuid!" from votebase_catalog.insert_candidate_replacement($1, $2, $3, $4, $5, $6) as t(u);"#,
-		&current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration,
-	).fetch_one(server_role_pool).await.map_err(js_err)?.candidate_uuid;
+	let client = server_role_pool.get().await.map_err(js_err)?;
+	let candidate_uuid = queries::rulesets::insert_candidate_replacement()
+		.bind(&client, &current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration)
+		.one().await.map_err(js_err)?;
 
-	Ok(candidate_uuid.into())
+	Ok(candidate_uuid.to_string())
 }
 
+// TODO all of this makes me nervous for performance. the repeated connecting over and over
+// it would be nice to have a separate database server for this kind of analysis?
 async fn validate_candidate(
 	current_full_path: &str,
-	server_pg_opt: &PgOpt,
+	server_pg_config: &PgOpt,
 	candidate: &CandidateSelfReplacement,
 ) -> Result<(Vec<String>, Vec<String>), deno_error::JsErrorBox> {
 	let mut inner = Runtime::new(&candidate.code).await.map_err(|e| js_err(e.root_cause()))?;
@@ -528,22 +510,24 @@ async fn validate_candidate(
 	}
 
 	let pgschema = format_ruleset_schema(current_full_path);
-	let (declared_tempdb, declared_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|declared"), &server_pg_opt).await.map_err(js_err)?;
-	let (actual_tempdb, actual_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|actual"), &server_pg_opt).await.map_err(js_err)?;
+	let (declared_tempdb_config, declared_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|declared"), server_pg_config)
+		.await.map_err(js_err)?;
+	let (actual_tempdb_config, actual_dbname) = new_tempdb(&pgschema, &format!("{current_full_path}|actual"), server_pg_config)
+		.await.map_err(js_err)?;
 
 	let result = (|| async {
-		let mut declared_conn = sqlx::PgConnection::connect_with(&declared_tempdb).await.map_err(js_err)?;
-		sqlx::raw_sql(&format!(r#"
-			create schema "{pgschema}";
-		"#)).execute(&mut declared_conn).await.map_err(js_err)?;
-		sqlx::raw_sql(&candidate.db_schema).execute(&mut declared_conn).await.map_err(js_err)?;
+		let (declared_client, declared_conn) = declared_tempdb_config.connect(postgres::NoTls).await.map_err(js_err)?;
+		tokio::spawn(async move { if let Err(e) = declared_conn.await { log::error!("DB connection error: {}", e); } });
+		declared_client.batch_execute(&format!(r#"create schema "{pgschema}";"#)).await.map_err(js_err)?;
+		declared_client.batch_execute(&candidate.db_schema).await.map_err(js_err)?;
 
-		let current_schema = compute_diff(&pgschema, &actual_tempdb, &server_pg_opt).await.map_err(js_err)?;
-		let mut actual_conn = sqlx::PgConnection::connect_with(&actual_tempdb).await.map_err(js_err)?;
-		sqlx::raw_sql(&current_schema).execute(&mut actual_conn).await.map_err(js_err)?;
-		sqlx::raw_sql(&candidate.db_migration).execute(&mut actual_conn).await.map_err(js_err)?;
+		let current_schema = compute_diff(&pgschema, &actual_tempdb_config, server_pg_config).await.map_err(js_err)?;
+		let (actual_client, actual_conn) = actual_tempdb_config.connect(postgres::NoTls).await.map_err(js_err)?;
+		tokio::spawn(async move { if let Err(e) = actual_conn.await { log::error!("DB connection error: {}", e); } });
+		actual_client.batch_execute(&current_schema).await.map_err(js_err)?;
+		actual_client.batch_execute(&candidate.db_migration).await.map_err(js_err)?;
 
-		let diff = compute_diff(&pgschema, &declared_tempdb, &actual_tempdb).await.map_err(js_err)?;
+		let diff = compute_diff(&pgschema, &declared_tempdb_config, &actual_tempdb_config).await.map_err(js_err)?;
 		if !diff.is_empty() {
 			log::error!("{}", diff);
 			Err(deno_error::JsErrorBox::generic(format!("candidate for {current_full_path} has misdeclared schema")))
@@ -552,8 +536,8 @@ async fn validate_candidate(
 	})().await;
 
 	let (drop_declared, drop_actual) = tokio::join!(
-		async { drop_tempdb(declared_dbname, &server_pg_opt).await.map_err(js_err) },
-		async { drop_tempdb(actual_dbname, &server_pg_opt).await.map_err(js_err) },
+		async { drop_tempdb(declared_dbname, server_pg_config).await.map_err(js_err) },
+		async { drop_tempdb(actual_dbname, server_pg_config).await.map_err(js_err) },
 	);
 	drop_declared?;
 	drop_actual?;
@@ -568,35 +552,38 @@ async fn new_tempdb(
 	pgschema: &str,
 	intended_full_path: &str,
 	base_config: &PgOpt,
-) -> Result<(PgOpt, String), sqlx::Error> {
+) -> Result<(PgOpt, String), postgres::Error> {
 	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
 	let intended_full_path = format_ruleset_schema(intended_full_path);
 	let dbname = format!("temp_db:{intended_full_path}|{now}");
 
-	let mut conn = sqlx::PgConnection::connect_with(&base_config).await?;
-	sqlx::raw_sql(&format!(r#"
-		create database "{dbname}";
-	"#)).execute(&mut conn).await?;
-	sqlx::raw_sql(&format!(r#"
+	let (client, connection) = base_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+
+	// TODO is it possible to do this create database in the same query?
+	client.batch_execute(&format!(r#"create database "{dbname}";"#)).await?;
+	client.batch_execute(&format!(r#"
 		alter database "{dbname}" set search_path = '{pgschema}';
 		comment on database "{dbname}" is {TEMP_DB_COMMENT};
-	"#)).execute(&mut conn).await?;
+	"#)).await?;
 
-	let config = base_config.clone().database(&dbname);
+	let mut config = base_config.clone();
+	config.dbname(&dbname);
 	Ok((config, dbname))
 }
 
-async fn drop_tempdb(dbname: String, base_config: &PgOpt) -> Result<(), sqlx::Error> {
-	let mut conn = sqlx::PgConnection::connect_with(&base_config).await?;
-	sqlx::raw_sql(&format!(r#"drop database if exists "{dbname}";"#))
-		.execute(&mut conn).await?;
+async fn drop_tempdb(dbname: String, base_config: &PgOpt) -> Result<(), postgres::Error> {
+	let (client, connection) = base_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+
+	client.batch_execute(&format!(r#"drop database if exists "{dbname}";"#)).await?;
 	Ok(())
 }
 
 async fn compute_diff(
 	pgschema: &str,
-	current: &PgOpt,
-	intended: &PgOpt,
+	current_config: &PgOpt,
+	intended_config: &PgOpt,
 ) -> Result<String, deno_error::JsErrorBox> {
 	#[cfg(debug_assertions)]
 	let mut command = {
@@ -611,8 +598,8 @@ async fn compute_diff(
 		.arg("--unsafe")
 		.arg("--with-privileges")
 		.arg("--schema").arg(pgschema)
-		.arg(convert_db_url(current))
-		.arg(convert_db_url(intended))
+		.arg(convert_db_url(current_config))
+		.arg(convert_db_url(intended_config))
 		.output()
 		.await
 		.map_err(js_err)?;
@@ -625,26 +612,25 @@ async fn compute_diff(
 }
 
 fn convert_db_url(url: &PgOpt) -> String {
-	use sqlx::ConnectOptions;
-	let mut url = url.to_url_lossy();
-	url.set_scheme("postgresql").unwrap();
-	url.set_query(None);
-	String::from(url)
+	url.into()
+	// let mut url = url.to_url_lossy();
+	// url.set_scheme("postgresql").unwrap();
+	// url.set_query(None);
+	// url.to_string()
 }
 
-// pub async fn clean_all_temp_dbs(base_config: &PgOpt) -> Result<(), sqlx::Error> {
-// 	let mut conn = sqlx::PgConnection::connect_with(base_config).await?;
-
-// 	let temp_dbs = sqlx::query!(
+// pub async fn clean_all_temp_dbs(base_config: &PgOpt) -> Result<(), postgres::Error> {
+// 	let (mut client, connection) = base_config.connect(postgres::NoTls).await?;
+//  tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+// 	let temp_dbs = client.query(
 // 		r#"select datname from pg_database where obj_description(oid, 'pg_database') = $1;"#,
 // 		TEMP_DB_COMMENT,
 // 	)
-// 	.fetch_all(&mut conn)
 // 	.await?;
 
 // 	for row in temp_dbs {
-// 		if let Err(e) = sqlx::raw_sql(&format!(r#"drop database if exists "{}";"#, row.datname))
-// 			.execute(&mut conn)
+//    let datname: String = row.get(0);
+// 		if let Err(e) = client.batch_execute(&format!(r#"drop database if exists "{}";"#, datname))
 // 			.await
 // 		{
 // 			eprintln!("Failed to drop temporary database {}: {}", row.datname, e);
@@ -655,58 +641,56 @@ fn convert_db_url(url: &PgOpt) -> String {
 // }
 
 pub async fn replace_ruleset(
-	pool: &crate::PgPool,
-	migrator_role_url: PgOpt,
+	server_client: &PgClient,
+	migrator_role_config: PgOpt,
 	new_ruleset_id: Uuid,
-) -> Result<(), sqlx::Error> {
-	let db_migration = sqlx::query!(
-		r#"select m as "db_migration!" from votebase_catalog.apply_candidate($1) as t(m);"#,
-		new_ruleset_id,
-	).fetch_one(pool).await?.db_migration;
+) -> Result<(), postgres::Error> {
+	let db_migration = queries::rulesets::apply_candidate().bind(server_client, &new_ruleset_id).one().await?;
 
-	let mut migrator_connection = sqlx::PgConnection::connect_with(&migrator_role_url).await?;
-	sqlx::raw_sql(&db_migration).execute(&mut migrator_connection).await?;
+	let (migrator_client, migrator_connection) = migrator_role_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
+	migrator_client.batch_execute(&db_migration).await?;
 	Ok(())
 }
 
 pub async fn create_ruleset(
-	pool: &crate::PgPool,
+	client: &PgClient,
 	parent_full_path: Option<&str>, name: &str,
 	action_names: &Vec<String>, view_names: &Vec<String>,
 	ruleset_code: &str, db_schema: &str,
-) -> Result<(), sqlx::Error> {
-	let mut tx = pool.begin().await?;
+) -> Result<(), postgres::Error> {
+	let transaction = client.transaction().await?;
 
-	let ruleset = sqlx::query!(r#"
-		insert into votebase_catalog.ruleset (
-			parent_full_path, "name", actions, views, code, db_schema
-		) values (
-			$1, $2, $3, $4, $5, $6
-		) returning full_path, migrator_pass, action_pass, view_pass;
-	"#, parent_full_path, name, action_names, view_names, ruleset_code, db_schema)
-		.fetch_one(&mut *tx).await?;
+	let ruleset_row = queries::rulesets::insert_ruleset()
+		.bind(client, &parent_full_path, &name, &action_names, &view_names, &ruleset_code, &db_schema).one().await?;
 
-	let formatted_ruleset_role_migrator = format_ruleset_role(&ruleset.full_path, RoleType::Migrator);
-	let formatted_ruleset_role_action = format_ruleset_role(&ruleset.full_path, RoleType::Action);
-	let formatted_ruleset_role_view = format_ruleset_role(&ruleset.full_path, RoleType::View);
+	let full_path = ruleset_row.full_path;
 
-	sqlx::raw_sql(&format!(include_str!("./create-ruleset.sql"),
-		formatted_ruleset_schema=format_ruleset_schema(&ruleset.full_path),
+	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
+	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
+	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
+
+	let create_sql = format!(include_str!("./create-ruleset.sql"),
+		formatted_ruleset_schema=format_ruleset_schema(&full_path),
 		formatted_ruleset_role_migrator=formatted_ruleset_role_migrator,
 		formatted_ruleset_role_action=formatted_ruleset_role_action,
 		formatted_ruleset_role_view=formatted_ruleset_role_view,
-		migrator_pass=ruleset.migrator_pass,
-		action_pass=ruleset.action_pass,
-		view_pass=ruleset.view_pass,
-	)).execute(&mut *tx).await?;
-	tx.commit().await?;
+		migrator_pass=ruleset_row.migrator_pass,
+		action_pass=ruleset_row.action_pass,
+		view_pass=ruleset_row.view_pass,
+	);
+	transaction.batch_execute(&create_sql).await?;
+	transaction.commit().await?;
 
-	let migrator_options = pool.connect_options().as_ref().clone()
-		.username(&formatted_ruleset_role_migrator)
-		.password(&ruleset.migrator_pass);
+	// let base_config = pool.config();
+	let mut migrator_config = base_config.clone();
+	migrator_config.user(&formatted_ruleset_role_migrator);
+	migrator_config.password(Some(ruleset_row.migrator_pass));
 
-	let mut migrator_conn = sqlx::PgConnection::connect_with(&migrator_options).await?;
-	sqlx::raw_sql(&db_schema).execute(&mut migrator_conn).await?;
+	// Connect using postgres::connect
+	let (mut migrator_client, migrator_connection) = migrator_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
+	migrator_client.batch_execute(db_schema).await?;
 
 	Ok(())
 }
@@ -717,8 +701,8 @@ fn compute_time_until(scheduled_time: chrono::DateTime<chrono::Utc>) -> tokio::t
 }
 
 pub fn queue_scheduled_action(
-	server_role_pool: crate::PgPool,
-	server_pg_opt: crate::PgOpt,
+	server_role_pool: PgPool,
+	server_pg_opt: PgOpt,
 	scheduled_action_kind: ScheduledActionKind,
 	scheduled_action_uuid: Uuid,
 	scheduled_time: chrono::DateTime<chrono::Utc>,
@@ -760,15 +744,15 @@ struct ExecutableRecurringAction {
 }
 
 pub async fn execute_recurring_action(
-	server_role_pool: crate::PgClient,
-	server_pg_opt: crate::PgOpt,
+	server_role_pool: PgPool,
+	server_pg_opt: PgOpt,
 	// is_detached: bool,
 	scheduled_action_uuid: uuid::Uuid,
 ) -> Result<(), DenoError> {
 	// let scheduled_action_kind = if is_detached { ScheduledActionKind::DetachedRecurring } else { ScheduledActionKind::Recurring };
 	let scheduled_action_kind = ScheduledActionKind::DetachedRecurring;
 
-	let action = queries::common::acquire_detached_recurring_action()
+	let action = queries::scheduled::acquire_detached_recurring_action()
 		.bind(&server_role_pool, &scheduled_action_uuid).opt().await?;
 	// if is_detached {
 	// } else {
@@ -793,7 +777,7 @@ pub async fn execute_recurring_action(
 				server_pg_opt.clone(), &server_role_pool,
 			).await?;
 
-			let next_scheduled_time = queries::common::release_detached_recurring_action()
+			let next_scheduled_time = queries::scheduled::release_detached_recurring_action()
 				.bind(&server_role_pool, &scheduled_action_uuid).one().await?.and_utc();
 			// if is_detached {
 			// } else {
@@ -818,16 +802,10 @@ pub async fn execute_scheduled_action(
 	server_pg_opt: crate::PgOpt,
 	scheduled_action_uuid: uuid::Uuid,
 ) -> Result<(), DenoError> {
-	let action = sqlx::query!(r#"
-		with updated as (
-			update votebase_catalog.detached_scheduled_action
-			set executing = true
-			where executing = false and id = $1
-			returning description, scheduled_time, full_path, action_name, action_arg as arg
-		)
-		select code, action_pass, migrator_pass, updated.*
-		from updated inner join votebase_catalog.ruleset as r on updated.full_path = r.full_path;
-	"#, &scheduled_action_uuid).fetch_optional(&server_role_pool).await?;
+	let client = server_role_pool.get().await.map_err(js_err)?;
+	let action = queries::scheduled::acquire_detached_scheduled_action()
+		.bind(&client, &scheduled_action_uuid)
+		.opt().await.map_err(js_err)?;
 
 	match action {
 		None => { info!("wasn't able to acquire scheduled action {}", scheduled_action_uuid); Ok(()) },
@@ -839,13 +817,11 @@ pub async fn execute_scheduled_action(
 
 			run_action(
 				action.full_path, action.code, &action.action_name, &action.action_pass, &action.migrator_pass, action.arg,
-				server_pg_opt, &server_role_pool,
+				server_pg_opt.clone(), &server_role_pool,
 			).await?;
 
-			sqlx::query!(r#"
-				delete from votebase_catalog.detached_scheduled_action
-				where id = $1;
-			"#, &scheduled_action_uuid).execute(&server_role_pool).await?;
+			queries::scheduled::remove_detached_scheduled_action()
+				.bind(&client, &scheduled_action_uuid).await.map_err(js_err)?;
 
 			Ok(())
 		},
@@ -859,7 +835,7 @@ pub async fn run_action(
 	action_pass: &str,
 	migrator_pass: &str,
 	arg: serde_json::Value,
-	mut action_role_url: tokio_postgres::Config,
+	mut action_role_url: postgres::Config,
 	server_pg_opt: PgOpt,
 	server_role_pool: &crate::PgPool,
 ) -> Result<(), DenoError> {
@@ -889,7 +865,7 @@ pub async fn run_view(
 	view_name: &str,
 	view_pass: &str,
 	query: serde_json::Value,
-	mut view_role_url: tokio_postgres::Config,
+	mut view_role_url: postgres::Config,
 	server_pg_opt: PgOpt,
 	server_role_pool: &crate::PgPool,
 ) -> Result<String, DenoError> {
@@ -908,10 +884,15 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
-	fn_role_url: tokio_postgres::Config,
+	fn_role_url: postgres::Config,
 	server_pg_opt: PgOpt,
 	server_role_pool: crate::PgPool,
 ) -> Result<V, DenoError> {
+	// running a function could do a variety of things:
+	// - a mere view
+	// - an action, which can create new rulesets, replace the current one, etc
+	// for many runtime abilities the server is acting in it's capacity
+
 	let mut runtime = Runtime::new(&ruleset_code).await?;
 
 	// fn_role_url encodes the user, and therefore the role and powers of the connection
