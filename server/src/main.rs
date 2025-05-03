@@ -1,4 +1,4 @@
-use votebase_common::{runtime, PgPool, PgClient, PgOpt, postgres, deadpool, queries};
+use votebase_common::{runtime, PgPool, PgClient, PgConfig, postgres, deadpool, queries};
 
 mod error;
 use error::VotebaseError;

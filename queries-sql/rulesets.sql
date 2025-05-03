@@ -14,3 +14,7 @@ from votebase_catalog.insert_candidate_replacement(
 --! apply_candidate
 select m as "db_migration"
 from votebase_catalog.apply_candidate(:candidate_uuid) as t(m);
+
+--! test_select_candidate_replacement_ruleset
+select candidate_for, actions, views, code, db_schema, db_migration
+from votebase_catalog.candidate_replacement_ruleset;

@@ -4,7 +4,7 @@ mod test;
 use std::{cell::RefCell, rc::Rc};
 use deno_core::{v8, OpState};
 use uuid::Uuid;
-use crate::{queries, PgOpt, PgPool, PgClient, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role, postgres};
+use crate::{queries, PgConfig, PgPool, PgClient, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role, postgres};
 
 pub type DenoError = deno_core::error::AnyError;
 
@@ -53,23 +53,18 @@ impl Runtime {
 		self.js_runtime.op_state().borrow_mut().put(allowed);
 	}
 
+	pub fn set_server_pool(&mut self, pool: PgPool) {
+		self.js_runtime.op_state().borrow_mut().put(pool);
+	}
+	pub fn set_server_conf(&mut self, opt: PgConfig) {
+		self.js_runtime.op_state().borrow_mut().put(ServerPgOpt(opt));
+	}
+	pub fn set_fn_conf(&mut self, config: PgConfig) {
+		self.js_runtime.op_state().borrow_mut().put(config);
+	}
 	pub fn set_fn_client(&mut self, client: PgClient) {
 		self.js_runtime.op_state().borrow_mut().put(client);
 	}
-
-	pub fn set_server_opt(&mut self, opt: crate::PgOpt) {
-		self.js_runtime.op_state().borrow_mut().put(ServerPgOpt(opt));
-	}
-	// pub fn set_fn_opt(&mut self, opt: crate::PgOpt) {
-	// 	self.js_runtime.op_state().borrow_mut().put(FnPgOpt::new(opt));
-	// }
-	pub fn set_fn_config(&mut self, config: postgres::Config) {
-		self.js_runtime.op_state().borrow_mut().put(config);
-	}
-
-	// pub fn set_pg_pool(&mut self, pool: crate::PgPool) {
-	// 	self.js_runtime.op_state().borrow_mut().put(pool);
-	// }
 
 	pub fn set_current_full_path(&mut self, path: String) {
 		self.js_runtime.op_state().borrow_mut().put(path);
@@ -109,7 +104,7 @@ const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 
 
 #[derive(Debug)]
-struct ServerPgOpt(PgOpt);
+struct ServerPgOpt(PgConfig);
 
 fn demand_external_allowed(state: &RefCell<OpState>) -> Result<(), deno_error::JsErrorBox> {
 	let state = state.borrow();
@@ -331,7 +326,7 @@ async fn op_create_recurring_action(
 ) -> Result<String, deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 
 	let client = server_role_pool.get().await.map_err(js_err)?;
@@ -353,7 +348,7 @@ async fn op_remove_recurring_action(
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 
 	let client = server_role_pool.get().await.map_err(js_err)?;
 	queries::scheduled::remove_detached_recurring_action()
@@ -374,10 +369,10 @@ async fn op_schedule_action(
 ) -> Result<String, deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 
-	let mut client = server_role_pool.get().await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(js_err)?;
 	let id = queries::scheduled::create_detached_scheduled_action()
 		.bind(&client, &current_full_path, &description, &scheduled_time.fixed_offset(), &action_name, &action_arg)
 		.one().await.map_err(js_err)?;
@@ -396,7 +391,7 @@ async fn op_unschedule_action(
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 
 	let client = server_role_pool.get().await.map_err(js_err)?;
 	queries::scheduled::remove_detached_scheduled_action()
@@ -413,7 +408,7 @@ async fn op_enroll_member(
 ) -> Result<String, deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 
 	let client = server_role_pool.get().await.map_err(js_err)?;
 	let id = queries::members::enroll_member()
@@ -432,7 +427,7 @@ async fn op_remove_member_by_email(
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 
 	let client = server_role_pool.get().await.map_err(js_err)?;
 	queries::members::remove_member_by_email()
@@ -450,7 +445,7 @@ async fn op_remove_member_by_uuid(
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
 
-	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 	let client = server_role_pool.get().await.map_err(js_err)?;
 	queries::members::remove_member_by_uuid()
 		.bind(&client, &member_uuid).await.map_err(js_err)?;
@@ -479,7 +474,7 @@ async fn op_propose_self_replacement(
 	let server_pg_opt = deno_core::_ops::opstate_borrow::<ServerPgOpt>(&state);
 	let (actions, views) = validate_candidate(current_full_path, &server_pg_opt.0, &candidate).await?;
 
-	let server_role_pool = deno_core::_ops::opstate_borrow::<crate::PgPool>(&state);
+	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 	let client = server_role_pool.get().await.map_err(js_err)?;
 	let candidate_uuid = queries::rulesets::insert_candidate_replacement()
 		.bind(&client, &current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration)
@@ -492,7 +487,7 @@ async fn op_propose_self_replacement(
 // it would be nice to have a separate database server for this kind of analysis?
 async fn validate_candidate(
 	current_full_path: &str,
-	server_pg_config: &PgOpt,
+	server_pg_config: &PgConfig,
 	candidate: &CandidateSelfReplacement,
 ) -> Result<(Vec<String>, Vec<String>), deno_error::JsErrorBox> {
 	let mut inner = Runtime::new(&candidate.code).await.map_err(|e| js_err(e.root_cause()))?;
@@ -551,8 +546,8 @@ const TEMP_DB_COMMENT: &'static str = "'TEMP DB CREATED BY votebase'";
 async fn new_tempdb(
 	pgschema: &str,
 	intended_full_path: &str,
-	base_config: &PgOpt,
-) -> Result<(PgOpt, String), postgres::Error> {
+	base_config: &PgConfig,
+) -> Result<(PgConfig, String), postgres::Error> {
 	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
 	let intended_full_path = format_ruleset_schema(intended_full_path);
 	let dbname = format!("temp_db:{intended_full_path}|{now}");
@@ -572,7 +567,7 @@ async fn new_tempdb(
 	Ok((config, dbname))
 }
 
-async fn drop_tempdb(dbname: String, base_config: &PgOpt) -> Result<(), postgres::Error> {
+async fn drop_tempdb(dbname: String, base_config: &PgConfig) -> Result<(), postgres::Error> {
 	let (client, connection) = base_config.connect(postgres::NoTls).await?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
@@ -582,8 +577,8 @@ async fn drop_tempdb(dbname: String, base_config: &PgOpt) -> Result<(), postgres
 
 async fn compute_diff(
 	pgschema: &str,
-	current_config: &PgOpt,
-	intended_config: &PgOpt,
+	current_config: &PgConfig,
+	intended_config: &PgConfig,
 ) -> Result<String, deno_error::JsErrorBox> {
 	#[cfg(debug_assertions)]
 	let mut command = {
@@ -598,8 +593,8 @@ async fn compute_diff(
 		.arg("--unsafe")
 		.arg("--with-privileges")
 		.arg("--schema").arg(pgschema)
-		.arg(convert_db_url(current_config))
-		.arg(convert_db_url(intended_config))
+		.arg(convert_db_config(current_config))
+		.arg(convert_db_config(intended_config))
 		.output()
 		.await
 		.map_err(js_err)?;
@@ -611,15 +606,15 @@ async fn compute_diff(
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn convert_db_url(url: &PgOpt) -> String {
+fn convert_db_config(url: &PgConfig) -> String {
 	url.into()
-	// let mut url = url.to_url_lossy();
+	// let mut url = url.to_config_lossy();
 	// url.set_scheme("postgresql").unwrap();
 	// url.set_query(None);
 	// url.to_string()
 }
 
-// pub async fn clean_all_temp_dbs(base_config: &PgOpt) -> Result<(), postgres::Error> {
+// pub async fn clean_all_temp_dbs(base_config: &PgConfig) -> Result<(), postgres::Error> {
 // 	let (mut client, connection) = base_config.connect(postgres::NoTls).await?;
 //  tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 // 	let temp_dbs = client.query(
@@ -642,7 +637,7 @@ fn convert_db_url(url: &PgOpt) -> String {
 
 pub async fn replace_ruleset(
 	server_client: &PgClient,
-	migrator_role_config: PgOpt,
+	migrator_role_config: PgConfig,
 	new_ruleset_id: Uuid,
 ) -> Result<(), postgres::Error> {
 	let db_migration = queries::rulesets::apply_candidate().bind(server_client, &new_ruleset_id).one().await?;
@@ -702,7 +697,7 @@ fn compute_time_until(scheduled_time: chrono::DateTime<chrono::Utc>) -> tokio::t
 
 pub fn queue_scheduled_action(
 	server_role_pool: PgPool,
-	server_pg_opt: PgOpt,
+	server_pg_opt: PgConfig,
 	scheduled_action_kind: ScheduledActionKind,
 	scheduled_action_uuid: Uuid,
 	scheduled_time: chrono::DateTime<chrono::Utc>,
@@ -745,7 +740,7 @@ struct ExecutableRecurringAction {
 
 pub async fn execute_recurring_action(
 	server_role_pool: PgPool,
-	server_pg_opt: PgOpt,
+	server_pg_opt: PgConfig,
 	// is_detached: bool,
 	scheduled_action_uuid: uuid::Uuid,
 ) -> Result<(), DenoError> {
@@ -798,8 +793,8 @@ pub async fn execute_recurring_action(
 }
 
 pub async fn execute_scheduled_action(
-	server_role_pool: crate::PgPool,
-	server_pg_opt: crate::PgOpt,
+	server_role_pool: PgPool,
+	server_pg_opt: PgConfig,
 	scheduled_action_uuid: uuid::Uuid,
 ) -> Result<(), DenoError> {
 	let client = server_role_pool.get().await.map_err(js_err)?;
@@ -835,25 +830,25 @@ pub async fn run_action(
 	action_pass: &str,
 	migrator_pass: &str,
 	arg: serde_json::Value,
-	mut action_role_url: postgres::Config,
-	server_pg_opt: PgOpt,
-	server_role_pool: &crate::PgPool,
+	mut action_role_config: PgConfig,
+	server_pg_opt: PgConfig,
+	server_role_pool: &PgPool,
 ) -> Result<(), DenoError> {
 	let migrator_role = format_ruleset_role(&current_full_path, RoleType::Migrator);
-	let mut migrator_role_url = action_role_url.clone();
-	migrator_role_url.user(&migrator_role).password(migrator_pass);
+	let mut migrator_role_config = action_role_config.clone();
+	migrator_role_config.user(&migrator_role).password(migrator_pass);
 	let action_role = format_ruleset_role(&current_full_path, RoleType::Action);
-	action_role_url.user(&action_role).password(action_pass);
+	action_role_config.user(&action_role).password(action_pass);
 
 	let new_ruleset_id = run_function::<Option<String>>(
 		current_full_path, ruleset_code, action_name, arg, FnType::Action,
-		action_role_url, server_pg_opt, server_role_pool.clone(),
+		action_role_config, server_pg_opt, server_role_pool.clone(),
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
 		let new_ruleset_id = new_ruleset_id.parse::<uuid::Uuid>()?;
 		info!("apply_candidate {new_ruleset_id}");
-		replace_ruleset(&server_role_pool, migrator_role_url, new_ruleset_id).await?;
+		replace_ruleset(&server_role_pool, migrator_role_config, new_ruleset_id).await?;
 	}
 
 	Ok(())
@@ -865,16 +860,16 @@ pub async fn run_view(
 	view_name: &str,
 	view_pass: &str,
 	query: serde_json::Value,
-	mut view_role_url: postgres::Config,
-	server_pg_opt: PgOpt,
-	server_role_pool: &crate::PgPool,
+	mut view_role_config: PgConfig,
+	server_pg_opt: PgConfig,
+	server_role_pool: &PgPool,
 ) -> Result<String, DenoError> {
 	let view_role = format_ruleset_role(&current_full_path, RoleType::View);
-	view_role_url.user(view_role).password(view_pass);
+	view_role_config.user(view_role).password(view_pass);
 
 	run_function(
 		current_full_path, ruleset_code, view_name, query, FnType::View,
-		view_role_url, server_pg_opt, server_role_pool.clone(),
+		view_role_config, server_pg_opt, server_role_pool.clone(),
 	).await
 }
 
@@ -884,9 +879,9 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
-	fn_role_url: postgres::Config,
-	server_pg_opt: PgOpt,
-	server_role_pool: crate::PgPool,
+	fn_role_config: PgConfig,
+	server_pg_opt: PgConfig,
+	server_role_pool: PgPool,
 ) -> Result<V, DenoError> {
 	// running a function could do a variety of things:
 	// - a mere view
@@ -895,7 +890,7 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 
 	let mut runtime = Runtime::new(&ruleset_code).await?;
 
-	// fn_role_url encodes the user, and therefore the role and powers of the connection
+	// fn_role_config encodes the user, and therefore the role and powers of the connection
 	let fn_map = runtime.take_fn_map();
 	let function = fn_map.get(function_name)
 		.ok_or_else(|| deno_core::anyhow::anyhow!("{} '{}' not found", function_type, function_name))?;
@@ -913,9 +908,9 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	};
 
 	runtime.set_external_allowed(true);
-	runtime.set_server_opt(server_pg_opt);
-	runtime.set_pg_pool(server_role_pool);
-	runtime.set_fn_config(fn_role_url);
+	runtime.set_server_conf(server_pg_opt);
+	runtime.set_server_pool(server_role_pool);
+	runtime.set_fn_conf(fn_role_config);
 	runtime.set_current_full_path(current_full_path);
 
 	// TODO also pass user_id here, maybe with some other context in the future

@@ -6,7 +6,7 @@ pub use votebase_queries::{queries, deadpool_postgres as deadpool, tokio_postgre
 
 pub type PgPool = deadpool::Pool;
 pub type PgClient = deadpool::Client;
-pub type PgOpt = postgres::Config;
+pub type PgConfig = postgres::Config;
 
 #[derive(Copy, Clone, Debug)]
 pub enum RoleType { Migrator, Action, View }
@@ -53,7 +53,6 @@ impl std::fmt::Display for ScheduledActionKind {
 }
 
 use runtime::js_err;
-// use postgres::Client;
 use serde_json::Value as Val;
 
 pub fn convert_pg_row(row: postgres::Row, want_scalar: bool) -> Result<Val, deno_error::JsErrorBox> {

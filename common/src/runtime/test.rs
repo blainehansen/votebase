@@ -1,10 +1,8 @@
 use super::*;
+use crate::{deadpool, postgres};
 
 const DEV_DB_URL: &'static str = "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db";
-fn opt() -> PgOpt {
-	DEV_DB_URL.parse().unwrap()
-}
-fn conf() -> tokio_postgres::Config {
+fn conf() -> PgConfig {
 	DEV_DB_URL.parse().unwrap()
 }
 
@@ -14,7 +12,7 @@ fn boil_string(s: &str) -> String {
 
 #[test]
 fn test_convert_db_url() {
-	assert_eq!(convert_db_url(&opt()), "postgresql://dev_admin_user:dev%5Fadmin%5Fpassword@localhost:5432/dev_db");
+	assert_eq!(convert_db_config(&conf()), "postgresql://dev_admin_user:dev%5Fadmin%5Fpassword@localhost:5432/dev_db");
 }
 
 #[tokio::test(start_paused = true)]
@@ -51,19 +49,20 @@ async fn test_compute_time_until() {
 
 #[tokio::test]
 async fn test_propose_self_replacement() {
-	let pool = sqlx::postgres::PgPoolOptions::new().connect(DEV_DB_URL).await.unwrap();
-	sqlx::raw_sql(r#"
+	let pool = deadpool::Pool::builder(deadpool::Manager::new(conf(), postgres::NoTls)).max_size(5).build().unwrap();
+	let client = pool.get().await.unwrap();
+	client.batch_execute(r#"
 		drop schema if exists "ruleset:root" cascade;
 		drop role if exists "role:root|migrator";
 		drop role if exists "role:root|action";
 		drop role if exists "role:root|view";
 		delete from votebase_catalog.candidate_replacement_ruleset where true;
 		delete from votebase_catalog.ruleset where true;
-	"#).execute(&pool).await.unwrap();
+	"#).await.unwrap();
 
 	let current_full_path = "root";
 	create_ruleset(
-		&pool, None, &current_full_path, &vec![], &vec![],
+		&client, None, &current_full_path, &vec![], &vec![],
 		"", "create table stuff (id uuid primary key);",
 	).await.unwrap();
 
@@ -82,13 +81,11 @@ async fn test_propose_self_replacement() {
 				if (typeof u !== 'string' || u.length !== 36)
 					throw new Error(`proposeSelfReplacement didn't return uuid: ${u}`)
 			})
-		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
+		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
 	).await.unwrap();
 
-	let mut result = sqlx::query!(r#"
-		select candidate_for, actions, views, code, db_schema, db_migration
-		from votebase_catalog.candidate_replacement_ruleset
-	"#).fetch_one(&pool).await.unwrap();
+	let mut result = queries::rulesets::test_select_candidate_replacement_ruleset()
+		.bind(&client).one().await.unwrap();
 
 	assert_eq!(result.candidate_for, "root");
 	result.actions.sort();
@@ -112,14 +109,14 @@ async fn test_propose_self_replacement() {
 					db_migration: "alter table stuff add column color text;",
 				})
 			})
-		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
+		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
 	).await.unwrap_err();
 	assert!(result.to_string().contains("candidate for root has misdeclared schema"));
 }
 
 #[tokio::test]
 async fn run_function_basics() {
-	let pool = sqlx::postgres::PgPoolOptions::new().connect(DEV_DB_URL).await.unwrap();
+	let pool = deadpool::Pool::builder(deadpool::Manager::new(conf(), postgres::NoTls)).max_size(5).build().unwrap();
 	// let result = run_function::<u32>(
 	// 	"".into(),
 	// 	r#"
@@ -128,7 +125,7 @@ async fn run_function_basics() {
 	// 			return true
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
+	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
 	// ).await.unwrap_err();
 	// assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
@@ -140,7 +137,7 @@ async fn run_function_basics() {
 				return v
 			})
 		"#.to_string(),
-		"test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
 	).await.unwrap();
 	assert_eq!(result, 1);
 
@@ -151,7 +148,7 @@ async fn run_function_basics() {
 	// 			return true
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_view", serde_json::json!(null), FnType::View, conf(), opt(), pool.clone(),
+	// 	"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(),
 	// ).await.unwrap_err();
 	// assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
@@ -161,7 +158,7 @@ async fn run_function_basics() {
 	// 			return await votebase.sqlFetchScalar("select 1")
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_view", serde_json::json!(null), FnType::View, conf(), opt(), pool.clone(),
+	// 	"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(),
 	// ).await.unwrap();
 	// assert_eq!(result, 1);
 
@@ -186,7 +183,7 @@ async fn run_function_basics() {
 	// 			return luke
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
+	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
 	// ).await.unwrap();
 	// let result = sqlx::query!(r#"select id, email from votebase_catalog.member"#).fetch_one(&pool).await.unwrap();
 	// assert_eq!(result.id, luke.parse::<sqlx::types::Uuid>().unwrap());
@@ -222,7 +219,7 @@ async fn run_function_basics() {
 	// 			return sch1
 	// 		})
 	// 	"#.to_string(),
-	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), opt(), pool.clone(),
+	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
 	// ).await.unwrap();
 	// let result = sqlx::query!(r#"
 	// 	select id, description, scheduled_time, full_path, action_name, action_arg

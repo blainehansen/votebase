@@ -11,9 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let config = postgres::Config::from_str(admin_connection_string)?;
 	let db_database = config.get_dbname().unwrap().to_owned();
 
-	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls))
-		.max_size(5) // Adjust pool size as needed
-		.build()?;
+	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(5).build()?;
 
 	let mut client = pool.get().await?;
 
@@ -32,10 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let schema_sql = format!(include_str!("../schema.sql"), db_database=db_database, votebase_server_password=votebase_server_password);
 	client.batch_execute(&schema_sql).await?;
 
-	// Note: create_ruleset needs refactoring itself to use deadpool client instead of pool
-	// For now, we pass the pool, but the function implementation needs updating later.
 	votebase_common::runtime::create_ruleset(
-		&pool, // Pass the pool for now, needs refactor in create_ruleset
+		&pool,
 		None, "root",
 		&vec!["__insert_initial".to_string()], &vec![],
 		include_str!("../../rulesets/accept-any/ruleset.ts"), "",
