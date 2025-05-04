@@ -54,3 +54,8 @@ where id = :scheduled_action_uuid;
 --! select_slim_detached_scheduled_action
 select id, scheduled_time
 from votebase_catalog.detached_scheduled_action;
+
+
+--! test_select_detached_scheduled_actions
+select id, description, scheduled_time, full_path, action_name, action_arg
+from votebase_catalog.detached_scheduled_action;

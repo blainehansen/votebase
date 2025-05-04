@@ -11,9 +11,9 @@ pub enum VotebaseError {
 	#[error("internal error")]
 	DenoError(#[from] runtime::DenoError),
 	#[error("internal postgres error")]
-	PostgresError(#[from] tokio_postgres::Error),
+	PostgresError(#[from] votebase_common::postgres::Error),
 	#[error("internal pool error")]
-	PoolError(#[from] deadpool_postgres::PoolError),
+	PoolError(#[from] votebase_common::deadpool::PoolError),
 	#[error("interal uuid error")]
 	UuidParseError(#[from] uuid::Error)
 }

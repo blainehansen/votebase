@@ -12,9 +12,10 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
-reqwest = "0.12"
 votebase_transpile = { path = "../transpile" }
 votebase_queries = { path = "../queries" }
+reqwest = "0.12"
+urlencoding = "2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
