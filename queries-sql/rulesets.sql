@@ -1,3 +1,27 @@
+--! get_rulesets
+select full_path
+from votebase_catalog.ruleset;
+
+--! get_ruleset_views
+select views
+from votebase_catalog.ruleset
+where full_path = :ruleset_full_path;
+
+--! get_ruleset_detail
+select views, code, db_schema
+from votebase_catalog.ruleset
+where full_path = :ruleset_full_path;
+
+--! get_action_details
+select code, action_pass, migrator_pass
+from votebase_catalog.ruleset
+where full_path = :ruleset_full_path and :action_name = ANY(actions);
+
+--! get_view_details
+select code, view_pass as pass
+from votebase_catalog.ruleset
+where full_path = :ruleset_full_path and :view_name = ANY(views);
+
 --! insert_ruleset (parent_full_path?)
 insert into votebase_catalog.ruleset (
 	parent_full_path, "name", actions, views, code, db_schema

@@ -51,10 +51,14 @@ from updated inner join votebase_catalog.ruleset as r on updated.full_path = r.f
 delete from votebase_catalog.detached_scheduled_action
 where id = :scheduled_action_uuid;
 
---! select_slim_detached_scheduled_action
+--! select_slim_detached_scheduled_actions
 select id, scheduled_time
 from votebase_catalog.detached_scheduled_action;
 
+--! select_slim_detached_recurring_actions
+select id, next_scheduled_time
+from votebase_catalog.detached_recurring_action
+where not executing;
 
 --! test_select_detached_scheduled_actions
 select id, description, scheduled_time, full_path, action_name, action_arg

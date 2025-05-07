@@ -17,3 +17,4 @@ uuid = { version = "*", features = ["serde", "v4"] }
 chrono = { version = "*", features = ["serde"] }
 tokio = { version = "1.40", features = ["full"] }
 log = "0.4"
+thiserror = "2"

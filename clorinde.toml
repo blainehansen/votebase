@@ -5,7 +5,7 @@ name = "votebase_queries"
 
 [types]
 # Applied to all generated structs and postgres types
-derive-traits = ["serde::Deserialize"]
+derive-traits = ["serde::Serialize", "serde::Deserialize"]
 
 # not working?
 # [types.type-traits-mapping]

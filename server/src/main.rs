@@ -1,4 +1,4 @@
-use votebase_common::{runtime, PgPool, PgClient, PgConfig, postgres, deadpool, queries};
+use votebase_common::{deadpool, postgres, queries, runtime, PgConfig, PgPool};
 
 mod error;
 use error::VotebaseError;
@@ -33,8 +33,8 @@ async fn main() -> std::io::Result<()> {
 	#[cfg(not(debug_assertions))]
 	let db_votebase_pass = std::env::var("VOTEBASE_PASS").expect("VOTEBASE_PASS must be set");
 
-	let mut config = postgres::Config::new();
-	config
+	let mut server_pg_config = postgres::Config::new();
+	server_pg_config
 		.port(db_port)
 		.host(&db_host)
 		.dbname(&db_database)
@@ -43,15 +43,16 @@ async fn main() -> std::io::Result<()> {
 
 	let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
 
-	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls))
+	let pool = deadpool::Pool::builder(deadpool::Manager::new(server_pg_config.clone(), postgres::NoTls))
 		.max_size(max_connections as usize)
 		.build().expect("Failed to create pool.");
+	let scheduled_action_queue = runtime::ScheduledActionQueue::new();
 
-	// Spawn background task queueing
 	let queue_pool = pool.clone();
-	let server_pg_config = config.clone(); // Use config for queueing
+	let queue_scheduled_action_queue = scheduled_action_queue.clone();
+	let queue_server_pg_config = server_pg_config.clone();
 	tokio::task::spawn(async move {
-		let mut client = match queue_pool.get().await {
+		let client = match queue_pool.get().await {
 			Ok(client) => client,
 			Err(e) => {
 				log::error!("Failed to get client for queueing background tasks: {}", e);
@@ -59,30 +60,26 @@ async fn main() -> std::io::Result<()> {
 			}
 		};
 
-		// Queue detached scheduled actions
-		match queries::server::get_all_detached_scheduled_actions().bind(&client).all().await {
+		match queries::scheduled::select_slim_detached_scheduled_actions().bind(&client).all().await {
 			Err(e) => log::error!("failed to fetch detached_scheduled_actions: {}", e),
 			Ok(detached_scheduled_actions) => {
 				log::info!("queuing {} detached_scheduled_actions", detached_scheduled_actions.len());
 				for action in detached_scheduled_actions {
-					// queue_scheduled_action needs update to accept config
-					runtime::queue_scheduled_action(
-						queue_pool.clone(), server_pg_config.clone(), votebase_common::ScheduledActionKind::DetachedScheduled, // Correct kind
-						action.id, action.scheduled_time,
+					queue_scheduled_action_queue.queue(
+						queue_pool.clone(), queue_server_pg_config.clone(), votebase_common::ScheduledActionKind::DetachedScheduled,
+						action.id, action.scheduled_time.to_utc(),
 					);
 				}
 			},
 		}
 
-		// Queue detached recurring actions
-		match queries::server::get_all_pending_detached_recurring_actions().bind(&client).all().await {
+		match queries::scheduled::select_slim_detached_recurring_actions().bind(&client).all().await {
 			Err(e) => log::error!("failed to fetch detached_recurring_actions: {}", e),
 			Ok(detached_recurring_actions) => {
 				log::info!("queuing {} detached_recurring_actions", detached_recurring_actions.len());
 				for action in detached_recurring_actions {
-					// queue_scheduled_action needs update to accept config
-					runtime::queue_scheduled_action(
-						queue_pool.clone(), server_pg_config.clone(), votebase_common::ScheduledActionKind::DetachedRecurring,
+					queue_scheduled_action_queue.queue(
+						queue_pool.clone(), queue_server_pg_config.clone(), votebase_common::ScheduledActionKind::DetachedRecurring,
 						action.id, action.next_scheduled_time.and_utc(),
 					);
 				}
@@ -107,6 +104,8 @@ async fn main() -> std::io::Result<()> {
 	actix_web::HttpServer::new(move || {
 		let app = actix_web::App::new()
 			.app_data(web::Data::new(pool.clone()))
+			.app_data(web::Data::new(server_pg_config.clone()))
+			.app_data(web::Data::new(scheduled_action_queue.clone()))
 			.wrap(actix_web::middleware::Logger::default())
 			.service(get_rulesets)
 			.service(get_ruleset_views)
@@ -122,37 +121,6 @@ async fn main() -> std::io::Result<()> {
 	.bind((host, port))?
 	.run()
 	.await
-}
-
-// TODO: Update this function or remove if not needed. Clorinde returns Option for `opt()` and `one()`.
-// fn map_sqlx_not_found(error: sqlx::Error, fn_path: &FnPath) -> VotebaseError {
-// 	match error {
-// 		sqlx::Error::RowNotFound => VotebaseError::FnNotFoundError(fn_path.clone()),
-// 		e => e.into(),
-// 	}
-// }
-
-// Helper to map postgres errors, specifically for not found cases if needed
-fn map_pg_error(error: postgres::Error, fn_path: Option<&FnPath>, ruleset_path: Option<&str>) -> VotebaseError {
-	// TODO: Check if postgres::Error has a specific variant for row not found or similar
-	// For now, assume specific queries handle Option return for not found cases.
-	// If a query expects a row and doesn't get one, `one()` will return an error.
-	// We might need more context to distinguish "not found" from other errors.
-	if let Some(db_err) = error.as_db_error() {
-		log::error!("Database error: {:?}", db_err);
-		// Potentially check db_err.code() here if needed
-	} else {
-		log::error!("Postgres error: {}", error);
-	}
-
-	// Tentative mapping: If we have a path, assume error might be related to not finding that resource
-	if let Some(fp) = fn_path {
-		VotebaseError::FnNotFoundError(fp.clone()) // Or just return PostgresError(error)?
-	} else if let Some(rp) = ruleset_path {
-		VotebaseError::RulesetNotFoundError(rp.to_string()) // Or just return PostgresError(error)?
-	} else {
-		VotebaseError::PostgresError(error)
-	}
 }
 
 #[derive(Debug, Clone)]
@@ -181,18 +149,14 @@ impl actix_web::FromRequest for FnPath {
 	}
 }
 
-#[derive(Debug, serde::Serialize)]
-struct RulesetListing {
-	full_path: String,
-}
 
 #[actix_web::get("/rulesets")]
 async fn get_rulesets(
 	pool: web::Data<PgPool>,
-) -> Result<web::Json<Vec<queries::server::GetRulesets>>, VotebaseError> {
-	let client = pool.get().await?; // Get client
+) -> Result<web::Json<Vec<String>>, VotebaseError> {
+	let client = pool.get().await?;
 
-	let rulesets = queries::server::get_rulesets()
+	let rulesets = queries::rulesets::get_rulesets()
 		.bind(&client)
 		.all().await?;
 
@@ -201,39 +165,33 @@ async fn get_rulesets(
 
 #[actix_web::get("/ruleset-views/{ruleset_full_path}")]
 async fn get_ruleset_views(
-	ruleset_full_path_param: web::Path<String>, // Renamed to avoid conflict
+	ruleset_full_path: web::Path<String>,
 	pool: web::Data<PgPool>,
 ) -> Result<web::Json<Vec<String>>, VotebaseError> {
-	let ruleset_full_path = ruleset_full_path_param.into_inner();
-	let client = pool.get().await?; // Get client
+	let ruleset_full_path = ruleset_full_path.into_inner();
+	let client = pool.get().await?;
 
-	let ruleset = queries::server::get_ruleset_views()
+	let ruleset = queries::rulesets::get_ruleset_views()
 		.bind(&client, &ruleset_full_path)
-		.opt().await? // Use opt() for optional result
+		.opt().await?
 		.ok_or_else(|| VotebaseError::RulesetNotFoundError(ruleset_full_path))?;
 
-	Ok(web::Json(ruleset.views.unwrap_or_default())) // Handle potential null from DB
-}
-
-#[derive(Debug, serde::Serialize)]
-struct RulesetDetail {
-	views: Vec<String>,
-	code: String,
-	db_schema: String,
+	Ok(web::Json(ruleset))
 }
 
 #[actix_web::get("/ruleset-detail/{ruleset_full_path}")]
 async fn get_ruleset_detail(
-	ruleset_full_path_param: web::Path<String>, // Renamed
+	ruleset_full_path: web::Path<String>,
 	pool: web::Data<PgPool>,
-) -> Result<web::Json<queries::server::GetRulesetDetail>, VotebaseError> { // Use generated struct
-	let ruleset_full_path = ruleset_full_path_param.into_inner();
-	let client = pool.get().await?; // Get client
+) -> Result<web::Json<queries::rulesets::GetRulesetDetail>, VotebaseError> {
+	let ruleset_full_path = ruleset_full_path.into_inner();
+	let client = pool.get().await?;
 
-	let ruleset = queries::server::get_ruleset_detail()
+	let ruleset = queries::rulesets::get_ruleset_detail()
 		.bind(&client, &ruleset_full_path)
-		.opt().await? // Use opt() for optional result
+		.opt().await?
 		.ok_or_else(|| VotebaseError::RulesetNotFoundError(ruleset_full_path))?;
+	// TODO	have to look at this
 
 	Ok(web::Json(ruleset))
 }
@@ -243,20 +201,22 @@ async fn execute_action(
 	fn_path: FnPath,
 	arg: web::Json<serde_json::Value>,
 	pool: web::Data<PgPool>,
+	server_pg_config: web::Data<PgConfig>,
+	scheduled_action_queue: web::Data<runtime::ScheduledActionQueue>,
 ) -> Result<HttpResponse<()>, VotebaseError> {
-	let client = pool.get().await?; // Get client
-	let server_pg_config = pool.config().clone(); // Get config from pool
+	let client = pool.get().await?;
+	let server_pg_config = server_pg_config.get_ref().clone();
+	let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
 
-	let action_details = queries::server::get_action_details()
+	let action_details = queries::rulesets::get_action_details()
 		.bind(&client, &fn_path.ruleset_full_path, &fn_path.fn_name)
-		.opt().await? // Use opt()
+		.opt().await?
 		.ok_or_else(|| VotebaseError::FnNotFoundError(fn_path.clone()))?;
 
-	// run_action needs update to accept config and pool/client appropriately
 	runtime::run_action(
 		fn_path.ruleset_full_path, action_details.code, &fn_path.fn_name,
 		&action_details.action_pass, &action_details.migrator_pass, arg.into_inner(),
-		server_pg_config, &pool, // Pass config and pool (needs refactor in run_action)
+		server_pg_config, &pool, scheduled_action_queue,
 	).await?;
 
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
@@ -267,19 +227,21 @@ async fn execute_view(
 	fn_path: FnPath,
 	query: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
-) -> Result<web::Html<String>, VotebaseError> { // Explicit type for Html
-	let client = pool.get().await?; // Get client
-	let server_pg_config = pool.config().clone(); // Get config from pool
+	server_pg_config: web::Data<PgConfig>,
+	scheduled_action_queue: web::Data<runtime::ScheduledActionQueue>,
+) -> Result<web::Html, VotebaseError> {
+	let client = pool.get().await?;
+	let server_pg_config = server_pg_config.get_ref().clone();
+	let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
 
-	let view_details = queries::server::get_view_details()
+	let view_details = queries::rulesets::get_view_details()
 		.bind(&client, &fn_path.ruleset_full_path, &fn_path.fn_name)
-		.opt().await? // Use opt()
+		.opt().await?
 		.ok_or_else(|| VotebaseError::FnNotFoundError(fn_path.clone()))?;
 
-	// run_view needs update to accept config and pool/client appropriately
 	let return_value = runtime::run_view(
 		fn_path.ruleset_full_path, view_details.code, &fn_path.fn_name, &view_details.pass, query.into_inner(),
-		server_pg_config, &pool, // Pass config and pool (needs refactor in run_view)
+		server_pg_config, &pool, scheduled_action_queue,
 	).await?;
 	Ok(web::Html::new(return_value))
 }
@@ -287,6 +249,6 @@ async fn execute_view(
 #[cfg(debug_assertions)]
 #[actix_web::post("/__debug_advance_time")]
 async fn debug_advance_time(_amount: web::Json<()>) -> HttpResponse<()> {
-
+	// placeholder...
 	HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ())
 }

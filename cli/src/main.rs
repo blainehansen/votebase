@@ -1,5 +1,3 @@
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
 use votebase_common::{postgres, deadpool};
 use std::str::FromStr;
 
@@ -31,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	client.batch_execute(&schema_sql).await?;
 
 	votebase_common::runtime::create_ruleset(
-		&pool,
+		&config, &mut client,
 		None, "root",
 		&vec!["__insert_initial".to_string()], &vec![],
 		include_str!("../../rulesets/accept-any/ruleset.ts"), "",

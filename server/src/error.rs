@@ -8,20 +8,20 @@ pub enum VotebaseError {
 	#[error("ruleset {} not found", .0)]
 	RulesetNotFoundError(String),
 
-	#[error("internal error")]
-	DenoError(#[from] runtime::DenoError),
-	#[error("internal postgres error")]
+	#[error(transparent)]
+	RuntimeError(#[from] runtime::RuntimeError),
+	#[error(transparent)]
 	PostgresError(#[from] votebase_common::postgres::Error),
-	#[error("internal pool error")]
+	#[error(transparent)]
 	PoolError(#[from] votebase_common::deadpool::PoolError),
-	#[error("interal uuid error")]
+	#[error(transparent)]
 	UuidParseError(#[from] uuid::Error)
 }
 
 
 impl VotebaseError {
 	fn respond(&self, status_code: actix_web::http::StatusCode) -> HttpResponse {
-		log::error!("{:?}", self);
+		log::error!("{}", self);
 		let res = HttpResponse::new(status_code);
 		res.into()
 
@@ -39,7 +39,7 @@ impl actix_web::ResponseError for VotebaseError {
 	fn status_code(&self) -> actix_web::http::StatusCode {
 		match self {
 			Self::FnNotFoundError(_) | Self::RulesetNotFoundError(_) => actix_web::http::StatusCode::NOT_FOUND,
-			| Self::DenoError(_)
+			| Self::RuntimeError(_)
 			| Self::PostgresError(_)
 			| Self::PoolError(_)
 			| Self::UuidParseError(_)

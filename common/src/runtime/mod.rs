@@ -6,7 +6,22 @@ use deno_core::{v8, OpState};
 use uuid::Uuid;
 use crate::{queries, PgConfig, PgPool, PgClient, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role, postgres};
 
-pub type DenoError = deno_core::error::AnyError;
+#[derive(thiserror::Error, Debug)]
+pub enum RuntimeError {
+	#[error("internal serde v8 error")]
+	SerdeV8(#[from] deno_core::serde_v8::Error),
+	#[error("internal deno core error")]
+	DenoCoreError(#[from] deno_core::error::CoreError),
+	#[error("internal postgres error")]
+	PostgresError(#[from] postgres::Error),
+	#[error("internal pool error")]
+	PoolError(#[from] crate::deadpool::PoolError),
+	#[error("internal uuid error")]
+	UuidParseError(#[from] uuid::Error),
+
+	#[error("internal error: {0}")]
+	OtherError(String),
+}
 
 pub fn js_err<E: std::error::Error>(e: E) -> deno_error::JsErrorBox {
 	deno_error::JsErrorBox::generic(e.to_string())
@@ -17,7 +32,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-	pub async fn new(code: &str) -> Result<Self, DenoError> {
+	pub async fn new(code: &str) -> Result<Self, deno_core::error::AnyError> {
 		let js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
 			module_loader: None,
 			startup_snapshot: Some(RUNTIME_SNAPSHOT),
@@ -53,6 +68,9 @@ impl Runtime {
 		self.js_runtime.op_state().borrow_mut().put(allowed);
 	}
 
+	pub fn set_action_queue(&mut self, spawner: ScheduledActionQueue) {
+		self.js_runtime.op_state().borrow_mut().put(spawner);
+	}
 	pub fn set_server_pool(&mut self, pool: PgPool) {
 		self.js_runtime.op_state().borrow_mut().put(pool);
 	}
@@ -327,6 +345,7 @@ async fn op_create_recurring_action(
 	let state = state.as_ref().borrow();
 	let server_pg_config = deno_core::_ops::opstate_borrow::<ServerPgConfig>(&state).0.clone();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
+	let scheduled_action_queue = deno_core::_ops::opstate_borrow::<ScheduledActionQueue>(&state);
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 
 	let client = server_role_pool.get().await.map_err(js_err)?;
@@ -334,7 +353,7 @@ async fn op_create_recurring_action(
 		.bind(&client, &current_full_path, &description, &start.naive_utc(), &recurrence_granularity, &recurrence_multiplier, &action_name, &action_arg)
 		.one().await.map_err(js_err)?;
 
-	queue_scheduled_action(
+	scheduled_action_queue.queue(
 		server_role_pool.clone(), server_pg_config,
 		ScheduledActionKind::DetachedRecurring, action.id, action.next_scheduled_time.and_utc(),
 	);
@@ -373,6 +392,7 @@ async fn op_schedule_action(
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 	let server_pg_config = deno_core::_ops::opstate_borrow::<ServerPgConfig>(&state).0.clone();
+	let scheduled_action_queue = deno_core::_ops::opstate_borrow::<ScheduledActionQueue>(&state);
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 
 	let client = server_role_pool.get().await.map_err(js_err)?;
@@ -380,7 +400,10 @@ async fn op_schedule_action(
 		.bind(&client, &current_full_path, &description, &scheduled_time.fixed_offset(), &action_name, &action_arg)
 		.one().await.map_err(js_err)?;
 
-	queue_scheduled_action(server_role_pool.clone(), server_pg_config, ScheduledActionKind::DetachedScheduled, id, scheduled_time);
+	scheduled_action_queue.queue(
+		server_role_pool.clone(), server_pg_config,
+		ScheduledActionKind::DetachedScheduled, id, scheduled_time,
+	);
 
 	Ok(id.to_string())
 }
@@ -694,47 +717,104 @@ pub async fn create_ruleset(
 	Ok(())
 }
 
+
+
+
+#[derive(Clone)]
+pub struct ScheduledActionQueue {
+	send: tokio::sync::mpsc::UnboundedSender<ScheduledAction>,
+}
+
+type ScheduledAction = (PgPool, PgConfig, ScheduledActionKind, Uuid, tokio::time::Instant);
+
+impl ScheduledActionQueue {
+	pub fn new() -> Self {
+		let (send, mut recv) = tokio::sync::mpsc::unbounded_channel();
+		let spawner = Self { send };
+
+		let rt = tokio::runtime::Builder::new_current_thread()
+			.enable_all()
+			.build()
+			.unwrap();
+
+		let thread_spawner = spawner.clone();
+		std::thread::spawn(move || {
+			let local = tokio::task::LocalSet::new();
+
+			local.spawn_local(async move {
+				while let Some(scheduled_action) = recv.recv().await {
+					tokio::task::spawn_local(do_scheduled_action(scheduled_action, thread_spawner.clone()));
+				}
+			});
+
+			rt.block_on(local);
+		});
+
+		spawner
+	}
+
+	pub fn queue(
+		&self,
+		server_role_pool: PgPool,
+		server_pg_config: PgConfig,
+		scheduled_action_kind: ScheduledActionKind,
+		scheduled_action_uuid: Uuid,
+		scheduled_time: chrono::DateTime<chrono::Utc>,
+	// ) -> Result<(), tokio::sync::mpsc::error::SendError<ScheduledAction>> {
+	) {
+		let scheduled_time = compute_time_until(scheduled_time);
+		let scheduled_action = (
+			server_role_pool, server_pg_config,
+			scheduled_action_kind, scheduled_action_uuid, scheduled_time,
+		);
+		if let Err(e) = self.send.send(scheduled_action) {
+			log::error!("couldn't send scheduled action? {}", e);
+		};
+	}
+}
+
 fn compute_time_until(scheduled_time: chrono::DateTime<chrono::Utc>) -> tokio::time::Instant {
 	let duration_until = scheduled_time.signed_duration_since(chrono::Utc::now()).to_std().unwrap();
 	tokio::time::Instant::now() + duration_until
 }
 
-pub fn queue_scheduled_action(
-	server_role_pool: PgPool,
-	server_pg_config: PgConfig,
-	scheduled_action_kind: ScheduledActionKind,
-	scheduled_action_uuid: Uuid,
-	scheduled_time: chrono::DateTime<chrono::Utc>,
-) {
-	let scheduled_time = compute_time_until(scheduled_time);
+async fn do_scheduled_action(scheduled_action: ScheduledAction, spawner: ScheduledActionQueue) {
+	let (
+		server_role_pool, server_pg_config,
+		scheduled_action_kind, scheduled_action_uuid, scheduled_time,
+	) = scheduled_action;
 
-	tokio::spawn(async move {
-		tokio::time::sleep_until(scheduled_time).await;
+	tokio::time::sleep_until(scheduled_time).await;
 
-		log::info!("attempting action {} of type {}", scheduled_action_uuid, &scheduled_action_kind);
-		let result = match scheduled_action_kind {
-			// ScheduledActionKind::Recurring => {
-			// 	execute_recurring_action(server_role_pool, server_pg_config, false, scheduled_action_uuid).await
-			// },
-			ScheduledActionKind::DetachedRecurring => {
-				execute_recurring_action(server_role_pool, server_pg_config, scheduled_action_uuid).await
-			},
-			ScheduledActionKind::DetachedScheduled => {
-				execute_scheduled_action(server_role_pool, server_pg_config, scheduled_action_uuid).await
-				// if let Err(e) = result {
-				// 	error!("failed to execute scheduled action {}; {}", scheduled_action_uuid, e);
-				// }
-			},
-		};
-	});
+	log::info!("attempting action {} of type {}", scheduled_action_uuid, &scheduled_action_kind);
+	let result = match scheduled_action_kind {
+		// ScheduledActionKind::Recurring => {
+		// 	execute_recurring_action(server_role_pool, server_pg_config, false, scheduled_action_uuid).await
+		// },
+		ScheduledActionKind::DetachedRecurring => {
+			execute_recurring_action(&spawner, server_role_pool, server_pg_config, scheduled_action_uuid).await
+		},
+		ScheduledActionKind::DetachedScheduled => {
+			execute_scheduled_action(spawner.clone(), server_role_pool, server_pg_config, scheduled_action_uuid).await
+			// if let Err(e) = result {
+			// 	error!("failed to execute scheduled action {}; {}", scheduled_action_uuid, e);
+			// }
+		},
+	};
+
+	if let Err(e) = result {
+		log::error!("error when queueing scheduled action {}: {}", scheduled_action_uuid, e);
+	}
 }
 
+
 pub async fn execute_recurring_action(
+	scheduled_action_queue: &ScheduledActionQueue,
 	server_role_pool: PgPool,
 	server_pg_config: PgConfig,
 	// is_detached: bool,
 	scheduled_action_uuid: uuid::Uuid,
-) -> Result<(), DenoError> {
+) -> Result<(), RuntimeError> {
 	// let scheduled_action_kind = if is_detached { ScheduledActionKind::DetachedRecurring } else { ScheduledActionKind::Recurring };
 	let scheduled_action_kind = ScheduledActionKind::DetachedRecurring;
 
@@ -755,13 +835,13 @@ pub async fn execute_recurring_action(
 			log::info!("{} scheduled: {}; actual: {}; difference: {}; {}", scheduled_action_uuid, scheduled, now, diff, action.description);
 			if diff < ::chrono::TimeDelta::zero() {
 				log::info!("{} not doing it yet", scheduled_action_uuid);
-				queue_scheduled_action(server_role_pool, server_pg_config, scheduled_action_kind, scheduled_action_uuid, scheduled);
+				scheduled_action_queue.queue(server_role_pool, server_pg_config, scheduled_action_kind, scheduled_action_uuid, scheduled);
 				return Ok(())
 			}
 
 			run_action(
 				action.full_path, action.code, &action.action_name, &action.action_pass, &action.migrator_pass, action.arg,
-				server_pg_config.clone(), &server_role_pool,
+				server_pg_config.clone(), &server_role_pool, scheduled_action_queue.clone(),
 			).await?;
 
 			let next_scheduled_time = queries::scheduled::release_detached_recurring_action()
@@ -777,7 +857,7 @@ pub async fn execute_recurring_action(
 				// "#, &scheduled_action_uuid).fetch_one(&server_role_pool).await?.next_scheduled_time.and_utc()
 			// };
 
-			queue_scheduled_action(server_role_pool, server_pg_config, scheduled_action_kind, scheduled_action_uuid, next_scheduled_time);
+			scheduled_action_queue.queue(server_role_pool, server_pg_config, scheduled_action_kind, scheduled_action_uuid, next_scheduled_time);
 
 			Ok(())
 		},
@@ -785,14 +865,15 @@ pub async fn execute_recurring_action(
 }
 
 pub async fn execute_scheduled_action(
+	scheduled_action_queue: ScheduledActionQueue,
 	server_role_pool: PgPool,
 	server_pg_config: PgConfig,
 	scheduled_action_uuid: uuid::Uuid,
-) -> Result<(), DenoError> {
-	let client = server_role_pool.get().await.map_err(js_err)?;
+) -> Result<(), RuntimeError> {
+	let client = server_role_pool.get().await?;
 	let action = queries::scheduled::acquire_detached_scheduled_action()
 		.bind(&client, &scheduled_action_uuid)
-		.opt().await.map_err(js_err)?;
+		.opt().await?;
 
 	match action {
 		None => { info!("wasn't able to acquire scheduled action {}", scheduled_action_uuid); Ok(()) },
@@ -804,11 +885,11 @@ pub async fn execute_scheduled_action(
 
 			run_action(
 				action.full_path, action.code, &action.action_name, &action.action_pass, &action.migrator_pass, action.arg,
-				server_pg_config.clone(), &server_role_pool,
+				server_pg_config.clone(), &server_role_pool, scheduled_action_queue,
 			).await?;
 
 			queries::scheduled::remove_detached_scheduled_action()
-				.bind(&client, &scheduled_action_uuid).await.map_err(js_err)?;
+				.bind(&client, &scheduled_action_uuid).await?;
 
 			Ok(())
 		},
@@ -824,7 +905,8 @@ pub async fn run_action(
 	arg: serde_json::Value,
 	server_pg_config: PgConfig,
 	server_role_pool: &PgPool,
-) -> Result<(), DenoError> {
+	scheduled_action_queue: ScheduledActionQueue,
+) -> Result<(), RuntimeError> {
 	let mut migrator_role_config = server_pg_config.clone();
 	let migrator_role = format_ruleset_role(&current_full_path, RoleType::Migrator);
 	migrator_role_config.user(&migrator_role).password(migrator_pass);
@@ -834,7 +916,7 @@ pub async fn run_action(
 
 	let new_ruleset_id = run_function::<Option<String>>(
 		current_full_path, ruleset_code, action_name, arg, FnType::Action,
-		action_role_config, server_pg_config, server_role_pool.clone(),
+		action_role_config, server_pg_config, server_role_pool.clone(), scheduled_action_queue,
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
@@ -855,14 +937,15 @@ pub async fn run_view(
 	query: serde_json::Value,
 	server_pg_config: PgConfig,
 	server_role_pool: &PgPool,
-) -> Result<String, DenoError> {
+	scheduled_action_queue: ScheduledActionQueue,
+) -> Result<String, RuntimeError> {
 	let view_role = format_ruleset_role(&current_full_path, RoleType::View);
 	let mut view_role_config = server_pg_config.clone();
 	view_role_config.user(view_role).password(view_pass);
 
 	run_function(
 		current_full_path, ruleset_code, view_name, query, FnType::View,
-		view_role_config, server_pg_config, server_role_pool.clone(),
+		view_role_config, server_pg_config, server_role_pool.clone(), scheduled_action_queue,
 	).await
 }
 
@@ -875,18 +958,19 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	fn_role_config: PgConfig,
 	server_pg_config: PgConfig,
 	server_role_pool: PgPool,
-) -> Result<V, DenoError> {
-	let mut runtime = Runtime::new(&ruleset_code).await?;
+	scheduled_action_queue: ScheduledActionQueue,
+) -> Result<V, RuntimeError> {
+	let mut runtime = Runtime::new(&ruleset_code).await.map_err(|e| RuntimeError::OtherError(e.to_string()))?;
 
 	// fn_role_config encodes the user, and therefore the role and powers of the connection
 	let fn_map = runtime.take_fn_map();
 	let function = fn_map.get(function_name)
-		.ok_or_else(|| deno_core::anyhow::anyhow!("{} '{}' not found", function_type, function_name))?;
+		.ok_or_else(|| RuntimeError::OtherError(format!("{} '{}' not found", function_type, function_name)))?;
 
 	let function = match (function_type, function) {
 		(FnType::Action, Fn::Action(function)) => function,
 		(FnType::View, Fn::View(function)) => function,
-		_ => { return Err(deno_core::anyhow::anyhow!("'{}' isn't of type {}", function_name, function_type)) },
+		_ => { return Err(RuntimeError::OtherError(format!("'{}' isn't of type {}", function_name, function_type))) },
 	};
 
 	let function_arg = {
@@ -896,8 +980,9 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	};
 
 	runtime.set_external_allowed(true);
-	runtime.set_server_config(server_pg_config);
+	runtime.set_action_queue(scheduled_action_queue);
 	runtime.set_server_pool(server_role_pool);
+	runtime.set_server_config(server_pg_config);
 	runtime.set_fn_config(fn_role_config);
 	runtime.set_current_full_path(current_full_path);
 
