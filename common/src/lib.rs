@@ -66,7 +66,11 @@ pub fn convert_pg_row(row: postgres::Row, want_scalar: bool) -> Result<Val, deno
 		return convert_pg_column(&row, col, 0);
 	}
 
-	unimplemented!()
+	Ok(Val::Object(
+		columns.into_iter().enumerate()
+			.map(|(index, col)| Ok::<_, deno_error::JsErrorBox>((col.name().to_string(), convert_pg_column(&row, col, index)?)))
+			.collect::<Result<_, _>>()?
+	))
 }
 
 const DATETIME_FORMAT: chrono::format::strftime::StrftimeItems = chrono::format::strftime::StrftimeItems::new("%+");
@@ -205,32 +209,29 @@ pub fn convert_pg_column(
 	}
 }
 
+fn make_params(params: Option<Vec<serde_json::Value>>) -> Vec<Box<(dyn postgres::types::ToSql + Sync)>> {
+	match params {
+		None => vec![],
+		Some(params) => {
+			let mut final_params: Vec<Box<(dyn postgres::types::ToSql + Sync)>> = vec![];
+			for param in params {
+				match param {
+					serde_json::Value::Null => { final_params.push(Box::new(None::<bool>)); },
+					serde_json::Value::Bool(param) => { final_params.push(Box::new(param)); },
+					serde_json::Value::Number(param) => {
+						if param.is_f64() {
+							final_params.push(Box::new(param.as_f64()));
+						} else {
+							final_params.push(Box::new(param.as_i64()));
+						}
+					},
+					serde_json::Value::String(param) => { final_params.push(Box::new(param)); },
+					serde_json::Value::Array(param) => { final_params.push(Box::new(param)); },
+					param => { final_params.push(Box::new(param)); },
+				}
+			}
 
-
-// fn make_args(params: Option<Vec<serde_json::Value>>) -> Result<sqlx::postgres::PgArguments, sqlx::error::BoxDynError> {
-// 	let mut args = sqlx::postgres::PgArguments::default();
-// 	use sqlx::Arguments;
-// 	match params {
-// 		None => Ok(args),
-// 		Some(params) => {
-// 			for param in params {
-// 				match param {
-// 					serde_json::Value::Null => { args.add(None::<bool>)?; },
-// 					serde_json::Value::Bool(param) => { args.add(param)?; },
-// 					serde_json::Value::Number(param) => {
-// 						if param.is_f64() {
-// 							args.add(param.as_f64())?;
-// 						} else {
-// 							args.add(param.as_i64())?;
-// 						}
-// 					},
-// 					serde_json::Value::String(param) => { args.add(param)?; },
-// 					serde_json::Value::Array(param) => { args.add(param)?; },
-// 					param => { args.add(param)?; },
-// 				}
-// 			}
-
-// 			Ok(args)
-// 		},
-// 	}
-// }
+			final_params
+		},
+	}
+}

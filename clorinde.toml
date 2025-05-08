@@ -1,4 +1,4 @@
-use-workspace-deps = true
+use-workspace-deps = "./Cargo.toml"
 
 [package]
 name = "votebase_queries"

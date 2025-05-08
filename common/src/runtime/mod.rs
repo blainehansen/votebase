@@ -8,23 +8,40 @@ use crate::{queries, PgConfig, PgPool, PgClient, FnType, RoleType, ScheduledActi
 
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimeError {
-	#[error("internal serde v8 error")]
+	#[error(transparent)]
 	SerdeV8(#[from] deno_core::serde_v8::Error),
-	#[error("internal deno core error")]
+	#[error(transparent)]
 	DenoCoreError(#[from] deno_core::error::CoreError),
-	#[error("internal postgres error")]
+	#[error(transparent)]
 	PostgresError(#[from] postgres::Error),
-	#[error("internal pool error")]
+	#[error(transparent)]
 	PoolError(#[from] crate::deadpool::PoolError),
-	#[error("internal uuid error")]
+	#[error(transparent)]
 	UuidParseError(#[from] uuid::Error),
 
 	#[error("internal error: {0}")]
 	OtherError(String),
 }
 
+impl Into<deno_error::JsErrorBox> for RuntimeError {
+	fn into(self) -> deno_error::JsErrorBox {
+		match self {
+			RuntimeError::SerdeV8(e) => deno_error::JsErrorBox::from_err(e),
+			RuntimeError::DenoCoreError(e) => deno_error::JsErrorBox::from_err(e),
+			RuntimeError::PostgresError(e) => deno_error::JsErrorBox::generic(e.to_string()),
+			RuntimeError::PoolError(e) => deno_error::JsErrorBox::generic(e.to_string()),
+			RuntimeError::UuidParseError(e) => deno_error::JsErrorBox::generic(e.to_string()),
+			RuntimeError::OtherError(m) => deno_error::JsErrorBox::generic(m),
+		}
+	}
+}
+
 pub fn js_err<E: std::error::Error>(e: E) -> deno_error::JsErrorBox {
 	deno_error::JsErrorBox::generic(e.to_string())
+}
+
+pub fn run_err<E: Into<RuntimeError>>(e: E) -> deno_error::JsErrorBox {
+	e.into().into()
 }
 
 pub struct Runtime {
@@ -94,8 +111,8 @@ deno_core::extension!(
 		// op_sql_execute_statements,
 		// op_sql_fetch_all,
 		op_sql_fetch_scalar,
-		// op_sql_fetch_one,
-		// op_sql_fetch_optional,
+		op_sql_fetch_one,
+		op_sql_fetch_optional,
 
 		op_register_fn,
 		// op_register_recurring_action,
@@ -231,66 +248,59 @@ async fn op_sql_fetch_scalar(
 	// TODO the possible downside to putting a client directly in here is that we'll connect even when we don't need to
 	// I'm hoping that the pooling library just solves that for us! as in no actual connection is acquired until the actual query happens
 	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
-	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(js_err)?;
+	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
-	// let params = make_params(params);
-	// let params = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-	let row = client.query_one(&query, &[]).await.map_err(js_err)?;
+	let params = crate::make_params(params);
+	let actual_params: Vec<_> = params.iter().map(Box::as_ref).collect();
+	let row = client.query_one(&query, actual_params.as_slice()).await.map_err(run_err)?;
 	crate::convert_pg_row(row, true)
 }
 
-// #[deno_core::op2(async)]
-// #[serde]
-// async fn op_sql_fetch_one(
-// 	state: Rc<RefCell<OpState>>,
-// 	#[string] query: String,
-// 	#[serde] params: Option<Vec<serde_json::Value>>,
-// ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
-// 	let state = state.as_ref();
-// 	demand_external_allowed(state)?;
-// 	let mut state = state.borrow_mut();
-// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-// 		.connect().await.map_err(js_err)?;
+// TODO remove op_sql_fetch_scalar and instead just use op_sql_fetch_one at the runtime.ts level, with the expect scalar argument included
+#[deno_core::op2(async)]
+#[serde]
+async fn op_sql_fetch_one(
+	state: Rc<RefCell<OpState>>,
+	#[string] query: String,
+	#[serde] params: Option<Vec<serde_json::Value>>,
+) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+	let state = state.as_ref();
+	demand_external_allowed(state)?;
+	let state = state.borrow_mut();
 
-// 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-// 	let row = sqlx::query_with(&query, args).fetch_one(connection).await.map_err(js_err)?;
+	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
+	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
+	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
-// 	use sqlx::Row;
-// 	let columns = row.columns();
-// 	Ok(serde_json::Value::Object(
-// 		columns.iter().map(|column| convert_unknown_pg_value(&row, column)).collect::<Result<_, _>>()?
-// 	))
-// }
+	let params = crate::make_params(params);
+	let actual_params: Vec<_> = params.iter().map(Box::as_ref).collect();
 
-// #[deno_core::op2(async)]
-// #[serde]
-// async fn op_sql_fetch_optional(
-// 	state: Rc<RefCell<OpState>>,
-// 	#[string] query: String,
-// 	#[serde] params: Option<Vec<serde_json::Value>>,
-// ) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
-// 	let state = state.as_ref();
-// 	demand_external_allowed(state)?;
-// 	let mut state = state.borrow_mut();
-// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-// 		.connect().await.map_err(js_err)?;
+	let row = client.query_one(&query, actual_params.as_slice()).await.map_err(run_err)?;
+	crate::convert_pg_row(row, false)
+}
 
-// 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-// 	let row = sqlx::query_with(&query, args).fetch_optional(connection).await.map_err(js_err)?;
+#[deno_core::op2(async)]
+#[serde]
+async fn op_sql_fetch_optional(
+	state: Rc<RefCell<OpState>>,
+	#[string] query: String,
+	#[serde] params: Option<Vec<serde_json::Value>>,
+) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
+	let state = state.as_ref();
+	demand_external_allowed(state)?;
+	let state = state.borrow_mut();
 
-// 	match row {
-// 		None => Ok(None),
-// 		Some(row) => {
-// 			use sqlx::{Row, Column};
-// 			let columns = row.columns();
-// 			let obj: serde_json::Map<String, serde_json::Value> =
-// 				columns.iter().map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect();
+	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
+	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
+	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
-// 			Ok(Some(obj.into()))
-// 		},
-// 	}
-// }
+	let params = crate::make_params(params);
+	let actual_params: Vec<_> = params.iter().map(Box::as_ref).collect();
+
+	let row = client.query_opt(&query, actual_params.as_slice()).await.map_err(run_err)?;
+	row.map(|row| crate::convert_pg_row(row, false)).transpose()
+}
 
 pub type FnMap = std::collections::HashMap<String, Fn>;
 
@@ -348,10 +358,10 @@ async fn op_create_recurring_action(
 	let scheduled_action_queue = deno_core::_ops::opstate_borrow::<ScheduledActionQueue>(&state);
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 
-	let client = server_role_pool.get().await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(run_err)?;
 	let action = queries::scheduled::create_detached_recurring_action()
 		.bind(&client, &current_full_path, &description, &start.naive_utc(), &recurrence_granularity, &recurrence_multiplier, &action_name, &action_arg)
-		.one().await.map_err(js_err)?;
+		.one().await.map_err(run_err)?;
 
 	scheduled_action_queue.queue(
 		server_role_pool.clone(), server_pg_config,
@@ -371,9 +381,9 @@ async fn op_remove_recurring_action(
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 
-	let client = server_role_pool.get().await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(run_err)?;
 	queries::scheduled::remove_detached_recurring_action()
-		.bind(&client, &scheduled_action_uuid).await.map_err(js_err)?;
+		.bind(&client, &scheduled_action_uuid).await.map_err(run_err)?;
 
 	Ok(())
 }
@@ -395,10 +405,10 @@ async fn op_schedule_action(
 	let scheduled_action_queue = deno_core::_ops::opstate_borrow::<ScheduledActionQueue>(&state);
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 
-	let client = server_role_pool.get().await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(run_err)?;
 	let id = queries::scheduled::create_detached_scheduled_action()
 		.bind(&client, &current_full_path, &description, &scheduled_time.fixed_offset(), &action_name, &action_arg)
-		.one().await.map_err(js_err)?;
+		.one().await.map_err(run_err)?;
 
 	scheduled_action_queue.queue(
 		server_role_pool.clone(), server_pg_config,
@@ -418,9 +428,9 @@ async fn op_unschedule_action(
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 
-	let client = server_role_pool.get().await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(run_err)?;
 	queries::scheduled::remove_detached_scheduled_action()
-		.bind(&client, &scheduled_action_uuid).await.map_err(js_err)?;
+		.bind(&client, &scheduled_action_uuid).await.map_err(run_err)?;
 
 	Ok(())
 }
@@ -435,10 +445,10 @@ async fn op_enroll_member(
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 
-	let client = server_role_pool.get().await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(run_err)?;
 	let id = queries::members::enroll_member()
 		.bind(&client, &email)
-		.one().await.map_err(js_err)?;
+		.one().await.map_err(run_err)?;
 
 	// TODO perhaps at some point there's a notification email sent to this person here or something
 
@@ -454,9 +464,9 @@ async fn op_remove_member_by_email(
 	let state = state.as_ref().borrow();
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 
-	let client = server_role_pool.get().await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(run_err)?;
 	queries::members::remove_member_by_email()
-		.bind(&client, &email).await.map_err(js_err)?;
+		.bind(&client, &email).await.map_err(run_err)?;
 
 	// TODO perhaps at some point there's a notification email sent to this person here or something
 
@@ -471,9 +481,9 @@ async fn op_remove_member_by_uuid(
 	let state = state.as_ref().borrow();
 
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
-	let client = server_role_pool.get().await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(run_err)?;
 	queries::members::remove_member_by_uuid()
-		.bind(&client, &member_uuid).await.map_err(js_err)?;
+		.bind(&client, &member_uuid).await.map_err(run_err)?;
 
 	// TODO perhaps at some point there's a notification email sent to this person here or something
 
@@ -498,14 +508,14 @@ async fn op_propose_self_replacement(
 	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
 	let server_pg_config = deno_core::_ops::opstate_borrow::<ServerPgConfig>(&state);
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
-	let server_pg_client = server_role_pool.get().await.map_err(js_err)?;
+	let server_pg_client = server_role_pool.get().await.map_err(run_err)?;
 	let (actions, views) = validate_candidate(current_full_path, &server_pg_config.0, &server_pg_client, &candidate).await?;
 
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
-	let client = server_role_pool.get().await.map_err(js_err)?;
+	let client = server_role_pool.get().await.map_err(run_err)?;
 	let candidate_uuid = queries::rulesets::insert_candidate_replacement()
 		.bind(&client, &current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration)
-		.one().await.map_err(js_err)?;
+		.one().await.map_err(run_err)?;
 
 	Ok(candidate_uuid.to_string())
 }

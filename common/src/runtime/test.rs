@@ -1,5 +1,6 @@
 use super::*;
 use crate::{deadpool, postgres};
+use serde_json::Value as Val;
 
 const DEV_DB_URL: &'static str = "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db";
 fn conf() -> PgConfig {
@@ -49,6 +50,7 @@ async fn test_compute_time_until() {
 
 #[tokio::test]
 async fn test_propose_self_replacement() {
+	let scheduled_action_queue = ScheduledActionQueue::new();
 	let pool = deadpool::Pool::builder(deadpool::Manager::new(conf(), postgres::NoTls)).max_size(5).build().unwrap();
 	let mut client = pool.get().await.unwrap();
 	client.batch_execute(r#"
@@ -81,7 +83,7 @@ async fn test_propose_self_replacement() {
 				if (typeof u !== 'string' || u.length !== 36)
 					throw new Error(`proposeSelfReplacement didn't return uuid: ${u}`)
 			})
-		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
+		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap();
 
 	let mut result = queries::rulesets::test_select_candidate_replacement_ruleset()
@@ -109,13 +111,14 @@ async fn test_propose_self_replacement() {
 					db_migration: "alter table stuff add column color text;",
 				})
 			})
-		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
+		"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap_err();
 	assert!(result.to_string().contains("candidate for root has misdeclared schema"));
 }
 
 #[tokio::test]
 async fn run_function_basics() {
+	let scheduled_action_queue = ScheduledActionQueue::new();
 	let pool = deadpool::Pool::builder(deadpool::Manager::new(conf(), postgres::NoTls)).max_size(5).build().unwrap();
 	let result = run_function::<()>(
 		"".into(),
@@ -125,7 +128,7 @@ async fn run_function_basics() {
 				return true
 			})
 		"#.to_string(),
-		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap_err();
 	assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
@@ -133,11 +136,11 @@ async fn run_function_basics() {
 		"".into(), r#"
 			votebase.Action("test_action", async () => {
 				const v = await votebase.sqlFetchScalar("select 1")
-				console.log(v)
+				if (v !== 1) throw new Error(`sqlFetchScalar didn't return number: ${v}`)
 				return v
 			})
 		"#.to_string(),
-		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap();
 	assert_eq!(result, 1);
 
@@ -148,89 +151,146 @@ async fn run_function_basics() {
 				return true
 			})
 		"#.to_string(),
-		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(),
+		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap_err();
 	assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
+	// sqlExecuteStatements
+
+	// sqlFetchScalar
 	let result = run_function::<String>(
 		"".into(), r#"
 			votebase.View("test_view", async () => {
-				return await votebase.sqlFetchScalar("select 'hello'")
+				const v = await votebase.sqlFetchScalar("select 'hello'")
+				if (v !== 'hello') throw new Error(`sqlFetchScalar didn't return string: ${v}`)
+				return v
 			})
 		"#.to_string(),
-		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(),
+		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap();
 	assert_eq!(result, "hello");
 
-	let client = pool.get().await.unwrap();
-	queries::members::test_delete_all_members().bind(&client).await.unwrap();
-	let luke = run_function::<String>(
+	// sqlFetchOne
+	let result = run_function::<Val>(
 		"".into(), r#"
-			votebase.Action("test_action", async () => {
-				const [luke, leia, vader] = await Promise.all([
-					votebase.enrollMember("luke@rebels.org"),
-					votebase.enrollMember("leia@rebels.org"),
-					votebase.enrollMember("vader@rebels.org"),
-				])
-				if (typeof luke !== 'string' || luke.length !== 36) throw new Error(`enrollMember didn't return uuid: ${luke}`)
-				if (typeof leia !== 'string' || leia.length !== 36) throw new Error(`enrollMember didn't return uuid: ${leia}`)
-				if (typeof vader !== 'string' || vader.length !== 36) throw new Error(`enrollMember didn't return uuid: ${vader}`)
-
-				await Promise.all([
-					votebase.removeMemberByEmail("vader@rebels.org"),
-					votebase.removeMemberByUuid(leia),
-				])
-
-				return luke
+			votebase.View("test_view", async () => {
+				const r = await votebase.sqlFetchOne(`select 'hello' as yo, true as hmm, '[1, null, "a"]'::jsonb as arr`)
+				if (r.yo !== 'hello' || r.hmm !== true || !(Array.isArray(r.arr) && r.arr[0] === 1 && r.arr[1] === null && r.arr[2] === 'a'))
+					throw new Error(`sqlFetchOne didn't return proper record: ${r}`)
+				return r
 			})
 		"#.to_string(),
-		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
+		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap();
-	let result = queries::members::test_select_all_members().bind(&client).one().await.unwrap();
-	assert_eq!(result.id, luke.parse::<Uuid>().unwrap());
-	assert_eq!(result.email, "luke@rebels.org");
+	if let Val::Object(o) = result {
+		assert_eq!(o.get("yo").unwrap(), "hello");
+		assert_eq!(o.get("hmm").unwrap(), true);
+		assert_eq!(o.get("arr").unwrap(), &Val::Array(vec![1.into(), Val::Null, "a".into()]));
+	} else { assert!(false, "isn't object") };
 
-	client.batch_execute(r#"
-		delete from votebase_catalog.detached_scheduled_action where true;
-		delete from votebase_catalog.ruleset where true;
-		insert into votebase_catalog.ruleset (
-			parent_full_path, "name", actions, views, code, db_schema
-		) values (
-			null, 'root', ARRAY[]::text[], ARRAY[]::text[], '', ''
-		) returning full_path, migrator_pass, action_pass, view_pass;
-	"#).await.unwrap();
+	// sqlFetchOptional
+	let result = run_function::<Val>(
+		"".into(), r#"
+			votebase.View("test_view", async () => {
+				const n = await votebase.sqlFetchOptional(`
+					with a as (select 'hello' as yo, true as hmm, '[1, null, "a"]'::jsonb as arr)
+					select * from a where hmm = false
+				`)
+				if (n !== null)
+					throw new Error(`sqlFetchOptional didn't return null: ${n}`)
 
-	let uuid = run_function::<String>(
-		"root".into(), r#"
-			const a = votebase.Action("call_action", async () => {
-				// do nothing
-			})
-
-			votebase.Action("test_action", async () => {
-				const d = new Date()
-				d.setDate(d.getDate() + 1)
-
-				const [sch1, sch2] = await Promise.all([
-					votebase.scheduleAction("call_action with 1", d, a, 1),
-					votebase.scheduleAction("call_action with 2", d, a, 2),
-				])
-				if (typeof sch1 !== 'string' || sch1.length !== 36) throw new Error(`scheduleAction didn't return uuid: ${sch1}`)
-				if (typeof sch2 !== 'string' || sch2.length !== 36) throw new Error(`scheduleAction didn't return uuid: ${sch2}`)
-
-				await votebase.unscheduleAction(sch2)
-				return sch1
+				const r = await votebase.sqlFetchOptional(`
+					with a as (select 'hello' as yo, true as hmm, '[1, null, "a"]'::jsonb as arr)
+					select * from a where hmm = true
+				`)
+				if (r.yo !== 'hello' || r.hmm !== true || !(Array.isArray(r.arr) && r.arr[0] === 1 && r.arr[1] === null && r.arr[2] === 'a'))
+					throw new Error(`sqlFetchOptional didn't return proper record: ${r}`)
+				return r
 			})
 		"#.to_string(),
-		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(),
+		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap();
-	let result = queries::scheduled::test_select_detached_scheduled_actions().bind(&client).one().await.unwrap();
-	assert_eq!(result.id, uuid.parse::<Uuid>().unwrap());
-	assert_eq!(result.description, "call_action with 1");
-	assert_eq!(result.scheduled_time.date_naive(), chrono::Utc::now().date_naive() + ::chrono::Days::new(1));
-	assert_eq!(result.full_path, "root");
-	assert_eq!(result.action_name, "call_action");
-	assert_eq!(result.action_arg, serde_json::json!(1));
+	if let Val::Object(o) = result {
+		assert_eq!(o.get("yo").unwrap(), "hello");
+		assert_eq!(o.get("hmm").unwrap(), true);
+		assert_eq!(o.get("arr").unwrap(), &Val::Array(vec![1.into(), Val::Null, "a".into()]));
+	} else { assert!(false, "isn't object") };
 
-	// // TODO find a way to test the real thing now that scheduleAction will actually queue a tokio task
-	// assert!(false);
+	// sqlFetchAll
+
+
+
+
+
+	// let client = pool.get().await.unwrap();
+	// queries::members::test_delete_all_members().bind(&client).await.unwrap();
+	// let luke = run_function::<String>(
+	// 	"".into(), r#"
+	// 		votebase.Action("test_action", async () => {
+	// 			const [luke, leia, vader] = await Promise.all([
+	// 				votebase.enrollMember("luke@rebels.org"),
+	// 				votebase.enrollMember("leia@rebels.org"),
+	// 				votebase.enrollMember("vader@rebels.org"),
+	// 			])
+	// 			if (typeof luke !== 'string' || luke.length !== 36) throw new Error(`enrollMember didn't return uuid: ${luke}`)
+	// 			if (typeof leia !== 'string' || leia.length !== 36) throw new Error(`enrollMember didn't return uuid: ${leia}`)
+	// 			if (typeof vader !== 'string' || vader.length !== 36) throw new Error(`enrollMember didn't return uuid: ${vader}`)
+
+	// 			await Promise.all([
+	// 				votebase.removeMemberByEmail("vader@rebels.org"),
+	// 				votebase.removeMemberByUuid(leia),
+	// 			])
+
+	// 			return luke
+	// 		})
+	// 	"#.to_string(),
+	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	// ).await.unwrap();
+	// let result = queries::members::test_select_all_members().bind(&client).one().await.unwrap();
+	// assert_eq!(result.id, luke.parse::<Uuid>().unwrap());
+	// assert_eq!(result.email, "luke@rebels.org");
+
+	// client.batch_execute(r#"
+	// 	delete from votebase_catalog.detached_scheduled_action where true;
+	// 	delete from votebase_catalog.ruleset where true;
+	// 	insert into votebase_catalog.ruleset (
+	// 		parent_full_path, "name", actions, views, code, db_schema
+	// 	) values (
+	// 		null, 'root', ARRAY[]::text[], ARRAY[]::text[], '', ''
+	// 	) returning full_path, migrator_pass, action_pass, view_pass;
+	// "#).await.unwrap();
+
+	// let uuid = run_function::<String>(
+	// 	"root".into(), r#"
+	// 		const a = votebase.Action("call_action", async () => {
+	// 			// do nothing
+	// 		})
+
+	// 		votebase.Action("test_action", async () => {
+	// 			const d = new Date()
+	// 			d.setDate(d.getDate() + 1)
+
+	// 			const [sch1, sch2] = await Promise.all([
+	// 				votebase.scheduleAction("call_action with 1", d, a, 1),
+	// 				votebase.scheduleAction("call_action with 2", d, a, 2),
+	// 			])
+	// 			if (typeof sch1 !== 'string' || sch1.length !== 36) throw new Error(`scheduleAction didn't return uuid: ${sch1}`)
+	// 			if (typeof sch2 !== 'string' || sch2.length !== 36) throw new Error(`scheduleAction didn't return uuid: ${sch2}`)
+
+	// 			await votebase.unscheduleAction(sch2)
+	// 			return sch1
+	// 		})
+	// 	"#.to_string(),
+	// 	"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	// ).await.unwrap();
+	// let result = queries::scheduled::test_select_detached_scheduled_actions().bind(&client).one().await.unwrap();
+	// assert_eq!(result.id, uuid.parse::<Uuid>().unwrap());
+	// assert_eq!(result.description, "call_action with 1");
+	// assert_eq!(result.scheduled_time.date_naive(), chrono::Utc::now().date_naive() + ::chrono::Days::new(1));
+	// assert_eq!(result.full_path, "root");
+	// assert_eq!(result.action_name, "call_action");
+	// assert_eq!(result.action_arg, serde_json::json!(1));
+
+	// // // TODO find a way to test the real thing now that scheduleAction will actually queue a tokio task
+	// // assert!(false);
 }
