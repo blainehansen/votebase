@@ -1,5 +1,7 @@
 use votebase_queries::{tokio_postgres as postgres, deadpool_postgres as deadpool};
 
+type AnyError = Box<dyn std::error::Error>;
+
 #[derive(Debug)]
 struct FullColumn {
 	pg_type: postgres::types::Type,
@@ -9,6 +11,8 @@ struct FullColumn {
 #[derive(Debug)]
 struct FullParam {
 	name: String,
+	index: usize,
+	null_allowed: bool,
 	pg_type: postgres::types::Type,
 }
 
@@ -83,23 +87,66 @@ fn columns_to_ts_type(columns: Vec<FullColumn>) -> String {
 	unimplemented!()
 }
 
+async fn read_sql_file(path: std::path::PathBuf) -> Result<RawQuery, tokio::io::Error> {
+	let query = tokio::fs::read_to_string(&path).await?;
+	let name = path.to_string_lossy().to_string();
+	Ok(RawQuery { name, query })
+}
+
+type TableColumnMap = HashMap<(u32, i16), ColumnInfo>;
+async fn prepare_query(
+	client: &deadpool::Client,
+	table_column_map: &TableColumnMap,
+	raw_query: RawQuery,
+) -> Result<FullStatement, postgres::Error> {
+	let (actual_sql, query_vars) = convert_named_params_to_positional(&raw_query.query).unwrap();
+
+	let statement = client.prepare(&actual_sql).await?;
+
+	let params = statement.params().iter()
+		.enumerate()
+		.map(|(index, p)| {
+			let param_name = query_vars.get(&index).unwrap();
+			let null_allowed = param_name.ends_with("?");
+			let param_name = param_name.strip_suffix("?").unwrap_or(param_name);
+
+			FullParam{ name: param_name.to_string(), index, null_allowed, pg_type: p.to_owned() }
+		})
+		.collect();
+
+	let columns = statement.columns().iter().map(|c| {
+		match (c.table_oid(), c.column_id()) {
+			(Some(table_oid), Some(column_id)) => {
+				let column_info = table_column_map.get(&(table_oid, column_id)).unwrap().clone();
+				FullColumn{ pg_type: c.type_().clone(), column_info: Some(column_info) }
+			},
+			_ => FullColumn{ pg_type: c.type_().clone(), column_info: None },
+		}
+	}).collect();
+
+	Ok(FullStatement{ name: raw_query.name, query: actual_sql, params, columns })
+}
+
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-	// use sqlparser::parser::Parser;
-
-	// let dialect = sqlparser::dialect::PostgreSqlDialect {};
-	// let sql = "select :hello as yo;";
-	// dbg!(Parser::parse_sql(&dialect, sql).unwrap());
-
-
+async fn main() -> Result<(), AnyError> {
 	let args: Vec<String> = std::env::args().skip(1).collect();
 	let admin_connection_string = args.get(0).expect("first parameter should be a database url");
 	let config = admin_connection_string.parse::<postgres::Config>()?;
 	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(5).build()?;
 	let client = pool.get().await?;
+	let queries_dir = args.get(1).expect("second parameter should be a directory").to_string();
+
+	let sql_files = tokio::task::spawn_blocking(move || {
+		walkdir::WalkDir::new(queries_dir).follow_links(false).into_iter()
+			.filter_map(|e| e.ok())
+			.filter(|e| e.file_type().is_file() && e.file_name().to_string_lossy().ends_with(".sql"))
+			.map(|e| e.into_path())
+			.collect::<Vec<_>>()
+	}).await?;
 
 	use postgres_from_row::FromRow;
-	let table_column_map = client.query(r#"
+	let table_column_map: TableColumnMap = client.query(r#"
 		select
 			-- sch.nspname as schema_name,
 			-- tab.relname as table_name,
@@ -124,36 +171,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		.map(|info| ((info.table_oid, info.column_id), info))
 		.collect::<std::collections::HashMap<_, _>>();
 
-	let raw_queries_filename = args.get(1).expect("second parameter should be a json filename with raw queries in it");
-	let raw_queries: Vec<RawQuery> = serde_json::from_slice(tokio::fs::read(raw_queries_filename).await?.as_slice())?;
-	let mut full_statements = vec![];
-	for raw_query in raw_queries {
-		let statement = client.prepare(&raw_query.query).await?;
+	let full_statements = futures::future::try_join_all(
+		sql_files.into_iter().map(async |path| {
+			let raw_query = read_sql_file(path).await?;
+			let full_statement = prepare_query(&client, &table_column_map, raw_query).await?;
+			Ok::<_, AnyError>(full_statement)
+		})
+	).await?;
 
-		let params = statement.params().iter()
-			// TODO this is lazy for now. this will rely on the ident etc, using sqlparser
-			.enumerate()
-			.map(|(index, p)| FullParam{ name: format!("_{}", index), pg_type: p.to_owned() })
-			.collect();
-
-		let columns = statement.columns().iter().map(|c| {
-			match (c.table_oid(), c.column_id()) {
-				(Some(table_oid), Some(column_id)) => {
-					let column_info = table_column_map.get(&(table_oid, column_id)).unwrap().clone();
-					FullColumn{ pg_type: c.type_().clone(), column_info: Some(column_info) }
-				},
-				_ => FullColumn{ pg_type: c.type_().clone(), column_info: None },
-			}
-		}).collect();
-
-		full_statements.push(FullStatement{ name: raw_query.name, query: raw_query.query, params, columns })
-	}
-
-	for full_statement in full_statements {
+	for mut full_statement in full_statements {
 		let mut params_decl = vec![];
 		let mut params_use = vec![];
+		full_statement.params.sort_by_key(|p| p.index);
 		for param in full_statement.params {
-			let (ts_type, ts_hint) = pg_to_ts_info(&param.pg_type, !param.name.ends_with("?"));
+			let (ts_type, ts_hint) = pg_to_ts_info(&param.pg_type, !param.null_allowed);
 			params_decl.push(format!("{}: {}", param.name, ts_type));
 			params_use.push(format!("[{}, {}]", param.name, ts_hint));
 		}
@@ -167,9 +198,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		let execution_fn = "op_sql_fetch_all";
 
 		let out_typescript = format!(r#"
-			function {name}(runtime: Runtime, {params_decl}): Promise<{return_decl}> {{
-				return runtime.{execution_fn}(`{query}`, [{params_use}])
-			}}
+function {name}(runtime: Runtime, {params_decl}): Promise<{return_decl}> {{
+	return runtime.{execution_fn}(`{query}`, [{params_use}])
+}}
 		"#,
 			name=full_statement.name,
 			query=full_statement.query,
@@ -227,6 +258,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	Ok(())
 }
+
+
+use sqlparser::ast::{VisitMut, VisitorMut};
+use std::collections::HashMap;
+
+struct NamedParamReplacer {
+	param_map: HashMap<usize, String>,
+	next_position: usize,
+}
+
+impl NamedParamReplacer {
+	fn new() -> Self {
+		Self { param_map: HashMap::new(), next_position: 0 }
+	}
+
+	fn get_position(&mut self, param_name: &str) -> usize {
+		let position = self.next_position;
+		self.param_map.entry(position).or_insert_with(|| {
+			self.next_position += 1;
+			param_name.to_string()
+		});
+		self.next_position
+	}
+}
+
+impl VisitorMut for NamedParamReplacer {
+	type Break = ();
+
+	fn post_visit_expr(&mut self, expr: &mut sqlparser::ast::Expr) -> std::ops::ControlFlow<Self::Break> {
+		use sqlparser::{ast::{self, Expr}};
+
+		match expr {
+			Expr::Value(ast::ValueWithSpan{ value: ast::Value::Placeholder(placeholder), .. }) => {
+				if let Some(param_name) = placeholder.strip_prefix(':') {
+					let position = self.get_position(param_name);
+					*placeholder = format!("${}", position);
+				}
+			},
+
+			Expr::Identifier(ident) => {
+				if let Some(param_name) = ident.value.strip_prefix(':') {
+					let position = self.get_position(param_name);
+					*expr = Expr::Value(ast::ValueWithSpan{
+						value: ast::Value::Placeholder(format!("${}", position)),
+						span: ident.span,
+					});
+				}
+			},
+
+			_ => {}
+		}
+
+		std::ops::ControlFlow::Continue(())
+	}
+}
+
+fn convert_named_params_to_positional(sql: &str) -> Result<(String, HashMap<usize, String>), String> {
+	let mut stmts = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::PostgreSqlDialect{}, sql)
+		.map_err(|e| format!("Failed to parse SQL: {}", e))?;
+
+	let mut replacer = NamedParamReplacer::new();
+	stmts.visit(&mut replacer);
+
+	let modified_sql = stmts.iter()
+		.map(|stmt| stmt.to_string())
+		.collect::<Vec<_>>()
+		.join("; ");
+
+	Ok((modified_sql, replacer.param_map))
+}
+
 
 macro_rules! match_pg_type {
 	($expr:expr, $($variant:ident => $e:expr;)*) => {
@@ -354,78 +456,3 @@ fn base_pg_type_to_ts_info(typ: &postgres::types::Type) -> (&str, &str) {
 		// ANYCOMPATIBLE_RANGE => ("anycompatible_range", "'anycompatible_range'");
 	)
 }
-
-
-// use sqlparser::ast::{Expr, VisitMut, VisitorMut};
-// use sqlparser::parser::Parser;
-// use std::collections::HashMap;
-
-// /// A visitor that transforms named parameters (`:param_name`) to positional parameters (`$1`)
-// struct NamedParamReplacer {
-// 	param_map: HashMap<String, usize>,
-// 	next_position: usize,
-// }
-
-// impl NamedParamReplacer {
-// 	fn new() -> Self {
-// 		Self {
-// 			param_map: HashMap::new(),
-// 			next_position: 1,
-// 		}
-// 	}
-
-// 	fn get_position(&mut self, param_name: &str) -> usize {
-// 		*self.param_map.entry(param_name.to_string()).or_insert_with(|| {
-// 			let pos = self.next_position;
-// 			self.next_position += 1;
-// 			pos
-// 		})
-// 	}
-// }
-
-// // have to figure out what's really going on here
-// // https://docs.rs/sqlparser/latest/sqlparser/ast/trait.VisitMut.html
-// // https://docs.rs/sqlparser/latest/sqlparser/ast/trait.VisitorMut.html
-// impl VisitorMut for NamedParamReplacer {
-// 	type Break = ();
-
-// 	fn post_visit_expr(&mut self, expr: &mut Expr) -> std::ops::ControlFlow<Self::Break> {
-// 		match expr {
-// 			// I think it's always going to be Value
-// 			Expr::Value(sqlparser::ast::ValueWithSpan{ value: sqlparser::ast::Value::Placeholder(placeholder), .. }) => {
-// 				if let Some(param_name) = placeholder.strip_prefix(':') {
-// 					let position = self.get_position(param_name);
-// 					*placeholder = format!("${}", position);
-// 				}
-// 			},
-
-// 			// Expr::Identifier(ident) => {
-// 			// 	if let Some(param_name) = ident.value.strip_prefix(':') {
-// 			// 		let position = self.get_position(param_name);
-// 			// 		*expr = Expr::Value(Value::Placeholder(format!("${}", position)));
-// 			// 	}
-// 			// },
-
-// 			_ => {}
-// 		}
-
-// 		// Continue traversal to visit all child expressions
-// 		// sqlparser::ast::visit_expr_mut(self, expr);
-// 		std::ops::ControlFlow::Continue(())
-// 	}
-// }
-
-// pub fn convert_named_params_to_positional(sql: &str) -> Result<(String, HashMap<String, usize>), String> {
-// 	let mut stmts = Parser::parse_sql(&sqlparser::dialect::PostgreSqlDialect{}, sql)
-// 		.map_err(|e| format!("Failed to parse SQL: {}", e))?;
-
-// 	let mut replacer = NamedParamReplacer::new();
-// 	stmts.visit(&mut replacer);
-
-// 	let modified_sql = stmts.iter()
-// 		.map(|stmt| stmt.to_string())
-// 		.collect::<Vec<_>>()
-// 		.join("; ");
-
-// 	Ok((modified_sql, replacer.param_map))
-// }

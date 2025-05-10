@@ -12,3 +12,5 @@ postgres-from-row = "0.5"
 rand = "0.9"
 base64 = "0.22"
 sqlparser = { version = "0.56", features = ["visitor"] }
+walkdir = "2.5"
+futures = "0.3"
