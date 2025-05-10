@@ -1,5 +1,7 @@
-// votebase.registerAction('nominateConstitution', z.string(), z.string().uuid(), (text) => {
-votebase.registerAction('nominateConstitution', (text) => {
+import 'votebase'
+
+// votebase.Action('nominateConstitution', z.string(), z.string().uuid(), (text) => {
+votebase.Action('nominateConstitution', async (text) => {
 	//
 })
 
@@ -9,7 +11,7 @@ votebase.registerAction('nominateConstitution', (text) => {
 // })
 // type YesOrNo = z.TypeOf<typeof YesOrNo>
 
-// votebase.registerAction('yesOrNo', YesOrNo, z.void(), ({ constitutionId, isYes }) => {
-votebase.registerAction('yesOrNo', ({ constitutionId, isYes }) => {
+// votebase.Action('yesOrNo', YesOrNo, z.void(), ({ constitutionId, isYes }) => {
+votebase.Action('yesOrNo', async ({ constitutionId, isYes }) => {
 	//
 })

@@ -18,6 +18,11 @@ votebase_queries = { path = "../queries" }
 reqwest = "0.12"
 urlencoding = "2"
 
+futures = "0.3"
+walkdir = "2.5"
+sqlparser = { version = "0.56", features = ["visitor"] }
+postgres-from-row = "0.5"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 

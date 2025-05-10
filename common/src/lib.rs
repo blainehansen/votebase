@@ -1,6 +1,8 @@
 #[macro_use] extern crate log;
 
 pub mod runtime;
+pub mod gen_queries;
+pub mod gen_ts;
 
 pub use votebase_queries::{queries, deadpool_postgres as deadpool, tokio_postgres as postgres};
 

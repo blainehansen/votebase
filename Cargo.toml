@@ -4,6 +4,7 @@ members = [
 	"transpile",
 	"common",
 	"cli",
+	"bootstrap_cli",
 	"server",
 	"queries",
 ]

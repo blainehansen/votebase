@@ -9,5 +9,5 @@
 			"votebase": ["../common/src/runtime/runtime.ts"]
 		}
 	},
-	"include": ["./**/*.ts"]
+	"include": ["./**/*.ts", "../common/src/runtime/runtime.ts"]
 }

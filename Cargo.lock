@@ -3873,19 +3873,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "votebase_cli"
+name = "votebase_bootstrap_cli"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "futures",
- "postgres-from-row",
  "rand 0.9.0",
- "serde",
- "serde_json",
- "sqlparser",
  "tokio",
+ "votebase_common",
  "votebase_queries",
- "walkdir",
+]
+
+[[package]]
+name = "votebase_cli"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "votebase_common",
+ "votebase_queries",
 ]
 
 [[package]]
@@ -3895,16 +3899,20 @@ dependencies = [
  "chrono",
  "deno_core",
  "deno_error",
+ "futures",
  "log",
+ "postgres-from-row",
  "reqwest",
  "serde",
  "serde_json",
+ "sqlparser",
  "thiserror",
  "tokio",
  "urlencoding",
  "uuid",
  "votebase_queries",
  "votebase_transpile",
+ "walkdir",
 ]
 
 [[package]]

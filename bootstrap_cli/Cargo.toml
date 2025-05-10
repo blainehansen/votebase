@@ -1,5 +1,5 @@
 [package]
-name = "votebase_cli"
+name = "votebase_bootstrap_cli"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,3 +7,5 @@ edition = "2024"
 votebase_queries = { path = "../queries" }
 votebase_common = { path = "../common" }
 tokio = { workspace = true }
+rand = "0.9"
+base64 = "0.22"
