@@ -95,7 +95,7 @@ pub async fn generate_queries(queries_dir: String, client: &deadpool::Client) ->
 	let compiled_fields = full_statements.into_iter().map(|mut full_statement| {
 		full_statement.params.sort_by_key(|p| p.index);
 		let hints = full_statement.params.into_iter()
-			.map(|param| pg_to_ts_info(&param.pg_type, !param.null_allowed).1)
+			.map(|param| pg_type_to_ts_hint(&param.pg_type, !param.null_allowed))
 			.collect::<Vec<_>>()
 			.join(", ");
 
@@ -137,55 +137,50 @@ async fn read_sql_file(path: std::path::PathBuf) -> Result<RawQuery, tokio::io::
 }
 
 
-fn pg_to_ts_info(typ: &postgres::types::Type, is_not_null: bool) -> (String, String) {
-	let (ts_type, ts_hint) = match typ.kind() {
+fn pg_type_to_ts_hint(typ: &postgres::types::Type, is_not_null: bool) -> String {
+	let ts_hint = match typ.kind() {
 		postgres::types::Kind::Simple | postgres::types::Kind::Pseudo => {
-			let (ts_type, ts_hint) = crate::gen_ts::base_pg_type_to_ts_info(typ);
-			(ts_type.to_string(), ts_hint.to_string())
+			let ts_hint = crate::gen_ts::base_pg_type_to_ts_info(typ);
+			ts_hint.to_string()
 		},
-		postgres::types::Kind::Enum(variants) => {
-			(variants.join("|").into(), "'string'".into())
+		postgres::types::Kind::Enum(_) => {
+			"'string'".into()
 		},
 		postgres::types::Kind::Array(inner) => {
-			let (ts_type, ts_hint) = crate::gen_ts::base_pg_type_to_ts_info(inner);
-			(format!("({ts_type})[]"), ts_hint.to_string())
+			let ts_hint = crate::gen_ts::base_pg_type_to_ts_info(inner);
+			ts_hint.to_string()
 		},
 		postgres::types::Kind::Domain(inner) => {
-			let (ts_type, ts_hint) = crate::gen_ts::base_pg_type_to_ts_info(inner);
-			(ts_type.to_string(), ts_hint.to_string())
+			let ts_hint = crate::gen_ts::base_pg_type_to_ts_info(inner);
+			ts_hint.to_string()
 		},
 		postgres::types::Kind::Composite(fields) => {
-			let mut type_fields = vec![];
-			let mut hint_fields = vec![];
+			let mut ts_hints = vec![];
 			for field in fields {
 				let field_name = field.name();
-				let (ts_type, ts_hint) = pg_to_ts_info(field.type_(), false);
-				type_fields.push(format!("{field_name}: {ts_type}"));
-				hint_fields.push(format!("{field_name}: {ts_hint}"));
+				let ts_hint = pg_type_to_ts_hint(field.type_(), false);
+				ts_hints.push(format!("{field_name}: {ts_hint}"));
 			}
-			(
-				format!("{{ {} }}", type_fields.join(", ")),
-				format!("{{ {} }}", hint_fields.join(", ")),
-			)
+			format!("{{ {} }}", ts_hints.join(", "))
 		},
 		_ => panic!("don't know what to do with pg type: {}", typ),
 		// postgres::types::Kind::Range(inner) => {},
 		// postgres::types::Kind::Multirange(inner) => {},
 	};
 
-	if is_not_null { (ts_type, ts_hint) }
-	else { (format!("{ts_type} | null"), format!("Nullable({ts_hint})")) }
+	if is_not_null { ts_hint }
+	else { format!("Nullable({ts_hint})") }
 }
 fn columns_to_type_hint(columns: Vec<FullColumn>) -> String {
 	if columns.len() == 1 {
 		let column = &columns[0];
 		let is_not_null = column.column_info.as_ref().map(|c| c.not_null).unwrap_or(false);
-		return pg_to_ts_info(&column.pg_type, is_not_null).1.to_string();
+		return pg_type_to_ts_hint(&column.pg_type, is_not_null).to_string();
 	}
 
 	let hints = columns.into_iter().map(|column| {
 		let is_not_null = column.column_info.as_ref().map(|c| c.not_null).unwrap_or(false);
-		let hint = pg_to_ts_info(&column.pg_type, is_not_null).1;
+		let hint = pg_type_to_ts_hint(&column.pg_type, is_not_null);
 		let name = column.name;
 		format!(r#"[`{name}`, {hint}]"#)
 	}).collect::<Vec<_>>().join(", ");

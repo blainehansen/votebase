@@ -10,13 +10,9 @@ type ActualParams<Hints extends TypeHint[]> = { [I in keyof Hints]: TypeOfHint<H
 type RetHint = TypeHint | [string, TypeHint][]
 type ActualRet<R extends RetHint> =
 	R extends TypeHint ? TypeOfHint<R>
-	: { [K in R[number][0]]: Extract<R[number], [K, unknown]>[1] }
+	: { [K in R[number][0]]: TypeOfHint<Extract<R[number], [K, unknown]>[1]> }
 
-type _ = ActualRet<[['b', 'bool'], ['c', 'string']]>
-
-// const _: HintedParams<['number', 'bool']> = [[3, 'number'], [true, 'bool']]
-
-// type HintedParams<>
+type _ = ActualRet<[['b', 'bool?'], ['c', 'text[]'], ['d', 'int']]>
 
 class QueryExecutor<P extends TypeHint[], R extends RetHint> {
 	constructor(
@@ -54,12 +50,6 @@ function StatementsExecutor(sql: string): () => Promise<void> {
 const { core } = (globalThis as any).Deno as { core: {
 	print: (message: string, is_error: boolean) => void,
 	ops: {
-		op_sql_fetch_all: <P extends TypeHint[], R extends RetHint>(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
-		op_sql_fetch_one: <P extends TypeHint[], R extends RetHint>(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>>,
-		op_sql_fetch_optional: <P extends TypeHint[], R extends RetHint>(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R> | null>,
-		op_sql_execute_statement: <P extends TypeHint[]>(sql: string, params: ActualParams<P>, hints: P) => Promise<number>,
-		op_sql_execute_statements: (sql: string) => Promise<void>,
-
 		// op_fetch: (url: string) => Promise<string>,
 		// // TODO add userId: string arg to all the actions/views
 		// op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T) => Promise<string | void>) => void,
@@ -78,46 +68,43 @@ const { core } = (globalThis as any).Deno as { core: {
 		// // op_set_timeout: (delay: number | undefined) => Promise<void>,
 		// op_propose_self_replacement: (candidate: CandidateSelfReplacement) => Promise<string>,
 
-		// op_sql_execute_statements: (sql: string, params?: JsonValue[]) => Promise<number>,
-		// op_sql_fetch_all: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T[]>,
-		// op_sql_fetch_scalar: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T>,
-		// op_sql_fetch_one: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T>,
-		// op_sql_fetch_optional: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T | null>,
+		op_sql_fetch_all: <P extends TypeHint[], R extends RetHint>(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
+		op_sql_fetch_one: <P extends TypeHint[], R extends RetHint>(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>>,
+		op_sql_fetch_optional: <P extends TypeHint[], R extends RetHint>(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R> | null>,
+		op_sql_execute_statement: <P extends TypeHint[]>(sql: string, params: ActualParams<P>, hints: P) => Promise<number>,
+		op_sql_execute_statements: (sql: string) => Promise<void>,
 	},
 } }
 
-type Runtime = {}
 
 export type PrimitiveTypeHintMap = {
 	'json': JsonValue,
 	'bool': boolean,
-	'string': string,
+	'text': string,
 	'number': number,
-	'uint': number,
 	'int': number,
 	'bigint': bigint,
 }
+
+// type PrimitiveParamTypeHintMap = {
+// 	'json': JsonValue,
+// 	'bool': boolean,
+// 	'text': string,
+// 	'double': number,
+// 	// 'timestamp': Date,
+// }
+
+
 export type PrimitiveTypeHint = keyof PrimitiveTypeHintMap
-export type TypeOfHint<H extends keyof PrimitiveTypeHintMap> = PrimitiveTypeHintMap[H]
+export type NullableTypeHint = `${PrimitiveTypeHint}?`
+export type ArrayTypeHint = `${PrimitiveTypeHint}[]`
 
-export type TypeHint = PrimitiveTypeHint
+export type TypeHint = PrimitiveTypeHint | NullableTypeHint | ArrayTypeHint
 
-const runtime: Runtime = {}
+export type TypeOfHint<H extends TypeHint> =
+	H extends `${infer P}?` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P] | null : never)
+	: H extends `${infer P}[]` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P][] : never)
+	: H extends PrimitiveTypeHint ? PrimitiveTypeHintMap[H]
+	: never
 
-export function Ruleset<Queries extends { [key: string]: (runtime: Runtime, ...params: any[]) => any }>(
-	queries: Queries,
-): { [K in keyof Queries]: Queries[K] extends (r: Runtime, ...p: infer P) => infer R ? (...p: P) => R : never } {
-	const give = {} as { [K in keyof Queries]: Queries[K] extends (r: Runtime, ...p: infer P) => infer R ? (...p: P) => R : never }
-	for (const queryName in queries) {
-		give[queryName] = ((...p: any[]) => queries[queryName]!(runtime, ...p)) as any
-	}
-	return give
-}
-
-const a = Ruleset({
-	'hello.sql': async (runtime: Runtime, hey: string, yo: number): Promise<boolean> => {
-		return true
-	},
-})
-
-const b = await (a["hello.sql"]('hey', 4))
+type J = TypeOfHint<'int[]'>
