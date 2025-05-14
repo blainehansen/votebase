@@ -49,7 +49,7 @@ struct RawQuery {
 }
 
 
-pub async fn generate_queries(queries_dir: String, client: &deadpool::Client) -> Result<String, AnyError> {
+pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &deadpool::Client) -> Result<String, AnyError> {
 	let sql_files = tokio::task::spawn_blocking(move || {
 		walkdir::WalkDir::new(queries_dir).follow_links(false).into_iter()
 			.filter_map(|e| e.ok())
@@ -92,7 +92,7 @@ pub async fn generate_queries(queries_dir: String, client: &deadpool::Client) ->
 		})
 	).await?;
 
-	let compiled_fields = full_statements.into_iter().map(|mut full_statement| {
+	let generated_fields = full_statements.into_iter().map(|mut full_statement| {
 		full_statement.params.sort_by_key(|p| p.index);
 		let hints = full_statement.params.into_iter()
 			.map(|param| pg_type_to_ts_hint(&param.pg_type, !param.null_allowed))
@@ -127,7 +127,7 @@ pub async fn generate_queries(queries_dir: String, client: &deadpool::Client) ->
 		)
 	}).collect::<Vec<_>>().join("\n");
 
-	Ok(format!("import 'votebase'\nexport default {{\n{compiled_fields}\n}}"))
+	Ok(generated_fields)
 }
 
 async fn read_sql_file(path: std::path::PathBuf) -> Result<RawQuery, tokio::io::Error> {

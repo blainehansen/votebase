@@ -38,8 +38,6 @@ create table votebase_catalog.ruleset (
 		when parent_full_path is null then "name"
 		else parent_full_path || '|' || "name"
 	end) stored,
-		-- constraint well_formed_path check (full_path = votebase_catalog.make_full_path(parent_full_path, "name"))
-		-- default votebase_catalog.make_full_path(parent_full_path, "name"),
 	parent_full_path text references votebase_catalog.ruleset(full_path) on delete cascade,
 	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
 

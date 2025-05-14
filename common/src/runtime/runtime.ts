@@ -1,11 +1,12 @@
 // import z from 'zod'
 // import { zodToJsonSchema } from 'zod-to-json-schema'
 
-export type Result<T, E = string> =
-	| { ok: true, value: T }
-	| { ok: false, error: E }
+// export type Result<T, E = string> =
+// 	| { ok: true, value: T }
+// 	| { ok: false, error: E }
 
 export type CandidateSelfReplacement = {
+	// includes all
 	code: string,
 	db_schema: string,
 	db_migration: string,
