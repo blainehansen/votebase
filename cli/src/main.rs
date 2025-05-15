@@ -31,6 +31,7 @@ async fn main() -> Result<(), AnyError> {
 			let code = format!("const queries = {{\n{generated_fields}\n}}\n{existing_code}");
 			let db_schema = tokio::fs::read_to_string(ruleset_dir.join("schema.sql")).await?;
 			let db_migration = tokio::fs::read_to_string(migration_file).await?;
+			// TODO check the db_migration against the real current schema (where do we get that from???) and the stated final schema
 
 			let bundled_ruleset = serde_json::to_string(&BundledRuleset { code, db_schema, db_migration })?;
 			let bundle_file = ruleset_dir.join("ruleset.json");
@@ -79,6 +80,8 @@ enum SubCommand {
 #[argh(subcommand, name = "dev")]
 /// prepare all ruleset queries and place them in the dev typescript file next to the queries directory (e.g. for `./queries/` dir `./queries.ts`)
 struct Dev {}
+
+// TODO do we need a standalone migration check command? or is that just included in what bundle does?
 
 #[derive(argh::FromArgs, Debug)]
 #[argh(subcommand, name = "bundle")]

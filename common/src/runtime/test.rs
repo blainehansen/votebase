@@ -123,7 +123,7 @@ async fn run_function_basics() {
 	let result = run_function::<()>(
 		"".into(),
 		r#"
-			await votebase.sqlFetchScalar("select 1")
+			await Deno.core.ops.op_sql_fetch_one("select 1", [], [], 'I32')
 			votebase.Action("test_action", async () => {
 				return true
 			})
@@ -131,22 +131,10 @@ async fn run_function_basics() {
 		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap_err();
 	assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
-
-	let result = run_function::<u32>(
-		"".into(), r#"
-			votebase.Action("test_action", async () => {
-				const v = await votebase.sqlFetchScalar("select 1")
-				if (v !== 1) throw new Error(`sqlFetchScalar didn't return number: ${v}`)
-				return v
-			})
-		"#.to_string(),
-		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
-	).await.unwrap();
-	assert_eq!(result, 1);
 
 	let result = run_function::<()>(
 		"".into(), r#"
-			await votebase.sqlFetchScalar("select 1")
+			await Deno.core.ops.op_sql_fetch_one("select -1", [], [], 'I32')
 			votebase.View("test_view", async () => {
 				return true
 			})
@@ -155,56 +143,70 @@ async fn run_function_basics() {
 	).await.unwrap_err();
 	assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
-	// sqlExecuteStatements
+	// op_sql_fetch_one (scalar)
+	let result = run_function::<i32>(
+		"".into(), r#"
+			votebase.Action("test_action", async () => {
+				const v = await Deno.core.ops.op_sql_fetch_one("select -1", [], [], 'I32')
+				if (v !== -1) throw new Error(`op_sql_fetch_one didn't return number: ${v}`)
+				return v
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	).await.unwrap();
+	assert_eq!(result, -1);
 
-	// sqlFetchScalar
 	let result = run_function::<String>(
 		"".into(), r#"
 			votebase.View("test_view", async () => {
-				const v = await votebase.sqlFetchScalar("select 'hello'")
-				if (v !== 'hello') throw new Error(`sqlFetchScalar didn't return string: ${v}`)
+				const v = await Deno.core.ops.op_sql_fetch_one("select 'hello ' || $1", ['world!'], ['String'], 'Text')
+				if (v !== 'hello world!') throw new Error(`op_sql_fetch_one didn't return string: ${v}`)
 				return v
 			})
 		"#.to_string(),
 		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap();
-	assert_eq!(result, "hello");
+	assert_eq!(result, "hello world!");
 
-	// sqlFetchOne
+	// op_sql_fetch_one (row)
 	let result = run_function::<Val>(
 		"".into(), r#"
 			votebase.View("test_view", async () => {
-				const r = await votebase.sqlFetchOne(`select 'hello' as yo, true as hmm, '[1, null, "a"]'::jsonb as arr`)
-				if (r.yo !== 'hello' || r.hmm !== true || !(Array.isArray(r.arr) && r.arr[0] === 1 && r.arr[1] === null && r.arr[2] === 'a'))
-					throw new Error(`sqlFetchOne didn't return proper record: ${r}`)
+				const r = await Deno.core.ops.op_sql_fetch_one(
+					`select 'hello ' || $2 as yo, true as hmm, 1 + $1 as n, '[1, null, "a"]'::jsonb as arr`,
+					[1, 'world!'], ['Number', 'String'], [['yo', 'Text'], ['hmm', 'Bool'], ['n', 'I64'], ['arr', 'Json']],
+				)
+				if (r.yo !== 'hello world!' || r.hmm !== true || r.n === 2, !(Array.isArray(r.arr) && r.arr[0] === 1 && r.arr[1] === null && r.arr[2] === 'a'))
+					throw new Error(`op_sql_fetch_one didn't return proper record: ${r}`)
 				return r
 			})
 		"#.to_string(),
 		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
 	).await.unwrap();
 	if let Val::Object(o) = result {
-		assert_eq!(o.get("yo").unwrap(), "hello");
+		assert_eq!(o.get("yo").unwrap(), "hello world!");
 		assert_eq!(o.get("hmm").unwrap(), true);
+		assert_eq!(o.get("n").unwrap(), 2);
 		assert_eq!(o.get("arr").unwrap(), &Val::Array(vec![1.into(), Val::Null, "a".into()]));
 	} else { assert!(false, "isn't object") };
 
-	// sqlFetchOptional
+	// op_sql_fetch_optional (row)
 	let result = run_function::<Val>(
 		"".into(), r#"
 			votebase.View("test_view", async () => {
-				const n = await votebase.sqlFetchOptional(`
+				const n = await Deno.core.ops.op_sql_fetch_optional(`
 					with a as (select 'hello' as yo, true as hmm, '[1, null, "a"]'::jsonb as arr)
 					select * from a where hmm = false
-				`)
+				`, [], [], [['yo', 'Text'], ['hmm', 'Bool'], ['arr', 'Json']])
 				if (n !== null)
-					throw new Error(`sqlFetchOptional didn't return null: ${n}`)
+					throw new Error(`op_sql_fetch_optional didn't return null: ${n}`)
 
-				const r = await votebase.sqlFetchOptional(`
+				const r = await Deno.core.ops.op_sql_fetch_optional(`
 					with a as (select 'hello' as yo, true as hmm, '[1, null, "a"]'::jsonb as arr)
 					select * from a where hmm = true
-				`)
+				`, [], [], [['yo', 'Text'], ['hmm', 'Bool'], ['arr', 'Json']])
 				if (r.yo !== 'hello' || r.hmm !== true || !(Array.isArray(r.arr) && r.arr[0] === 1 && r.arr[1] === null && r.arr[2] === 'a'))
-					throw new Error(`sqlFetchOptional didn't return proper record: ${r}`)
+					throw new Error(`op_sql_fetch_optional didn't return proper record: ${r}`)
 				return r
 			})
 		"#.to_string(),
@@ -215,10 +217,6 @@ async fn run_function_basics() {
 		assert_eq!(o.get("hmm").unwrap(), true);
 		assert_eq!(o.get("arr").unwrap(), &Val::Array(vec![1.into(), Val::Null, "a".into()]));
 	} else { assert!(false, "isn't object") };
-
-	// sqlFetchAll
-
-
 
 
 

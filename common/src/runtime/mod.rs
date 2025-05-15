@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod test;
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use deno_core::{v8, OpState};
 use uuid::Uuid;
 use crate::{queries, PgConfig, PgPool, PgClient, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role, postgres};
@@ -108,11 +108,11 @@ deno_core::extension!(
 	ops = [
 		op_fetch,
 		// op_set_timeout,
-		// op_sql_execute_statements,
-		// op_sql_fetch_all,
-		op_sql_fetch_scalar,
+		op_sql_fetch_all,
 		op_sql_fetch_one,
 		op_sql_fetch_optional,
+		op_sql_execute_statement,
+		op_sql_execute_statements,
 
 		op_register_fn,
 		// op_register_recurring_action,
@@ -175,131 +175,266 @@ async fn op_fetch(
 
 const ERR_EXTERNAL_NOT_ALLOWED: &'static str = "runtime functions that interact with timers or the outside world (such as database or http operations) aren't allowed outside of an action or view";
 
-// #[deno_core::op2(async)]
-// async fn op_sql_execute_many(
-// 	state: Rc<RefCell<OpState>>,
-// 	#[string] sql: String,
-// ) -> Result<u32, deno_error::JsErrorBox> {
-// 	let state = state.as_ref();
-// 	demand_external_allowed(state)?;
-// 	let mut state = state.borrow_mut();
-// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-// 		.connect().await.map_err(js_err)?;
+#[derive(serde::Deserialize, Debug)]
+#[serde(variant_identifier)]
+enum ParamTypeHint {
+	Json,
+	// JsonMaybe,
+	// JsonArray,
+	Number,
+	String,
+	Boolean,
+}
 
-// 	let result = sqlx::raw_sql(&sql).execute(connection).await.map_err(js_err)?;
-// 	Ok(result.rows_affected().try_into().map_err(js_err)?)
-// }
+// TODO blaine, *all* of these hints should be for the actual postgres type, and then this rust code should do the work to make sure things go in properly and out properly, and the typescript code to make sure it maps things correctly
+#[derive(serde::Deserialize, Debug)]
+#[serde(variant_identifier)]
+enum RetTypeHint {
+	Json, Bool, Text, Bytea, Hstore,
+	I8, I16, I32, I64, F32, F64,
+	// | `u32`: OID
+}
 
-// #[deno_core::op2(async)]
-// async fn op_sql_execute_statements(
-// 	state: Rc<RefCell<OpState>>,
-// 	#[string] sql: String,
-// 	#[serde] params: Option<Vec<serde_json::Value>>,
-// ) -> Result<u32, deno_error::JsErrorBox> {
-// 	let state = state.as_ref();
-// 	demand_external_allowed(state)?;
-// 	let mut state = state.borrow_mut();
-// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-// 		.connect().await.map_err(js_err)?;
+fn prepare_param(
+	raw_param: serde_json::Value,
+	hint: ParamTypeHint,
+) -> Result<(Box<(dyn postgres::types::ToSql + Sync)>, postgres::types::Type), RuntimeError> {
+	use postgres::types::Type;
+	use serde_json::Value as V;
+	Ok(match (hint, raw_param) {
+		(ParamTypeHint::Json, V::Null) => (Box::new(None::<V>), Type::JSON),
+		(ParamTypeHint::Json, raw_param) => (Box::new(raw_param), Type::JSON),
 
-// 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-// 	let result = sqlx::query_with(&sql, args).execute(connection).await.map_err(js_err)?;
+		// (ParamTypeHint::JsonArray, V::Null) => (Box::new(None::<V>), Type::JSON_ARRAY),
+		// (ParamTypeHint::JsonArray, V::Array(a)) => (Box::new(a), Type::JSON_ARRAY),
 
-// 	Ok(result.rows_affected().try_into().map_err(js_err)?)
-// }
+		(ParamTypeHint::Number, V::Null) => (Box::new(None::<f64>), Type::FLOAT8),
+		(ParamTypeHint::Number, V::Number(n)) => if n.is_i64() {
+			(Box::new(n.as_i64().unwrap()), Type::INT8)
+		} else if n.is_u64() {
+			return Err(RuntimeError::OtherError("couldn't represent number".to_string()));
+		} else {
+			(Box::new(n.as_f64().ok_or_else(|| RuntimeError::OtherError("couldn't represent number".to_string()))?), Type::FLOAT8)
+		},
 
-// #[deno_core::op2(async)]
-// #[serde]
-// async fn op_sql_fetch_all(
-// 	state: Rc<RefCell<OpState>>,
-// 	#[string] query: String,
-// 	#[serde] params: Option<Vec<serde_json::Value>>,
-// ) -> Result<Vec<serde_json::Value>, deno_error::JsErrorBox> {
-// 	let state = state.as_ref();
-// 	demand_external_allowed(state)?;
-// 	let mut state = state.borrow_mut();
-// 	let connection = deno_core::_ops::opstate_borrow_mut::<FnPgOpt>(std::ops::DerefMut::deref_mut(&mut state))
-// 		.connect().await.map_err(js_err)?;
+		(ParamTypeHint::String, V::Null) => (Box::new(None::<String>), Type::TEXT),
+		(ParamTypeHint::String, V::String(s)) => (Box::new(s), Type::TEXT),
 
-// 	let args = make_args(params).map_err(|e| deno_error::JsErrorBox::generic(e.to_string()))?;
-// 	let rows = sqlx::query_with(&query, args).fetch_all(connection).await.map_err(js_err)?;
+		(ParamTypeHint::Boolean, V::Null) => (Box::new(None::<bool>), Type::BOOL),
+		(ParamTypeHint::Boolean, V::Bool(b)) => (Box::new(b), Type::BOOL),
 
-// 	Ok(rows.into_iter().map(|row| {
-// 		use sqlx::{Row, Column};
-// 		// TODO use this everywhere
-// 		// convert_unknown_pg_value(&row, column)
-// 		serde_json::Value::Object(
-// 			row.columns().iter()
-// 				.map(|column| (column.name().to_owned(), row.get(column.ordinal()))).collect()
-// 		)
-// 	}).collect())
-// }
+		(hint, raw_param) => {
+			return Err(RuntimeError::OtherError(format!("mismatched param and hint: {:?}, {:?}", raw_param, hint)));
+		}
+	})
+}
+
+fn prepare_params(
+	raw_params: Vec<serde_json::Value>,
+	hints: Vec<ParamTypeHint>,
+) -> Result<Vec<(Box<(dyn postgres::types::ToSql + Sync)>, postgres::types::Type)>, RuntimeError> {
+	if raw_params.len() != hints.len() {
+		return Err(RuntimeError::OtherError("params and hints must be the same length".to_string()))
+	}
+
+	raw_params.into_iter().zip(hints.into_iter())
+		.map(|(raw_param, hint)| prepare_param(raw_param, hint)).collect()
+}
+
+
+#[derive(serde::Deserialize, Debug)]
+#[serde(untagged)]
+enum RetHint {
+	Scalar(RetTypeHint),
+	Columns(Vec<(String, RetTypeHint)>),
+}
+
+fn convert_row(row: postgres::Row, ret: &RetHint) -> Result<serde_json::Value, RuntimeError> {
+	let columns = row.columns();
+	match ret {
+		RetHint::Scalar(ret) => {
+			if columns.len() != 1 {
+				return Err(RuntimeError::OtherError("row has something other than 1 column".to_string()))
+			}
+			Ok(convert_col(&row, ret, 0)?)
+		},
+		RetHint::Columns(rets) => {
+			if rets.len() != columns.len() {
+				return Err(RuntimeError::OtherError("hints don't match columns".to_string()))
+			}
+			Ok(serde_json::Value::Object(rets.iter().zip(columns).enumerate().map(|(index, ((ret_name, ret), column))| {
+				// TODO can we rely on the ordering of rets and columns?
+				debug_assert!(ret_name == column.name());
+				let name = ret_name.clone();
+				let value = convert_col(&row, ret, index)?;
+				Ok((name, value))
+			}).collect::<Result<_, RuntimeError>>()?))
+		},
+	}
+}
+
+// const DATETIME_FORMAT: chrono::format::strftime::StrftimeItems = chrono::format::strftime::StrftimeItems::new("%+");
+// const DATE_FORMAT: chrono::format::strftime::StrftimeItems = chrono::format::strftime::StrftimeItems::new("%F");
+
+#[inline]
+fn convert_col(row: &postgres::Row, ret: &RetTypeHint, i: usize) -> Result<serde_json::Value, postgres::Error> {
+	Ok(match ret {
+		RetTypeHint::Json => row.try_get::<_, serde_json::Value>(i)?,
+		RetTypeHint::Bool => row.try_get::<_, bool>(i)?.into(),
+		RetTypeHint::Text => row.try_get::<_, String>(i)?.into(),
+		RetTypeHint::Bytea => row.try_get::<_, Vec<u8>>(i)?.into(),
+		RetTypeHint::Hstore => row.try_get::<_, HashMap<String, Option<String>>>(i)?.into_iter()
+			.map(|(k, v)| (k, v.into())).collect::<serde_json::Map<_, _>>().into(),
+		RetTypeHint::I8 => row.try_get::<_, i8>(i)?.into(),
+		RetTypeHint::I16 => row.try_get::<_, i16>(i)?.into(),
+		RetTypeHint::I32 => row.try_get::<_, i32>(i)?.into(),
+		RetTypeHint::I64 => row.try_get::<_, i64>(i)?.into(),
+		RetTypeHint::F32 => row.try_get::<_, f32>(i)?.into(),
+		RetTypeHint::F64 => row.try_get::<_, f64>(i)?.into(),
+	})
+}
+
 
 #[deno_core::op2(async)]
 #[serde]
-async fn op_sql_fetch_scalar(
+async fn op_sql_fetch_all(
 	state: Rc<RefCell<OpState>>,
-	#[string] query: String,
-	#[serde] params: Option<Vec<serde_json::Value>>,
-) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+	#[string] sql: String,
+	#[serde] raw_params: Vec<serde_json::Value>,
+	#[serde] hints: Vec<ParamTypeHint>,
+	#[serde] ret: RetHint,
+) -> Result<Vec<serde_json::Value>, deno_error::JsErrorBox> {
 	let state = state.as_ref();
 	demand_external_allowed(state)?;
 	let state = state.borrow();
-	// TODO the possible downside to putting a client directly in here is that we'll connect even when we don't need to
-	// I'm hoping that the pooling library just solves that for us! as in no actual connection is acquired until the actual query happens
+	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
 	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
-	let params = crate::make_params(params);
-	let actual_params: Vec<_> = params.iter().map(Box::as_ref).collect();
-	let row = client.query_one(&query, actual_params.as_slice()).await.map_err(run_err)?;
-	crate::convert_pg_row(row, true)
+	let params = prepare_params(raw_params, hints).map_err(run_err)?;
+	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
+	use futures_util::{pin_mut, TryStreamExt};
+	pin_mut!(row_stream);
+	let rows = row_stream.try_collect::<Vec<_>>().await.map_err(run_err)?
+		.into_iter()
+		.map(|row| convert_row(row, &ret))
+		.collect::<Result<Vec<_>, _>>().map_err(run_err)?;
+
+	Ok(rows)
 }
 
-// TODO remove op_sql_fetch_scalar and instead just use op_sql_fetch_one at the runtime.ts level, with the expect scalar argument included
 #[deno_core::op2(async)]
 #[serde]
 async fn op_sql_fetch_one(
 	state: Rc<RefCell<OpState>>,
-	#[string] query: String,
-	#[serde] params: Option<Vec<serde_json::Value>>,
+	#[string] sql: String,
+	#[serde] raw_params: Vec<serde_json::Value>,
+	#[serde] hints: Vec<ParamTypeHint>,
+	#[serde] ret: RetHint,
 ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
 	let state = state.as_ref();
 	demand_external_allowed(state)?;
-	let state = state.borrow_mut();
-
+	let state = state.borrow();
+	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
 	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
-	let params = crate::make_params(params);
-	let actual_params: Vec<_> = params.iter().map(Box::as_ref).collect();
+	let params = prepare_params(raw_params, hints).map_err(run_err)?;
+	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
 
-	let row = client.query_one(&query, actual_params.as_slice()).await.map_err(run_err)?;
-	crate::convert_pg_row(row, false)
+	use futures_util::{pin_mut, TryStreamExt};
+	pin_mut!(row_stream);
+	let mut first = None;
+	while let Some(row) = row_stream.try_next().await.map_err(run_err)? {
+		if first.is_some() {
+			return Err(deno_error::JsErrorBox::generic("query returned more than 1 row".to_string()));
+		}
+
+		first = Some(convert_row(row, &ret).map_err(run_err)?);
+	}
+
+	first.ok_or_else(|| deno_error::JsErrorBox::generic("query returned no rows".to_string()))
 }
 
 #[deno_core::op2(async)]
 #[serde]
 async fn op_sql_fetch_optional(
 	state: Rc<RefCell<OpState>>,
-	#[string] query: String,
-	#[serde] params: Option<Vec<serde_json::Value>>,
+	#[string] sql: String,
+	#[serde] raw_params: Vec<serde_json::Value>,
+	#[serde] hints: Vec<ParamTypeHint>,
+	#[serde] ret: RetHint,
 ) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
 	let state = state.as_ref();
 	demand_external_allowed(state)?;
-	let state = state.borrow_mut();
-
+	let state = state.borrow();
+	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
 	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
-	let params = crate::make_params(params);
-	let actual_params: Vec<_> = params.iter().map(Box::as_ref).collect();
+	let params = prepare_params(raw_params, hints).map_err(run_err)?;
+	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
 
-	let row = client.query_opt(&query, actual_params.as_slice()).await.map_err(run_err)?;
-	row.map(|row| crate::convert_pg_row(row, false)).transpose()
+	use futures_util::{pin_mut, TryStreamExt};
+	pin_mut!(row_stream);
+	let mut first = None;
+	while let Some(row) = row_stream.try_next().await.map_err(run_err)? {
+		if first.is_some() {
+			return Err(deno_error::JsErrorBox::generic("query returned more than 1 row".to_string()));
+		}
+
+		first = Some(convert_row(row, &ret).map_err(run_err)?);
+	}
+
+	Ok(first)
+}
+
+#[deno_core::op2(async)]
+async fn op_sql_execute_statement(
+	state: Rc<RefCell<OpState>>,
+	#[string] sql: String,
+	#[serde] raw_params: Vec<serde_json::Value>,
+	#[serde] hints: Vec<ParamTypeHint>,
+) -> Result<u32, deno_error::JsErrorBox> {
+	let state = state.as_ref();
+	demand_external_allowed(state)?;
+	let state = state.borrow();
+	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
+	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
+	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
+	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+
+	let params = prepare_params(raw_params, hints).map_err(run_err)?;
+	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
+	use futures_util::{pin_mut, TryStreamExt};
+	pin_mut!(row_stream);
+	// TODO more elegant way to throw away all the rows?
+	while let Some(_) = row_stream.try_next().await.map_err(run_err)? {}
+	let rows_affected = row_stream.rows_affected().unwrap_or(0).try_into().map_err(js_err)?;
+	Ok(rows_affected)
+}
+
+#[deno_core::op2(async)]
+async fn op_sql_execute_statements(
+	state: Rc<RefCell<OpState>>,
+	#[string] sql: String,
+) -> Result<(), deno_error::JsErrorBox> {
+	let state = state.as_ref();
+	demand_external_allowed(state)?;
+	let state = state.borrow();
+	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
+	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
+	let (mut client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
+	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+
+	let txn = client.transaction().await.map_err(run_err)?;
+	txn.batch_execute(&sql).await.map_err(run_err)?;
+	txn.commit().await.map_err(run_err)?;
+
+	Ok(())
 }
 
 pub type FnMap = std::collections::HashMap<String, Fn>;

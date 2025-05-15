@@ -1,3 +1,11 @@
+// for now we're not going to do hyper locked down secure pre-registered queries
+// the hard part is that the code can always just pass whatever it wants, especially if it understands the real contract, which it always can
+// it's not worth enforcing and thereby decreasing performance that much
+
+// , and for dev has an `import queries from './queries'`. the cli has a command to "package" a ruleset as a json file ready to send to a server, and part of what it does is strip out the `import queries from './queries` and in it's place insert the `namespace queries {}` (detect and use the name used in the import)
+// - if the queries file is already formatted as `namespace queries {}\nexport default queries` then we can just smush the
+// - probably the thing that makes sense is just on every generation call do both, generate the *dev* version of the file
+
 // import z from 'zod'
 // import { zodToJsonSchema } from 'zod-to-json-schema'
 
@@ -6,14 +14,10 @@
 // 	| { ok: false, error: E }
 
 export type CandidateSelfReplacement = {
-	// includes all
 	code: string,
 	db_schema: string,
 	db_migration: string,
 }
-
-export type JsonPrimitive = string | number | boolean | null
-export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
 
 const { core } = (globalThis as any).Deno as { core: {
 	print: (message: string, is_error: boolean) => void,
@@ -36,11 +40,15 @@ const { core } = (globalThis as any).Deno as { core: {
 		// op_set_timeout: (delay: number | undefined) => Promise<void>,
 		op_propose_self_replacement: (candidate: CandidateSelfReplacement) => Promise<string>,
 
-		op_sql_execute_statements: (sql: string, params?: JsonValue[]) => Promise<number>,
-		op_sql_fetch_all: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T[]>,
-		op_sql_fetch_scalar: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T>,
-		op_sql_fetch_one: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T>,
-		op_sql_fetch_optional: <T extends JsonValue>(query: string, params?: JsonValue[]) => Promise<T | null>,
+		op_sql_fetch_all: <P extends TypeHint[], R extends RetHint>
+			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
+		op_sql_fetch_one: <P extends TypeHint[], R extends RetHint>
+			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>>,
+		op_sql_fetch_optional: <P extends TypeHint[], R extends RetHint>
+			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R> | null>,
+		op_sql_execute_statement: <P extends TypeHint[]>
+			(sql: string, params: ActualParams<P>, hints: P) => Promise<number>,
+		op_sql_execute_statements: (sql: string) => Promise<void>,
 	},
 } }
 
@@ -88,12 +96,6 @@ declare global {
 
 		// function proposeChildRuleset(): Promise<void>
 		// function instituteChildRuleset(): Promise<void>
-
-		function sqlExecuteStatements(sql: string, params?: JsonValue[]): Promise<number>
-		function sqlFetchScalar<T extends JsonValue>(query: string, params?: JsonValue[]): Promise<T>
-		function sqlFetchAll<T extends JsonValue>(query: string, params?: JsonValue[]): Promise<T[]>
-		function sqlFetchOne<T extends JsonValue>(query: string, params?: JsonValue[]): Promise<T>
-		function sqlFetchOptional<T extends JsonValue>(query: string, params?: JsonValue[]): Promise<T | null>
 	}
 }
 globalThis.votebase = {
@@ -148,22 +150,6 @@ globalThis.votebase = {
 	proposeSelfReplacement(candidate) {
 		return core.ops.op_propose_self_replacement(candidate)
 	},
-
-	sqlExecuteStatements(sql, params) {
-		return core.ops.op_sql_execute_statements(sql, params)
-	},
-	sqlFetchAll(query, params) {
-		return core.ops.op_sql_fetch_all(query, params)
-	},
-	sqlFetchScalar(query, params) {
-		return core.ops.op_sql_fetch_scalar(query, params)
-	},
-	sqlFetchOne(query, params) {
-		return core.ops.op_sql_fetch_one(query, params)
-	},
-	sqlFetchOptional(query, params) {
-		return core.ops.op_sql_fetch_optional(query, params)
-	}
 }
 
 declare global {
@@ -201,3 +187,88 @@ globalThis.console = {
 function argsToMessage(...args: unknown[]) {
 	return args.map(arg => JSON.stringify(arg)).join(" ")
 }
+
+
+
+
+export type JsonPrimitive = string | number | boolean | null
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
+
+type Dict<T> = { [key: string]: T }
+
+type ActualParams<Hints extends TypeHint[]> = { [I in keyof Hints]: TypeOfHint<Hints[I]> }
+
+type RetHint = TypeHint | [string, TypeHint][]
+type ActualRet<R extends RetHint> =
+	R extends TypeHint ? TypeOfHint<R>
+	: { [K in R[number][0]]: TypeOfHint<Extract<R[number], [K, unknown]>[1]> }
+
+class QueryExecutor<P extends TypeHint[], R extends RetHint> {
+	constructor(
+		private readonly sql: string,
+		private readonly hints: P,
+		private readonly ret: R,
+	) {}
+
+	fetchAll(...params: ActualParams<P>): Promise<ActualRet<R>[]> {
+		return core.ops.op_sql_fetch_all<P, R>(this.sql, params, this.hints, this.ret)
+	}
+	fetchOne(...params: ActualParams<P>): Promise<ActualRet<R>> {
+		return core.ops.op_sql_fetch_one<P, R>(this.sql, params, this.hints, this.ret)
+	}
+	fetchOptional(...params: ActualParams<P>): Promise<ActualRet<R> | null> {
+		return core.ops.op_sql_fetch_optional<P, R>(this.sql, params, this.hints, this.ret)
+	}
+}
+
+function StatementExecutor<P extends TypeHint[]>(sql: string, hints: P): (...params: ActualParams<P>) => Promise<number> {
+	return (...params) => {
+		return core.ops.op_sql_execute_statement(sql, params, hints)
+	}
+}
+
+function StatementsExecutor(sql: string): () => Promise<void> {
+	return () => {
+		return core.ops.op_sql_execute_statements(sql)
+	}
+}
+
+export type PrimitiveTypeHintMap = {
+	'json': JsonValue,
+	'bool': boolean,
+	'text': string,
+	'number': number,
+	'int': number,
+	'bigint': bigint,
+}
+
+// export type PgToTsHintMap = {
+// 	'json': JsonValue,
+// 	'bool': boolean,
+// 	'text': string,
+// 	'i32': number,
+// 	'i64': bigint,
+// 	'f32': number,
+// 	'f64': number,
+// 	'bigint': bigint,
+// }
+
+type PrimitiveParamTypeHintMap = {
+	'json': JsonValue,
+	'bool': boolean,
+	'text': string,
+	'double': number,
+	// 'timestamp': Date,
+}
+
+export type PrimitiveTypeHint = keyof PrimitiveTypeHintMap
+export type NullableTypeHint = `${PrimitiveTypeHint}?`
+export type ArrayTypeHint = `${PrimitiveTypeHint}[]`
+
+export type TypeHint = PrimitiveTypeHint | NullableTypeHint | ArrayTypeHint
+
+export type TypeOfHint<H extends TypeHint> =
+	H extends `${infer P}?` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P] | null : never)
+	: H extends `${infer P}[]` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P][] : never)
+	: H extends PrimitiveTypeHint ? PrimitiveTypeHintMap[H]
+	: never

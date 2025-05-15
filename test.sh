@@ -8,7 +8,7 @@
 # 	--destination ./queries \
 # 	"postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db"
 
-# cargo test -p votebase_common run_function_basics -- --nocapture
+cargo test -p votebase_common run_function_basics -- --nocapture
 # cargo test -p votebase_common -- --nocapture
 
-cargo run -p votebase_cli "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db" 'q.local'
+# cargo run -p votebase_cli "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db" 'q.local'

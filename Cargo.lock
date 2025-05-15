@@ -3941,6 +3941,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "futures",
+ "futures-util",
  "log",
  "postgres-from-row",
  "reqwest",
