@@ -183,7 +183,7 @@ enum ParamTypeHint {
 	// JsonArray,
 	Number,
 	String,
-	Boolean,
+	Bool,
 }
 
 // TODO blaine, *all* of these hints should be for the actual postgres type, and then this rust code should do the work to make sure things go in properly and out properly, and the typescript code to make sure it maps things correctly
@@ -220,8 +220,8 @@ fn prepare_param(
 		(ParamTypeHint::String, V::Null) => (Box::new(None::<String>), Type::TEXT),
 		(ParamTypeHint::String, V::String(s)) => (Box::new(s), Type::TEXT),
 
-		(ParamTypeHint::Boolean, V::Null) => (Box::new(None::<bool>), Type::BOOL),
-		(ParamTypeHint::Boolean, V::Bool(b)) => (Box::new(b), Type::BOOL),
+		(ParamTypeHint::Bool, V::Null) => (Box::new(None::<bool>), Type::BOOL),
+		(ParamTypeHint::Bool, V::Bool(b)) => (Box::new(b), Type::BOOL),
 
 		(hint, raw_param) => {
 			return Err(RuntimeError::OtherError(format!("mismatched param and hint: {:?}, {:?}", raw_param, hint)));
@@ -254,7 +254,7 @@ fn convert_row(row: postgres::Row, ret: &RetHint) -> Result<serde_json::Value, R
 	match ret {
 		RetHint::Scalar(ret) => {
 			if columns.len() != 1 {
-				return Err(RuntimeError::OtherError("row has something other than 1 column".to_string()))
+				return Err(RuntimeError::OtherError("row doesn't have exactly 1 column".to_string()))
 			}
 			Ok(convert_col(&row, ret, 0)?)
 		},

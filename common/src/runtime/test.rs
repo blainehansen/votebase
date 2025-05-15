@@ -168,6 +168,39 @@ async fn run_function_basics() {
 	).await.unwrap();
 	assert_eq!(result, "hello world!");
 
+	// op_sql_fetch_one that errors because it returns too many
+	let result = run_function::<()>(
+		"".into(), r#"
+			votebase.Action("test_action", async () => {
+				await Deno.core.ops.op_sql_fetch_one("select 1 union all select 2", [], [], 'I32')
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	).await.unwrap_err();
+	assert!(result.to_string().contains("query returned more than 1 row"));
+
+	// op_sql_fetch_all (scalar output per row) that errors because the hint is for a row
+	let result = run_function::<()>(
+		"".into(), r#"
+			votebase.Action("test_action", async () => {
+				await Deno.core.ops.op_sql_fetch_all("select 1 AS num", [], [], [['num', 'I32'], ['a', 'Bool']])
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	).await.unwrap_err();
+	assert!(result.to_string().contains("hints don't match columns"));
+
+	// op_sql_fetch_all (row output) that errors because the hint is for a scalar (too many columns for scalar hint)
+	let result = run_function::<()>(
+		"".into(), r#"
+			votebase.Action("test_action", async () => {
+				await Deno.core.ops.op_sql_fetch_all("select 1 AS col1, 2 AS col2", [], [], 'I32')
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	).await.unwrap_err();
+	assert!(result.to_string().contains("row doesn't have exactly 1 column"));
+
 	// op_sql_fetch_one (row)
 	let result = run_function::<Val>(
 		"".into(), r#"
@@ -218,7 +251,73 @@ async fn run_function_basics() {
 		assert_eq!(o.get("arr").unwrap(), &Val::Array(vec![1.into(), Val::Null, "a".into()]));
 	} else { assert!(false, "isn't object") };
 
+	// op_sql_fetch_optional (scalar) that errors because it returns too many
+	let result = run_function::<()>(
+		"".into(), r#"
+			votebase.View("test_view", async () => {
+				await Deno.core.ops.op_sql_fetch_optional(`select 1 union all select 2`, [], [], 'I32')
+			})
+		"#.to_string(),
+		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	).await.unwrap_err();
+	assert!(result.to_string().contains("query returned more than 1 row"));
 
+	// op_sql_fetch_all (scalar)
+	let result = run_function::<Vec<i32>>(
+		"".into(), r#"
+			votebase.View("test_view", async () => {
+				return await Deno.core.ops.op_sql_fetch_all(`select 1 union all select 2 union all select 3`, [], [], 'I32')
+			})
+		"#.to_string(),
+		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	).await.unwrap();
+	assert_eq!(result, vec![1, 2, 3]);
+
+	// op_sql_fetch_all (row)
+	let result = run_function::<Vec<Val>>(
+		"".into(), r#"
+			votebase.View("test_view", async () => {
+				return await Deno.core.ops.op_sql_fetch_all(
+					`select 1 as a, 'x' as b union all select 2, $1`,
+					['y'], ['String'],
+					[['a', 'I32'], ['b', 'Text']],
+				)
+			})
+		"#.to_string(),
+		"test_view", serde_json::json!(null), FnType::View, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	).await.unwrap();
+	let expected_result = vec![
+		serde_json::json!({ "a": 1, "b": "x" }),
+		serde_json::json!({ "a": 2, "b": "y" })
+	];
+	assert_eq!(result, expected_result);
+
+	// op_sql_execute_statement (delete, 0 rows affected)
+	let affected_rows = run_function::<u32>(
+		"".into(), r#"
+			votebase.Action("test_action", async () => {
+				return await Deno.core.ops.op_sql_execute_statement(`delete from votebase_catalog.member where $1`, [true], ['Bool'])
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	).await.unwrap();
+	assert_eq!(affected_rows, 0);
+
+ 	// op_sql_execute_statements (create temp table, insert, drop)
+	run_function::<()>(
+		"".into(), r#"
+			votebase.Action("test_action", async () => {
+				await Deno.core.ops.op_sql_execute_statements(`
+					create temp table if not exists test_exec_stmts_runtime (id int);
+					insert into test_exec_stmts_runtime (id) values (1), (2);
+					drop table test_exec_stmts_runtime;
+				`)
+			})
+		"#.to_string(),
+		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
+	).await.unwrap();
+	// No specific assertion here other than unwrap() succeeding,
+	// as op_sql_execute_statements returns ()/void.
 
 	// let client = pool.get().await.unwrap();
 	// queries::members::test_delete_all_members().bind(&client).await.unwrap();
