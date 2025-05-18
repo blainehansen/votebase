@@ -147,7 +147,7 @@ async fn run_function_basics() {
 	let result = run_function::<i32>(
 		"".into(), r#"
 			votebase.Action("test_action", async () => {
-				const v = await Deno.core.ops.op_sql_fetch_one("select -1", [], [], 'I32')
+				const v = await Deno.core.ops.op_sql_fetch_one("select 0 + $1", [-1], ['I64'], 'I64')
 				if (v !== -1) throw new Error(`op_sql_fetch_one didn't return number: ${v}`)
 				return v
 			})
@@ -159,7 +159,7 @@ async fn run_function_basics() {
 	let result = run_function::<String>(
 		"".into(), r#"
 			votebase.View("test_view", async () => {
-				const v = await Deno.core.ops.op_sql_fetch_one("select 'hello ' || $1", ['world!'], ['String'], 'Text')
+				const v = await Deno.core.ops.op_sql_fetch_one("select 'hello ' || $1", ['world!'], ['Text'], 'Text')
 				if (v !== 'hello world!') throw new Error(`op_sql_fetch_one didn't return string: ${v}`)
 				return v
 			})
@@ -172,7 +172,7 @@ async fn run_function_basics() {
 	let result = run_function::<()>(
 		"".into(), r#"
 			votebase.Action("test_action", async () => {
-				await Deno.core.ops.op_sql_fetch_one("select 1 union all select 2", [], [], 'I32')
+				await Deno.core.ops.op_sql_fetch_one("select 1::int union all select $1::int", [2], ['I32'], 'I32')
 			})
 		"#.to_string(),
 		"test_action", serde_json::json!(null), FnType::Action, conf(), conf(), pool.clone(), scheduled_action_queue.clone(),
@@ -207,7 +207,7 @@ async fn run_function_basics() {
 			votebase.View("test_view", async () => {
 				const r = await Deno.core.ops.op_sql_fetch_one(
 					`select 'hello ' || $2 as yo, true as hmm, 1 + $1 as n, '[1, null, "a"]'::jsonb as arr`,
-					[1, 'world!'], ['Number', 'String'], [['yo', 'Text'], ['hmm', 'Bool'], ['n', 'I64'], ['arr', 'Json']],
+					[1, 'world!'], ['I32', 'Text'], [['yo', 'Text'], ['hmm', 'Bool'], ['n', 'I64'], ['arr', 'Json']],
 				)
 				if (r.yo !== 'hello world!' || r.hmm !== true || r.n === 2, !(Array.isArray(r.arr) && r.arr[0] === 1 && r.arr[1] === null && r.arr[2] === 'a'))
 					throw new Error(`op_sql_fetch_one didn't return proper record: ${r}`)
@@ -279,7 +279,7 @@ async fn run_function_basics() {
 			votebase.View("test_view", async () => {
 				return await Deno.core.ops.op_sql_fetch_all(
 					`select 1 as a, 'x' as b union all select 2, $1`,
-					['y'], ['String'],
+					['y'], ['Text'],
 					[['a', 'I32'], ['b', 'Text']],
 				)
 			})

@@ -177,19 +177,7 @@ const ERR_EXTERNAL_NOT_ALLOWED: &'static str = "runtime functions that interact 
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(variant_identifier)]
-enum ParamTypeHint {
-	Json,
-	// JsonMaybe,
-	// JsonArray,
-	Number,
-	String,
-	Bool,
-}
-
-// TODO blaine, *all* of these hints should be for the actual postgres type, and then this rust code should do the work to make sure things go in properly and out properly, and the typescript code to make sure it maps things correctly
-#[derive(serde::Deserialize, Debug)]
-#[serde(variant_identifier)]
-enum RetTypeHint {
+enum PgTypeHint {
 	Json, Bool, Text, Bytea, Hstore,
 	I8, I16, I32, I64, F32, F64,
 	// | `u32`: OID
@@ -197,31 +185,60 @@ enum RetTypeHint {
 
 fn prepare_param(
 	raw_param: serde_json::Value,
-	hint: ParamTypeHint,
+	hint: PgTypeHint,
 ) -> Result<(Box<(dyn postgres::types::ToSql + Sync)>, postgres::types::Type), RuntimeError> {
+	#[allow(non_snake_case)]
+	let HSTORE = postgres::types::Type::new("hstore".to_string(), 0, postgres::types::Kind::Simple, "public".to_string());
 	use postgres::types::Type;
 	use serde_json::Value as V;
+
 	Ok(match (hint, raw_param) {
-		(ParamTypeHint::Json, V::Null) => (Box::new(None::<V>), Type::JSON),
-		(ParamTypeHint::Json, raw_param) => (Box::new(raw_param), Type::JSON),
+		(PgTypeHint::Json, V::Null) => (Box::new(None::<V>), Type::JSON),
+		(PgTypeHint::Json, raw_param) => (Box::new(raw_param), Type::JSON),
 
-		// (ParamTypeHint::JsonArray, V::Null) => (Box::new(None::<V>), Type::JSON_ARRAY),
-		// (ParamTypeHint::JsonArray, V::Array(a)) => (Box::new(a), Type::JSON_ARRAY),
+		// (PgTypeHint::JsonArray, V::Null) => (Box::new(None::<V>), Type::JSON_ARRAY),
+		// (PgTypeHint::JsonArray, V::Array(a)) => (Box::new(a), Type::JSON_ARRAY),
 
-		(ParamTypeHint::Number, V::Null) => (Box::new(None::<f64>), Type::FLOAT8),
-		(ParamTypeHint::Number, V::Number(n)) => if n.is_i64() {
-			(Box::new(n.as_i64().unwrap()), Type::INT8)
-		} else if n.is_u64() {
-			return Err(RuntimeError::OtherError("couldn't represent number".to_string()));
-		} else {
-			(Box::new(n.as_f64().ok_or_else(|| RuntimeError::OtherError("couldn't represent number".to_string()))?), Type::FLOAT8)
+		(PgTypeHint::Bool, V::Null) => (Box::new(None::<bool>), Type::BOOL),
+		(PgTypeHint::Bool, V::Bool(b)) => (Box::new(b), Type::BOOL),
+
+		(PgTypeHint::Text, V::Null) => (Box::new(None::<String>), Type::TEXT),
+		(PgTypeHint::Text, V::String(s)) => (Box::new(s), Type::TEXT),
+
+		(PgTypeHint::Bytea, V::Null) => (Box::new(None::<Vec<u8>>), Type::BYTEA),
+		(PgTypeHint::Bytea, V::Array(n)) => {
+			let v: Vec<_> = n.into_iter().map(|n| {
+				let n = n.as_u64().ok_or_else(|| RuntimeError::OtherError("number wasn't byte".to_string()))?;
+				u8::try_from(n).map_err(|e| RuntimeError::OtherError(e.to_string()))
+			}).collect::<Result<_, _>>()?;
+
+			(Box::new(v), Type::BYTEA)
 		},
 
-		(ParamTypeHint::String, V::Null) => (Box::new(None::<String>), Type::TEXT),
-		(ParamTypeHint::String, V::String(s)) => (Box::new(s), Type::TEXT),
+		(PgTypeHint::Hstore, V::Null) => (Box::new(None::<HashMap<String, Option<String>>>), HSTORE),
+		(PgTypeHint::Hstore, V::Object(m)) => {
+			let m = m.into_iter().map(|(k, v)| {
+				let v = match v {
+					V::Null => None,
+					V::String(s) => Some(s),
+					_ => { return Err(RuntimeError::OtherError("expected string".to_string())) },
+				};
 
-		(ParamTypeHint::Bool, V::Null) => (Box::new(None::<bool>), Type::BOOL),
-		(ParamTypeHint::Bool, V::Bool(b)) => (Box::new(b), Type::BOOL),
+				Ok((k, v))
+			}).collect::<Result<HashMap<_, _>, _>>()?;
+			(Box::new(m), HSTORE)
+		},
+
+		(PgTypeHint::I8 | PgTypeHint::I16 | PgTypeHint::I32 | PgTypeHint::I64 | PgTypeHint::F32 | PgTypeHint::F64, V::Null) =>
+			(Box::new(None::<f64>), Type::FLOAT8),
+		(PgTypeHint::I8 | PgTypeHint::I16 | PgTypeHint::I32 | PgTypeHint::I64 | PgTypeHint::F32 | PgTypeHint::F64, V::Number(n)) =>
+			if n.is_i64() {
+				(Box::new(n.as_i64().unwrap()), Type::INT8)
+			} else if n.is_u64() {
+				return Err(RuntimeError::OtherError("couldn't represent number".to_string()));
+			} else {
+				(Box::new(n.as_f64().ok_or_else(|| RuntimeError::OtherError("couldn't represent number".to_string()))?), Type::FLOAT8)
+			},
 
 		(hint, raw_param) => {
 			return Err(RuntimeError::OtherError(format!("mismatched param and hint: {:?}, {:?}", raw_param, hint)));
@@ -231,7 +248,7 @@ fn prepare_param(
 
 fn prepare_params(
 	raw_params: Vec<serde_json::Value>,
-	hints: Vec<ParamTypeHint>,
+	hints: Vec<PgTypeHint>,
 ) -> Result<Vec<(Box<(dyn postgres::types::ToSql + Sync)>, postgres::types::Type)>, RuntimeError> {
 	if raw_params.len() != hints.len() {
 		return Err(RuntimeError::OtherError("params and hints must be the same length".to_string()))
@@ -245,8 +262,8 @@ fn prepare_params(
 #[derive(serde::Deserialize, Debug)]
 #[serde(untagged)]
 enum RetHint {
-	Scalar(RetTypeHint),
-	Columns(Vec<(String, RetTypeHint)>),
+	Scalar(PgTypeHint),
+	Columns(Vec<(String, PgTypeHint)>),
 }
 
 fn convert_row(row: postgres::Row, ret: &RetHint) -> Result<serde_json::Value, RuntimeError> {
@@ -277,23 +294,27 @@ fn convert_row(row: postgres::Row, ret: &RetHint) -> Result<serde_json::Value, R
 // const DATE_FORMAT: chrono::format::strftime::StrftimeItems = chrono::format::strftime::StrftimeItems::new("%F");
 
 #[inline]
-fn convert_col(row: &postgres::Row, ret: &RetTypeHint, i: usize) -> Result<serde_json::Value, postgres::Error> {
+fn convert_col(row: &postgres::Row, ret: &PgTypeHint, i: usize) -> Result<serde_json::Value, postgres::Error> {
 	Ok(match ret {
-		RetTypeHint::Json => row.try_get::<_, serde_json::Value>(i)?,
-		RetTypeHint::Bool => row.try_get::<_, bool>(i)?.into(),
-		RetTypeHint::Text => row.try_get::<_, String>(i)?.into(),
-		RetTypeHint::Bytea => row.try_get::<_, Vec<u8>>(i)?.into(),
-		RetTypeHint::Hstore => row.try_get::<_, HashMap<String, Option<String>>>(i)?.into_iter()
+		PgTypeHint::Json => row.try_get::<_, serde_json::Value>(i)?,
+		PgTypeHint::Bool => row.try_get::<_, bool>(i)?.into(),
+		PgTypeHint::Text => row.try_get::<_, String>(i)?.into(),
+		PgTypeHint::Bytea => row.try_get::<_, Vec<u8>>(i)?.into(),
+		PgTypeHint::Hstore => row.try_get::<_, HashMap<String, Option<String>>>(i)?.into_iter()
 			.map(|(k, v)| (k, v.into())).collect::<serde_json::Map<_, _>>().into(),
-		RetTypeHint::I8 => row.try_get::<_, i8>(i)?.into(),
-		RetTypeHint::I16 => row.try_get::<_, i16>(i)?.into(),
-		RetTypeHint::I32 => row.try_get::<_, i32>(i)?.into(),
-		RetTypeHint::I64 => row.try_get::<_, i64>(i)?.into(),
-		RetTypeHint::F32 => row.try_get::<_, f32>(i)?.into(),
-		RetTypeHint::F64 => row.try_get::<_, f64>(i)?.into(),
+		PgTypeHint::I8 => row.try_get::<_, i8>(i)?.into(),
+		PgTypeHint::I16 => row.try_get::<_, i16>(i)?.into(),
+		PgTypeHint::I32 => row.try_get::<_, i32>(i)?.into(),
+		PgTypeHint::I64 => row.try_get::<_, i64>(i)?.into(),
+		PgTypeHint::F32 => row.try_get::<_, f32>(i)?.into(),
+		PgTypeHint::F64 => row.try_get::<_, f64>(i)?.into(),
 	})
 }
 
+// #[deno_core::op2]
+// fn ahha<'s>(scope: &'s mut v8::HandleScope) -> v8::Local<'s, v8::Value> {
+// 	v8::String::new(scope, "wassup").unwrap().into()
+// }
 
 #[deno_core::op2(async)]
 #[serde]
@@ -301,7 +322,7 @@ async fn op_sql_fetch_all(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
 	#[serde] raw_params: Vec<serde_json::Value>,
-	#[serde] hints: Vec<ParamTypeHint>,
+	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<Vec<serde_json::Value>, deno_error::JsErrorBox> {
 	let state = state.as_ref();
@@ -330,7 +351,7 @@ async fn op_sql_fetch_one(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
 	#[serde] raw_params: Vec<serde_json::Value>,
-	#[serde] hints: Vec<ParamTypeHint>,
+	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
 	let state = state.as_ref();
@@ -364,7 +385,7 @@ async fn op_sql_fetch_optional(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
 	#[serde] raw_params: Vec<serde_json::Value>,
-	#[serde] hints: Vec<ParamTypeHint>,
+	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
 	let state = state.as_ref();
@@ -397,7 +418,7 @@ async fn op_sql_execute_statement(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
 	#[serde] raw_params: Vec<serde_json::Value>,
-	#[serde] hints: Vec<ParamTypeHint>,
+	#[serde] hints: Vec<PgTypeHint>,
 ) -> Result<u32, deno_error::JsErrorBox> {
 	let state = state.as_ref();
 	demand_external_allowed(state)?;

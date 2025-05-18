@@ -40,13 +40,13 @@ const { core } = (globalThis as any).Deno as { core: {
 		// op_set_timeout: (delay: number | undefined) => Promise<void>,
 		op_propose_self_replacement: (candidate: CandidateSelfReplacement) => Promise<string>,
 
-		op_sql_fetch_all: <P extends TypeHint[], R extends RetHint>
+		op_sql_fetch_all: <P extends ParamHint[], R extends FullRetHint>
 			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
-		op_sql_fetch_one: <P extends TypeHint[], R extends RetHint>
+		op_sql_fetch_one: <P extends ParamHint[], R extends FullRetHint>
 			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>>,
-		op_sql_fetch_optional: <P extends TypeHint[], R extends RetHint>
+		op_sql_fetch_optional: <P extends ParamHint[], R extends FullRetHint>
 			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R> | null>,
-		op_sql_execute_statement: <P extends TypeHint[]>
+		op_sql_execute_statement: <P extends ParamHint[]>
 			(sql: string, params: ActualParams<P>, hints: P) => Promise<number>,
 		op_sql_execute_statements: (sql: string) => Promise<void>,
 	},
@@ -196,14 +196,8 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 
 type Dict<T> = { [key: string]: T }
 
-type ActualParams<Hints extends TypeHint[]> = { [I in keyof Hints]: TypeOfHint<Hints[I]> }
 
-type RetHint = TypeHint | [string, TypeHint][]
-type ActualRet<R extends RetHint> =
-	R extends TypeHint ? TypeOfHint<R>
-	: { [K in R[number][0]]: TypeOfHint<Extract<R[number], [K, unknown]>[1]> }
-
-class QueryExecutor<P extends TypeHint[], R extends RetHint> {
+class QueryExecutor<P extends ParamHint[], R extends FullRetHint> {
 	constructor(
 		private readonly sql: string,
 		private readonly hints: P,
@@ -221,7 +215,7 @@ class QueryExecutor<P extends TypeHint[], R extends RetHint> {
 	}
 }
 
-function StatementExecutor<P extends TypeHint[]>(sql: string, hints: P): (...params: ActualParams<P>) => Promise<number> {
+function StatementExecutor<P extends ParamHint[]>(sql: string, hints: P): (...params: ActualParams<P>) => Promise<number> {
 	return (...params) => {
 		return core.ops.op_sql_execute_statement(sql, params, hints)
 	}
@@ -233,42 +227,67 @@ function StatementsExecutor(sql: string): () => Promise<void> {
 	}
 }
 
-export type PrimitiveTypeHintMap = {
-	'json': JsonValue,
-	'bool': boolean,
-	'text': string,
-	'number': number,
-	'int': number,
-	'bigint': bigint,
+
+export type RetPrimitiveTypeHintMap = {
+	'Json': JsonValue,
+	'Bool': boolean,
+	'Text': string,
+	'Bytea': number[],
+	'Hstore': { [key: string]: string | null },
+	'I8': number,
+	'I16': number,
+	'I32': number,
+	'I64': bigint,
+	'F32': number,
+	'F64': number,
 }
+export type RetPrimitiveTypeHint = keyof RetPrimitiveTypeHintMap
+// export type RetNullableTypeHint = `${RetPrimitiveTypeHint}?`
+// export type RetArrayTypeHint = `${RetPrimitiveTypeHint}[]`
 
-// export type PgToTsHintMap = {
-// 	'json': JsonValue,
-// 	'bool': boolean,
-// 	'text': string,
-// 	'i32': number,
-// 	'i64': bigint,
-// 	'f32': number,
-// 	'f64': number,
-// 	'bigint': bigint,
-// }
+export type RetHint = RetPrimitiveTypeHint // | RetNullableTypeHint | RetArrayTypeHint
 
-type PrimitiveParamTypeHintMap = {
-	'json': JsonValue,
-	'bool': boolean,
-	'text': string,
-	'double': number,
-	// 'timestamp': Date,
+export type ParamPrimitiveTypeHintMap = {
+	'Json': JsonValue,
+	'Bool': boolean,
+	'Text': string,
+	// 'Bytea': number[] | Uint8Array,
+	'Bytea': number[],
+	'Hstore': { [key: string]: string | null },
+	'I8': number,
+	'I16': number,
+	'I32': number,
+	'I64': number | bigint,
+	'F32': number,
+	'F64': number,
 }
+export type ParamPrimitiveTypeHint = keyof ParamPrimitiveTypeHintMap
+// export type ParamNullableTypeHint = `${ParamPrimitiveTypeHint}?`
+// export type ParamArrayTypeHint = `${ParamPrimitiveTypeHint}[]`
 
-export type PrimitiveTypeHint = keyof PrimitiveTypeHintMap
-export type NullableTypeHint = `${PrimitiveTypeHint}?`
-export type ArrayTypeHint = `${PrimitiveTypeHint}[]`
+export type ParamHint = ParamPrimitiveTypeHint // | ParamNullableTypeHint | ParamArrayTypeHint
 
-export type TypeHint = PrimitiveTypeHint | NullableTypeHint | ArrayTypeHint
 
-export type TypeOfHint<H extends TypeHint> =
-	H extends `${infer P}?` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P] | null : never)
-	: H extends `${infer P}[]` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P][] : never)
-	: H extends PrimitiveTypeHint ? PrimitiveTypeHintMap[H]
+export type TypeOfParamHint<H extends ParamHint> =
+	// H extends `${infer P}?` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P] | null : never)
+	// : H extends `${infer P}[]` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P][] : never)
+	// :
+	H extends ParamPrimitiveTypeHint ? ParamPrimitiveTypeHintMap[H]
 	: never
+
+type ActualParams<Hints extends ParamHint[]> = { [I in keyof Hints]: TypeOfParamHint<Hints[I]> }
+
+
+export type TypeOfRetHint<H extends RetHint> =
+	// H extends `${infer P}?` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P] | null : never)
+	// : H extends `${infer P}[]` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P][] : never)
+	// :
+	H extends RetPrimitiveTypeHint ? RetPrimitiveTypeHintMap[H]
+	: never
+
+
+type FullRetHint = RetHint | [string, RetHint][]
+
+type ActualRet<R extends FullRetHint> =
+	R extends RetHint ? TypeOfRetHint<R>
+	: { [K in R[number][0]]: TypeOfRetHint<Extract<R[number], [K, unknown]>[1]> }
