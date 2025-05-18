@@ -53,6 +53,23 @@ create table votebase_catalog.ruleset (
 	db_schema text not null
 );
 
+create function votebase_catalog.drop_ruleset_schema_on_delete() returns trigger as $$
+begin
+	-- "ruleset:{full_path}"
+	execute 'drop schema "ruleset:' || OLD.full_path || '" cascade';
+	-- "role:{full_path}|{role_type}"
+	execute 'drop role "role:' || OLD.full_path || '|migrator"';
+	execute 'drop role "role:' || OLD.full_path || '|action"';
+	execute 'drop role "role:' || OLD.full_path || '|view"';
+	return OLD;
+end;
+$$ language plpgsql;
+
+create trigger votebase_catalog_trigger_drop_ruleset_schema_on_delete
+after delete on votebase_catalog.ruleset for each row
+execute function votebase_catalog.drop_ruleset_schema_on_delete();
+
+
 -- create type fn_type as enum('Action', 'View');
 
 -- create table votebase_catalog.ruleset_fn (
@@ -76,7 +93,7 @@ create table votebase_catalog.ruleset (
 -- 	old_code text not null
 -- );
 
-create unique index ruleset_single_null_parent
+create unique index votebase_catalog_ruleset_single_null_parent
 on votebase_catalog.ruleset((true))
 where parent_full_path is null;
 
@@ -107,7 +124,7 @@ create table votebase_catalog.candidate_replacement_ruleset (
 -- );
 
 
-create or replace function votebase_catalog.insert_candidate_replacement(
+create function votebase_catalog.insert_candidate_replacement(
 	p_candidate_for text, p_actions text[], p_views text[],
 	p_code text, p_db_schema text, p_db_migration text
 ) returns uuid as $$
@@ -134,7 +151,7 @@ end;
 $$ language plpgsql;
 
 
-create or replace function votebase_catalog.apply_candidate(candidate_id uuid) returns text as $$
+create function votebase_catalog.apply_candidate(candidate_id uuid) returns text as $$
 declare
 	candidate votebase_catalog.candidate_replacement_ruleset;
 begin

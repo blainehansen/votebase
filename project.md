@@ -1,3 +1,47 @@
+Rulesets declare foreign sql functions they can call, and can parameterize both calls of foreign functions and references using ghetto declarations in some toml file or something put together with simple string templating. During preparation time the cli dummies together tables and empty functions that satisfies those declarations to make the type checker happy
+The cli also gathers the normal functions and prepares everything for the server ahead of time, including type checking everything. Maybe the server does that as well
+
+Someday the real thing will be a unified language, and rulesets can be parameterized by generics and full functions, even ones that return the special database reference type
+The real full idea relies on a powerful database language with a powerful type system and static checker that can check incoming migrations for total consistency without actually changing anything, including difficult things like whether all references will remain valid
+This will mean that when anything changes you have to go through candidates and either discard them or check them to see if they still make sense
+
+
+
+https://crates.io/crates/strfmt
+
+
+
+What is the technical relationship between a ruleset and it's child?
+I'm guessing that the parent ruleset has the ability to do anything its children can do:
+- the parent roles (view, action, migrator) has all abilities of the corresponding child role (and recursive)
+- the parent roles can *grant* things that *it has* to those child roles, so the child can access or use things from above
+
+
+at what point does this become simpler to just build a simple database language????
+all this stuff is so entangled. working around the limitations of postgres is driving me insane. and no other database is going to be better, no database is built to be this meta
+the biggest conceptual idea that's complex is that the ruleset *data structure* owns a *schema*, basically owns a *dynamic* sub-tree of data structures which are its children
+this is why building a language is what you wanted to do!
+so what now? figuring out actually fully useful parent/child (or even sibling??? way harder)
+does this get way simpler if all rulesets don't exist in parent/child relationships, but instead they're all independent and can *message* each other? but really that means they can just call actions on one another
+there are a couple things that make that idea hard:
+- robustness, how do we know what actions exist? we need a safe way to ensure that a "sender" in one ruleset will always have a "receiver" of the right message type
+- so this means the ruleset state is always a typed web. it doesn't have to be hierarchical, but any modifications of the web have to leave it in a consistent state. this means all relationships have to be clearly registered and we need an algorithm to ensure all links are correct
+
+this begs the question, if it isn't hierarchical, how do we know how to change the web?
+this is why a hierarchy is helpful. the higher rulesets determine the rules for modifying all the parts of the web they "own". it might specify *no* way for the web to be changed!
+
+man I just want a real language
+
+this implies that one of the characteristics that must be declared about a ruleset are the "senders" it has that must have their destination declared. it's also imaginable for a ruleset to have *optional* senders (maybe use the word "capability"? what's a good term for this? "foreign action"?)
+further
+this idea of a typed link between rulesets seems rich and important. a receiving end is simple, a ruleset declares it and it has a type. it's totally imaginable that a ruleset
+
+Further, what about situations where a ruleset wants to have some *static* parent/child structure? Rather than allow dynamic creation?
+This is what I
+
+
+
+
 Scheduled events table could have a log table tracking all occurrences
 Use a compare and swap (update that's conditional on the row not having a value that indicates it's been grabbed by the server) to mark the row as handled
 

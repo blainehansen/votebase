@@ -7,6 +7,6 @@ edition = "2024"
 votebase_queries = { path = "../queries" }
 votebase_common = { path = "../common" }
 tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 argh = "0.1"
-serde.workspace = true
-serde_json.workspace = true

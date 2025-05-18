@@ -8,8 +8,6 @@ async fn main() -> Result<(), AnyError> {
 	let admin_connection_string = args.get(0).expect("first parameter should be a database url");
 	let config = admin_connection_string.parse::<postgres::Config>()?;
 	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(5).build()?;
-	// let client = pool.get().await?;
-	// let queries_dir = args.get(1).expect("second parameter should be a directory").to_string();
 
 	let mut client = pool.get().await?;
 

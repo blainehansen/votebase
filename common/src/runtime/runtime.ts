@@ -40,6 +40,8 @@ const { core } = (globalThis as any).Deno as { core: {
 		// op_set_timeout: (delay: number | undefined) => Promise<void>,
 		op_propose_self_replacement: (candidate: CandidateSelfReplacement) => Promise<string>,
 
+		op_propose_child_ruleset: () => Promise<string>,
+
 		op_sql_fetch_all: <P extends ParamHint[], R extends FullRetHint>
 			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
 		op_sql_fetch_one: <P extends ParamHint[], R extends FullRetHint>
@@ -197,34 +199,51 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 type Dict<T> = { [key: string]: T }
 
 
-class QueryExecutor<P extends ParamHint[], R extends FullRetHint> {
-	constructor(
-		private readonly sql: string,
-		private readonly hints: P,
-		private readonly ret: R,
-	) {}
+declare global {
+	namespace __ {
+		export class QueryExecutor<P extends ParamHint[], R extends FullRetHint> {
+			constructor(
+				sql: string,
+				hints: P,
+				ret: R,
+			)
 
-	fetchAll(...params: ActualParams<P>): Promise<ActualRet<R>[]> {
-		return core.ops.op_sql_fetch_all<P, R>(this.sql, params, this.hints, this.ret)
-	}
-	fetchOne(...params: ActualParams<P>): Promise<ActualRet<R>> {
-		return core.ops.op_sql_fetch_one<P, R>(this.sql, params, this.hints, this.ret)
-	}
-	fetchOptional(...params: ActualParams<P>): Promise<ActualRet<R> | null> {
-		return core.ops.op_sql_fetch_optional<P, R>(this.sql, params, this.hints, this.ret)
+			fetchAll(...params: ActualParams<P>): Promise<ActualRet<R>[]>
+			fetchOne(...params: ActualParams<P>): Promise<ActualRet<R>>
+			fetchOptional(...params: ActualParams<P>): Promise<ActualRet<R> | null>
+		}
+		export function StatementExecutor<P extends ParamHint[]>(sql: string, hints: P): (...params: ActualParams<P>) => Promise<number>
+		export function StatementsExecutor(sql: string): () => Promise<void>
 	}
 }
+globalThis.__ = {
+	QueryExecutor: class QueryExecutor<P extends ParamHint[], R extends FullRetHint> {
+		constructor(
+			private readonly sql: string,
+			private readonly hints: P,
+			private readonly ret: R,
+		) {}
 
-function StatementExecutor<P extends ParamHint[]>(sql: string, hints: P): (...params: ActualParams<P>) => Promise<number> {
-	return (...params) => {
-		return core.ops.op_sql_execute_statement(sql, params, hints)
-	}
-}
-
-function StatementsExecutor(sql: string): () => Promise<void> {
-	return () => {
-		return core.ops.op_sql_execute_statements(sql)
-	}
+		fetchAll(...params: ActualParams<P>): Promise<ActualRet<R>[]> {
+			return core.ops.op_sql_fetch_all<P, R>(this.sql, params, this.hints, this.ret)
+		}
+		fetchOne(...params: ActualParams<P>): Promise<ActualRet<R>> {
+			return core.ops.op_sql_fetch_one<P, R>(this.sql, params, this.hints, this.ret)
+		}
+		fetchOptional(...params: ActualParams<P>): Promise<ActualRet<R> | null> {
+			return core.ops.op_sql_fetch_optional<P, R>(this.sql, params, this.hints, this.ret)
+		}
+	},
+	StatementExecutor: function StatementExecutor<P extends ParamHint[]>(sql: string, hints: P): (...params: ActualParams<P>) => Promise<number> {
+		return (...params) => {
+			return core.ops.op_sql_execute_statement(sql, params, hints)
+		}
+	},
+	StatementsExecutor: function StatementsExecutor(sql: string): () => Promise<void> {
+		return () => {
+			return core.ops.op_sql_execute_statements(sql)
+		}
+	},
 }
 
 
@@ -232,14 +251,16 @@ export type RetPrimitiveTypeHintMap = {
 	'Json': JsonValue,
 	'Bool': boolean,
 	'Text': string,
+	// 'Bytea': Uint8Array,
 	'Bytea': number[],
 	'Hstore': { [key: string]: string | null },
-	'I8': number,
 	'I16': number,
 	'I32': number,
 	'I64': bigint,
 	'F32': number,
 	'F64': number,
+	'Numeric': number,
+	'Money': number,
 }
 export type RetPrimitiveTypeHint = keyof RetPrimitiveTypeHintMap
 // export type RetNullableTypeHint = `${RetPrimitiveTypeHint}?`
@@ -254,12 +275,13 @@ export type ParamPrimitiveTypeHintMap = {
 	// 'Bytea': number[] | Uint8Array,
 	'Bytea': number[],
 	'Hstore': { [key: string]: string | null },
-	'I8': number,
 	'I16': number,
 	'I32': number,
 	'I64': number | bigint,
 	'F32': number,
 	'F64': number,
+	'Numeric': number,
+	'Money': number,
 }
 export type ParamPrimitiveTypeHint = keyof ParamPrimitiveTypeHintMap
 // export type ParamNullableTypeHint = `${ParamPrimitiveTypeHint}?`

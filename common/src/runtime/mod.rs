@@ -179,7 +179,7 @@ const ERR_EXTERNAL_NOT_ALLOWED: &'static str = "runtime functions that interact 
 #[serde(variant_identifier)]
 enum PgTypeHint {
 	Json, Bool, Text, Bytea, Hstore,
-	I8, I16, I32, I64, F32, F64,
+	I16, I32, I64, F32, F64,
 	// | `u32`: OID
 }
 
@@ -229,9 +229,9 @@ fn prepare_param(
 			(Box::new(m), HSTORE)
 		},
 
-		(PgTypeHint::I8 | PgTypeHint::I16 | PgTypeHint::I32 | PgTypeHint::I64 | PgTypeHint::F32 | PgTypeHint::F64, V::Null) =>
+		(PgTypeHint::I16 | PgTypeHint::I32 | PgTypeHint::I64 | PgTypeHint::F32 | PgTypeHint::F64, V::Null) =>
 			(Box::new(None::<f64>), Type::FLOAT8),
-		(PgTypeHint::I8 | PgTypeHint::I16 | PgTypeHint::I32 | PgTypeHint::I64 | PgTypeHint::F32 | PgTypeHint::F64, V::Number(n)) =>
+		(PgTypeHint::I16 | PgTypeHint::I32 | PgTypeHint::I64 | PgTypeHint::F32 | PgTypeHint::F64, V::Number(n)) =>
 			if n.is_i64() {
 				(Box::new(n.as_i64().unwrap()), Type::INT8)
 			} else if n.is_u64() {
@@ -302,7 +302,6 @@ fn convert_col(row: &postgres::Row, ret: &PgTypeHint, i: usize) -> Result<serde_
 		PgTypeHint::Bytea => row.try_get::<_, Vec<u8>>(i)?.into(),
 		PgTypeHint::Hstore => row.try_get::<_, HashMap<String, Option<String>>>(i)?.into_iter()
 			.map(|(k, v)| (k, v.into())).collect::<serde_json::Map<_, _>>().into(),
-		PgTypeHint::I8 => row.try_get::<_, i8>(i)?.into(),
 		PgTypeHint::I16 => row.try_get::<_, i16>(i)?.into(),
 		PgTypeHint::I32 => row.try_get::<_, i32>(i)?.into(),
 		PgTypeHint::I64 => row.try_get::<_, i64>(i)?.into(),
@@ -997,9 +996,8 @@ pub async fn execute_recurring_action(
 		Some(action) => {
 			let scheduled = action.next_scheduled_time.and_utc();
 			let now = chrono::Utc::now();
-			let diff = scheduled - now;
-			log::info!("{} scheduled: {}; actual: {}; difference: {}; {}", scheduled_action_uuid, scheduled, now, diff, action.description);
-			if diff < ::chrono::TimeDelta::zero() {
+			log::info!("{} scheduled: {}; actual: {}; {}", scheduled_action_uuid, scheduled, now, action.description);
+			if scheduled > now {
 				log::info!("{} not doing it yet", scheduled_action_uuid);
 				scheduled_action_queue.queue(server_role_pool, server_pg_config, scheduled_action_kind, scheduled_action_uuid, scheduled);
 				return Ok(())
