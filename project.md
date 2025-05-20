@@ -1,3 +1,21 @@
+when the server is bootstrapped, the "accept-any" ruleset is loaded in with the name "root"
+this ruleset simply accepts the first replacement ruleset that it's given
+
+these replacement rulesets can specify static children, meaning there are some known children rulesets that will be created immediately after this one that themselves can be replaced or changed without changing the main ruleset. this would be useful for things like the persistent democracy kernel, which can't be replaced at all, so the static child is the practical root ruleset that people will actually interact with, the base constitution.
+
+here's one of the key questions: do child rulesets replace themselves? or are they replaced by their parent?
+
+in the case of the persistent democracy kernel, there's a single static child for the actual "real" root constitution, and *how* that root is replaced is determined by the kernel, so the replacement is done by the parent, not the child.
+
+I have a suspicion self replacement is only relevant for the true top root, or for "away teams" so to speak, where some ruleset is given full ability to govern itself, with only possible dissolution by higher rulesets
+
+
+
+
+
+
+
+
 Rulesets declare foreign sql functions they can call, and can parameterize both calls of foreign functions and references using ghetto declarations in some toml file or something put together with simple string templating. During preparation time the cli dummies together tables and empty functions that satisfies those declarations to make the type checker happy
 The cli also gathers the normal functions and prepares everything for the server ahead of time, including type checking everything. Maybe the server does that as well
 

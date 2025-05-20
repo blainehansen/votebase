@@ -1,11 +1,3 @@
-// for now we're not going to do hyper locked down secure pre-registered queries
-// the hard part is that the code can always just pass whatever it wants, especially if it understands the real contract, which it always can
-// it's not worth enforcing and thereby decreasing performance that much
-
-// , and for dev has an `import queries from './queries'`. the cli has a command to "package" a ruleset as a json file ready to send to a server, and part of what it does is strip out the `import queries from './queries` and in it's place insert the `namespace queries {}` (detect and use the name used in the import)
-// - if the queries file is already formatted as `namespace queries {}\nexport default queries` then we can just smush the
-// - probably the thing that makes sense is just on every generation call do both, generate the *dev* version of the file
-
 // import z from 'zod'
 // import { zodToJsonSchema } from 'zod-to-json-schema'
 
@@ -13,18 +5,38 @@
 // 	| { ok: true, value: T }
 // 	| { ok: false, error: E }
 
-export type CandidateSelfReplacement = {
+
+type ConcreteRuleset = {
 	code: string,
 	db_schema: string,
 	db_migration: string,
+
+	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
+	// fns: { [fn_name: string]: Fn<JsonValue> },
+
+	// static children are *at least* necessary for situations where in one ruleset you create an election for something that must be a ruleset! and one where that election can't change the ruleset itself that specifies that election
+	// you literally can't do the idea of a constitutional tree with a kernel root without child rulesets,
+	static_children: { [child_name: string]: ConcreteRuleset },
+
+	static_recurring_actions: {
+		description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number,
+		action_name: string, action_arg: JsonValue,
+	}[],
+}
+
+type CandidateRuleset = Omit<ConcreteRuleset, 'static_children'> & {
+	static_children: { [child_name: string]: CandidateRuleset | 'keep' },
 }
 
 const { core } = (globalThis as any).Deno as { core: {
 	print: (message: string, is_error: boolean) => void,
 	ops: {
+		// op_set_timeout: (delay: number | undefined) => Promise<void>,
 		op_fetch: (url: string) => Promise<string>,
+
 		// TODO add userId: string arg to all the actions/views
 		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T) => Promise<string | void>) => void,
+
 		// TODO need to figure out what the necessary rust interface is
 		// op_register_recurring_action: (name: string, ) => void,
 		op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
@@ -37,10 +49,21 @@ const { core } = (globalThis as any).Deno as { core: {
 		op_remove_member_by_email: (email: string) => Promise<void>,
 		op_remove_member_by_uuid: (uuid: string) => Promise<void>,
 
-		// op_set_timeout: (delay: number | undefined) => Promise<void>,
-		op_propose_self_replacement: (candidate: CandidateSelfReplacement) => Promise<string>,
+		// TODO have to make all of this real!!!!
+		op_propose_self_replacement: (candidate: CandidateRuleset) => Promise<string>,
+		// replacing self is always done by returning the candidate uuid from an action
 
-		op_propose_child_ruleset: () => Promise<string>,
+		// these two create and destroy rulesets entirely. they cannot create or destroy static children
+		// the name is needed in these because there can be multiple children
+		// this initial ruleset is expected to have db_schema == db_migration, because this ruleset didn't previously exist, there's nothing to migrate
+		op_create_child_ruleset: (name: string, initial: ConcreteRuleset) => Promise<string>,
+		// all of the children, static and dynamic, are deleted here as well
+		op_delete_child_ruleset: (name: string) => Promise<void>,
+
+		// this is just the child version of op_propose_self_replacement
+		op_propose_child_replacement: (name: string, candidate: CandidateRuleset) => Promise<string>,
+		// the table with candidate_id already has the name and full_path etc to know where it's headed
+		op_replace_child: (candidate_id: string) => Promise<void>,
 
 		op_sql_fetch_all: <P extends ParamHint[], R extends FullRetHint>
 			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
@@ -94,10 +117,12 @@ declare global {
 		// function removeMemberFromRuleset(memberUuid: string, rulesetFullPath: string): Promise<Result<void>>
 
 		// TODO needs to account for possibility of failure
-		function proposeSelfReplacement(candidate: CandidateSelfReplacement): Promise<string>
+		function proposeSelfReplacement(candidate: CandidateRuleset): Promise<string>
 
-		// function proposeChildRuleset(): Promise<void>
-		// function instituteChildRuleset(): Promise<void>
+		function createChildRuleset(name: string, initial: ConcreteRuleset): Promise<string>
+		function deleteChildRuleset(name: string): Promise<void>
+		function proposeChildReplacement(name: string, candidate: CandidateRuleset): Promise<string>
+		function replaceChild(uuid: string): Promise<void>
 	}
 }
 globalThis.votebase = {
@@ -313,3 +338,29 @@ type FullRetHint = RetHint | [string, RetHint][]
 type ActualRet<R extends FullRetHint> =
 	R extends RetHint ? TypeOfRetHint<R>
 	: { [K in R[number][0]]: TypeOfRetHint<Extract<R[number], [K, unknown]>[1]> }
+
+
+
+
+// it feels like this concept of a generic ruleset is literally only valuable for the "ruleset library ecosystem"
+// when an actual ruleset shows up for a specific place and use, it's fully concrete, no more vars or vals
+type GenericRuleset = Omit<ConcreteRuleset, 'static_children'> & {
+	// this is a bunch of "typed vars" that we have to fill in in both db_schema and db_migration
+	// since these are types, we can dummy together expressions that minimally satisfy them when we're checking the ruleset
+	// these are intended to be used as "relationships" or links to other rulesets. tables and functions and columns etc can be used from other rulesets
+	// the main thing I'm trying to enable is the persistent weights in the kernel, with child rulesets using them to actually make specific decisions
+	db_schema_vars: { [var_name: string]: PgType },
+
+	// this tells us to either apply the migration implied by the GenericRuleset, or leave it alone, or if not present in this map delete it
+	// maybe it makes more sense to require fully specifying 'delete' rather than allowing absence, it's more explicit
+	static_children: { [child_name: string]: GenericRuleset | 'keep' },
+}
+
+type CompilableRuleset = Omit<GenericRuleset, 'static_children'> & {
+	db_schema_vals: { [val_name: string]: PgExpr },
+
+	static_children: { [child_name: string]: CompilableRuleset | 'keep' },
+}
+
+type PgType = 'Text' | 'Bool' | 'etc TODO'
+type PgExpr = string
