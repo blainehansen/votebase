@@ -10,6 +10,8 @@ frontend/.vitepress/dist
 
 # generated sql query code
 queries
+!rulesets/**/queries
+queries.ts
 
 # Added by cargo
 

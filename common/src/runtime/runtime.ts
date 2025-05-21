@@ -34,11 +34,9 @@ const { core } = (globalThis as any).Deno as { core: {
 		// op_set_timeout: (delay: number | undefined) => Promise<void>,
 		op_fetch: (url: string) => Promise<string>,
 
-		// TODO add userId: string arg to all the actions/views
-		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T) => Promise<string | void>) => void,
+		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T, userId: string | null) => Promise<string | void>) => void,
 
 		// TODO need to figure out what the necessary rust interface is
-		// op_register_recurring_action: (name: string, ) => void,
 		op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
 		op_remove_recurring_action: (uuid: string) => Promise<void>,
 
@@ -50,20 +48,20 @@ const { core } = (globalThis as any).Deno as { core: {
 		op_remove_member_by_uuid: (uuid: string) => Promise<void>,
 
 		op_add_members_to_ruleset: (full_path: string, uuids: string[]) => Promise<void>,
-		op_add_condition_to_ruleset: (full_path: string, condition: string) => Promise<void>,
+		// op_add_members_to_ruleset_by_condition: (full_path: string, condition: string) => Promise<void>,
+		op_remove_members_from_ruleset: (full_path: string, uuids: string[]) => Promise<void>,
 
-		// TODO have to make all of this real!!!!
 		op_propose_self_replacement: (candidate: CandidateRuleset) => Promise<string>,
 		// replacing self is always done by returning the candidate uuid from an action
 
 		// these two create and destroy rulesets entirely. they cannot create or destroy static children
 		// this initial ruleset is expected to have db_schema == db_migration, because this ruleset didn't previously exist, there's nothing to migrate
-		op_create_child_ruleset: (full_path: string, initial: ConcreteRuleset) => Promise<string>,
+		op_create_child_ruleset: (name: string, initial: ConcreteRuleset) => Promise<string>,
 		// all of the children, static and dynamic, are deleted here as well
-		op_delete_child_ruleset: (full_path: string) => Promise<void>,
+		op_delete_child_ruleset: (name: string) => Promise<void>,
 
 		// this is just the child version of op_propose_self_replacement
-		op_propose_child_replacement: (full_path: string, candidate: CandidateRuleset) => Promise<string>,
+		op_propose_child_replacement: (name: string, candidate: CandidateRuleset) => Promise<string>,
 		// the table with candidate_id already has the name and full_path etc to know where it's headed
 		op_replace_child: (candidate_id: string) => Promise<void>,
 
@@ -80,8 +78,14 @@ const { core } = (globalThis as any).Deno as { core: {
 } }
 
 // make these have truly private members? or add some special symbol?
-export type FnAction<A extends JsonValue> = Readonly<{ name: string, isAction: true, func: (arg: A) => Promise<string | void> }>
-export type FnView<Q extends JsonValue> = Readonly<{ name: string, isAction: false, func: (query: Q) => Promise<string> }>
+export type FnAction<A extends JsonValue> = Readonly<{
+	name: string, isAction: true,
+	func: (arg: A, userId: string | null) => Promise<string | void>,
+}>
+export type FnView<Q extends JsonValue> = Readonly<{
+	name: string, isAction: false,
+	func: (query: Q, userId: string | null) => Promise<string>,
+}>
 
 export type Fn<T extends JsonValue> = FnAction<T> | FnView<T>
 
@@ -99,9 +103,9 @@ export type RecurringAction<Arg extends JsonValue> = {
 declare global {
 	namespace votebase {
 		// schema: z.ZodSchema<Arg>,
-		function Action<Arg extends JsonValue>(name: string, func: (arg: Arg) => Promise<string | void>): FnAction<Arg>
+		function Action<Arg extends JsonValue>(name: string, func: (arg: Arg, userId: string | null) => Promise<string | void>): FnAction<Arg>
 		// schema: z.ZodSchema<Query>,
-		function View<Query extends JsonValue>(name: string, func: (query: Query) => Promise<string>): FnView<Query>
+		function View<Query extends JsonValue>(name: string, func: (query: Query, userId: string | null) => Promise<string>): FnView<Query>
 
 		// function RecurringAction(definition: RecurringAction): void
 
@@ -110,13 +114,15 @@ declare global {
 		function scheduleAction<Arg extends JsonValue>(description: string, at: Date, action: FnAction<Arg>, arg: Arg): Promise<string>
 		function unscheduleAction(uuid: string): Promise<void>
 
-		// TODO right now there's only *capability* for a single ruleset, so would it make sense for this to just add it to root no matter what?
 		function enrollMember(email: string): Promise<string>
 		function removeMemberByEmail(email: string): Promise<void>
 		function removeMemberByUuid(uuid: string): Promise<void>
 
-		// function addMemberToRuleset(memberUuid: string, rulesetFullPath: string): Promise<Result<void>>
-		// function removeMemberFromRuleset(memberUuid: string, rulesetFullPath: string): Promise<Result<void>>
+		function addMembersToRuleset(full_path: string, uuids: string[]): Promise<void>
+		// function addMembersToRulesetByCondition(full_path: string, condition: string): Promise<void>
+		function removeMembersFromRuleset(full_path: string, uuids: string[]): Promise<void>
+
+		function proposeSelfReplacement(candidate: CandidateRuleset): Promise<string>
 
 		// TODO needs to account for possibility of failure
 		function proposeSelfReplacement(candidate: CandidateRuleset): Promise<string>
@@ -128,16 +134,14 @@ declare global {
 	}
 }
 globalThis.votebase = {
-	// registerAction(name, schema, func) {
-	Action<Arg>(name: string, func: (arg: Arg) => Promise<string | void>) {
+	Action<Arg>(name: string, func: (arg: Arg, userId: string | null) => Promise<string | void>) {
 		// const jsonSchema = zodToJsonSchema(schema)
 		const isAction = true
 		// core.ops.op_register_fn(name, jsonSchema, isAction, func)
 		core.ops.op_register_fn(name, isAction, func)
 		return { name, isAction, func }
 	},
-	// registerView(name, schema, func) {
-	View<Query>(name: string, func: (query: Query) => Promise<string>) {
+	View<Query>(name: string, func: (query: Query, userId: string | null) => Promise<string>) {
 		// const jsonSchema = zodToJsonSchema(schema)
 		const isAction = false
 		// core.ops.op_register_fn(name, jsonSchema, isAction, func)
@@ -175,9 +179,31 @@ globalThis.votebase = {
 	removeMemberByUuid(uuid) {
 		return core.ops.op_remove_member_by_uuid(uuid)
 	},
+	addMembersToRuleset(full_path, uuids) {
+		return core.ops.op_add_members_to_ruleset(full_path, uuids)
+	},
+	// addMembersToRulesetByCondition(full_path, condition) {
+	// 	return core.ops.op_add_members_to_ruleset_by_condition(full_path, condition)
+	// },
+	removeMembersFromRuleset(full_path, uuids) {
+		return core.ops.op_remove_members_from_ruleset(full_path, uuids)
+	},
 
 	proposeSelfReplacement(candidate) {
 		return core.ops.op_propose_self_replacement(candidate)
+	},
+
+	createChildRuleset(name, initial) {
+		return core.ops.op_create_child_ruleset(name, initial)
+	},
+	deleteChildRuleset(name) {
+		return core.ops.op_delete_child_ruleset(name)
+	},
+	proposeChildReplacement(name, candidate) {
+		return core.ops.op_propose_child_replacement(name, candidate)
+	},
+	replaceChild(candidate_id) {
+		return core.ops.op_replace_child(candidate_id)
 	},
 }
 
