@@ -49,19 +49,21 @@ const { core } = (globalThis as any).Deno as { core: {
 		op_remove_member_by_email: (email: string) => Promise<void>,
 		op_remove_member_by_uuid: (uuid: string) => Promise<void>,
 
+		op_add_members_to_ruleset: (full_path: string, uuids: string[]) => Promise<void>,
+		op_add_condition_to_ruleset: (full_path: string, condition: string) => Promise<void>,
+
 		// TODO have to make all of this real!!!!
 		op_propose_self_replacement: (candidate: CandidateRuleset) => Promise<string>,
 		// replacing self is always done by returning the candidate uuid from an action
 
 		// these two create and destroy rulesets entirely. they cannot create or destroy static children
-		// the name is needed in these because there can be multiple children
 		// this initial ruleset is expected to have db_schema == db_migration, because this ruleset didn't previously exist, there's nothing to migrate
-		op_create_child_ruleset: (name: string, initial: ConcreteRuleset) => Promise<string>,
+		op_create_child_ruleset: (full_path: string, initial: ConcreteRuleset) => Promise<string>,
 		// all of the children, static and dynamic, are deleted here as well
-		op_delete_child_ruleset: (name: string) => Promise<void>,
+		op_delete_child_ruleset: (full_path: string) => Promise<void>,
 
 		// this is just the child version of op_propose_self_replacement
-		op_propose_child_replacement: (name: string, candidate: CandidateRuleset) => Promise<string>,
+		op_propose_child_replacement: (full_path: string, candidate: CandidateRuleset) => Promise<string>,
 		// the table with candidate_id already has the name and full_path etc to know where it's headed
 		op_replace_child: (candidate_id: string) => Promise<void>,
 

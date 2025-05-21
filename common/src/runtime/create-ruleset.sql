@@ -14,10 +14,12 @@ alter role "{formatted_ruleset_role_view}" set search_path to "{formatted_rulese
 -- use schema
 grant usage on schema "{formatted_ruleset_schema}" to "{formatted_ruleset_role_view}";
 -- leaving out: create
+
 -- read tables
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant select on tables to "{formatted_ruleset_role_view}";
 -- leaving out: insert, update, delete, truncate, references, trigger, maintain
+
 -- read sequences
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant usage, select on sequences to "{formatted_ruleset_role_view}";
@@ -29,14 +31,17 @@ grant usage, select on sequences to "{formatted_ruleset_role_view}";
 -- use schema
 grant usage on schema "{formatted_ruleset_schema}" to "{formatted_ruleset_role_action}";
 -- leaving out: create
+
 -- write tables
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant select, insert, update, delete on tables to "{formatted_ruleset_role_action}";
 -- leaving out: truncate, references, trigger, maintain
+
 -- everything sequences
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant all privileges on sequences to "{formatted_ruleset_role_action}";
 -- includes: usage, select, update
+
 -- everything functions
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant all privileges on functions to "{formatted_ruleset_role_action}";
@@ -47,19 +52,23 @@ grant all privileges on functions to "{formatted_ruleset_role_action}";
 -- everything schema
 grant all privileges on schema "{formatted_ruleset_schema}" to "{formatted_ruleset_role_migrator}";
 -- includes: usage, create
--- this is the key
+-- note: the create privilege is for creating things *in* the schema, not to create schemas themselves
+
 -- everything tables
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant all privileges on tables to "{formatted_ruleset_role_migrator}";
 -- includes: select, insert, update, delete, truncate, references, trigger, maintain
+
 -- everything sequences
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant all privileges on sequences to "{formatted_ruleset_role_migrator}";
 -- includes: usage, select, update
+
 -- everything functions
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant all privileges on functions to "{formatted_ruleset_role_migrator}";
 -- includes: execute
+
 -- everything types
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant all privileges on types to "{formatted_ruleset_role_migrator}";

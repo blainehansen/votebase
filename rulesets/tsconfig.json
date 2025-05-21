@@ -3,6 +3,7 @@
 	"extends": ["../tsconfig.strict.json"],
 	"compilerOptions": {
 		"composite": true,
+		"lib": ["ES2024"],
 		"baseUrl": ".",
 		"types": ["../common/src/runtime/runtime.ts"],
 		"paths": {
