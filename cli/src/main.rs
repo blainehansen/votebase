@@ -15,8 +15,34 @@ async fn main() -> Result<(), AnyError> {
 	let queries_dir = ruleset_dir.join("queries");
 	match args.subcommand {
 		SubCommand::Dev(_) => {
-			let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &client).await?;
-			let generated = format!("import 'votebase'\nexport default {{\n{generated_fields}\n}}");
+			let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+			let temp_dbname = format!("votebase_temp_db_{now}");
+			client.execute(&format!(r#"create database "{temp_dbname}""#), &[]).await?;
+
+			let generated = {
+				let mut temp_config = config.clone();
+				temp_config.dbname(&temp_dbname);
+				let temp_pool = deadpool::Pool::builder(deadpool::Manager::new(temp_config, postgres::NoTls)).max_size(1).build()?;
+				let mut temp_client = temp_pool.get().await?;
+
+				let schema_sql = format!(include_str!("../../bootstrap_cli/schema.sql"), db_database=temp_dbname, votebase_server_password="votebase_server_password");
+				temp_client.batch_execute(&schema_sql).await?;
+				temp_client.batch_execute(&format!(r#"create schema public; alter database "{temp_dbname}" reset search_path;"#)).await?;
+
+				votebase_common::runtime::create_ruleset(
+					&config, &mut temp_client,
+					None, "root",
+					&vec!["__insert_initial".to_string()], &vec![],
+					include_str!("../../rulesets/accept-any/ruleset.ts"), "",
+				).await?;
+
+				let db_schema = tokio::fs::read_to_string(ruleset_dir.join("schema.sql")).await?;
+				temp_client.batch_execute(&db_schema).await?;
+
+				let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &temp_client).await?;
+				format!("import 'votebase'\nexport default {{\n{generated_fields}\n}}")
+			};
+			client.batch_execute(&format!(r#"drop database if exists "{temp_dbname}""#)).await?;
 
 			let mut file = tokio::fs::OpenOptions::new().write(true).create(true)
 				.open(format!("{}.ts", queries_dir.to_string_lossy())).await?;
@@ -60,8 +86,8 @@ struct VotebaseCliArgs {
 
 	/// ruleset directory structured the following way:
 	/// - `queries` directory containing all the sql operations for the ruleset, one callable sql group per file
-	/// - `schema.sql` file containing the desired *final*
-	/// - `ruleset.ts` contains the actual code
+	/// - `schema.sql` file containing the desired *final* sql schema for the ruleset, as if it were being created from an empty database
+	/// - `ruleset.ts` the actual ruleset code that defines the Actions and Views
 	#[argh(option)]
 	ruleset_dir: std::path::PathBuf,
 

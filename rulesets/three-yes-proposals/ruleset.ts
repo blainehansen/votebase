@@ -1,10 +1,10 @@
 import 'votebase'
 import queries from './queries'
 
-votebase.Action('makeProposal', async (description: string, userId) => {
-	if (!userId) return
+votebase.Action('makeProposal', async (description: string, memberId) => {
+	if (!memberId) return
 
-	const proposalId = await queries.createProposal(description, userId)
+	const proposalId = await queries.createProposal(description, memberId)
 
 	const now = new Date()
 	const threeHours = new Date(now)
@@ -18,23 +18,22 @@ votebase.Action('makeProposal', async (description: string, userId) => {
 	])
 })
 
-const updateProposalStatus = votebase.Action('updateProposalStatus', async (proposalId: string, userId) => {
-	await queries.updateProposalStatus(proposalId, userId)
-
+const updateProposalStatus = votebase.Action('updateProposalStatus', async (proposalId: string) => {
+	await queries.updateProposalStatus(proposalId)
 })
 
 
-votebase.Action('vote', async ({ isYes, proposalId }: { isYes: boolean, proposalId: string }, userId) => {
-	if (!userId) return
+votebase.Action('vote', async ({ isYes, proposalId }: { isYes: boolean, proposalId: string }, memberId) => {
+	if (!memberId) return
 
-	await queries.vote(isYes, proposalId, userId)
+	await queries.vote(isYes, proposalId, memberId)
 })
 
 votebase.View('allProposals', async () => {
 	const proposals = await queries.allProposals.fetchAll()
 
 	const renderedProposals = proposals.map(({ proposed_time, description, proposer_id, status }) => {
-		const inner = `<p>${description}</p><span>${status}</span>`
+		const inner = `<p>${description}</p><span>${status}</span><span>(by ${proposer_id})</span>`
 
 		return `<li>${inner}</li>`
 	}).join('')

@@ -55,9 +55,7 @@ create table votebase_catalog.ruleset (
 
 create function votebase_catalog.drop_ruleset_schema_on_delete() returns trigger as $$
 begin
-	-- "ruleset:{full_path}"
 	execute 'drop schema "ruleset:' || OLD.full_path || '" cascade';
-	-- "role:{full_path}|{role_type}"
 	execute 'drop role "role:' || OLD.full_path || '|migrator"';
 	execute 'drop role "role:' || OLD.full_path || '|action"';
 	execute 'drop role "role:' || OLD.full_path || '|view"';

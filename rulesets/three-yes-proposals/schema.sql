@@ -1,25 +1,21 @@
-create type proposal_status as enum('ACTIVE', 'PASSED', 'REJECTED');
+create type proposal_status as enum('ACTIVE', 'ACCEPTED', 'REJECTED');
 
 create table proposal (
-	id uuid not null default gen_random_uuid(),
+	id uuid primary key default gen_random_uuid(),
 	proposed_time timestamptz not null default current_timestamp,
 	description text not null,
 	proposer_id uuid not null references votebase_catalog.member(id),
 	status proposal_status not null default 'ACTIVE'
 );
 
--- create function proposal_is_active(proposal)
--- returns bool as $$
--- 	select current_timestamp < ($1.proposed_time + interval '3 days') ;
--- $$ language sql;
-
-create table vote (
+create table proposal_vote (
 	proposal_id uuid not null references proposal(id),
 	member_id uuid not null references votebase_catalog.member(id),
 	is_yes bool not null,
 	vote_time timestamptz not null default current_timestamp,
-	unique (member_id, candidate_id)
+	primary key (proposal_id, member_id)
 );
+
 
 create function update_proposal_status(proposal_id uuid) returns void as $$
 declare
@@ -39,30 +35,27 @@ begin
 		select
 			count(*) filter (where is_yes) as yes_count,
 			count(*) filter (where not is_yes) as no_count,
-
-			count(*) filter (where is_yes and vote_time < (proposed_time + interval '3 hours')) as before_3_hour_yes_count,
-			count(*) filter (where not is_yes and < (proposed_time + interval '3 hours')) as before_3_hour_no_count,
-
-
-			-- having count(*) filter (where is_yes) >= 3 and count(*) filter (where not is_yes) = 0
-			-- if not after_3_hours and yes_count >= 3 and no_count <= 1
-		from vote
-		where vote.proposal_id = proposal_id and vote_time < (proposed_time + interval '3 days')
+		from proposal_vote
+		where proposal_vote.proposal_id = proposal_id
 	)
 	select
 		case
-			when before_3_hour_yes_count >= 3 and before_3_hour_no_count <= 1 then 'PASSED'
-
+			-- If we're before 3 hours, then if there are 2 or more downvotes, the proposal is rejected early.
 			when current_timestamp < (proposed_time + interval '3 hours') then
-				case when no_count > 1 then 'REJECTED' default 'ACTIVE' end
+				case when no_count >= 2 then 'REJECTED' else 'ACTIVE' end
 
-			when current_timestamp < (proposed_time + interval '3 days') then
-				case when no_count > 0 then 'REJECTED' default 'ACTIVE' end
+			-- If we're after 3 hours, then
+			when current_timestamp < (proposed_time + interval '3 days') then case
+				-- if there are at least 3 upvotes and at most 1 downvote, the proposal is accepted early.
+				when yes_count >= 3 and no_count <= 1 then 'ACCEPTED'
+				-- if there is 2 or more downvotes, the proposal is rejected early.
+				when no_count >= 2 then 'REJECTED'
+				else 'ACTIVE'
+			end
 
-			when current_timestamp < (proposed_time + interval '3 days') and no_count = 0 then 'ACTIVE'
-			when yes_count >= 1 and no_count = 0 then 'PASSED'
-			when no_count > 0 then 'REJECTED'
-			default 'ACTIVE'
+			-- If we're after 3 days, then finally the proposal is accepted if there is at least 1 upvote and 0 downvotes, and rejected otherwise
+			else
+				case when yes_count >= 1 and no_count = 0 then 'ACCEPTED' else 'REJECTED' end
 		end into new_status
 	from aggregated_proposal;
 
@@ -71,68 +64,17 @@ begin
 end;
 $$ language plpgsql;
 
+create function cast_vote(p_proposal_id uuid, p_member_id uuid, p_is_yes bool) returns void as $$
+	insert into proposal_vote (proposal_id, member_id, is_yes)
+	values (p_proposal_id, p_member_id, p_is_yes)
+	on conflict (proposal_id, member_id)
+	do update set is_yes = excluded.is_yes, vote_time = current_timestamp;
 
-create or replace function vote_yes_or_no(vote yes_or_no) returns void as $$
-declare
-	winning_candidate_id uuid;
-begin
-	insert into yes_or_no (member_id, candidate_id, is_yes)
-	values (vote.member_id, vote.candidate_id, vote.is_yes)
-	on conflict (member_id, candidate_id)
-	do update set is_yes = excluded.is_yes;
-
-	select candidate_id into winning_candidate_id
-	from yes_or_no
-	where candidate_id = vote.candidate_id
-	group by candidate_id
-	having count(*) filter (where is_yes) >= 3 and count(*) filter (where not is_yes) = 0;
-
-	if winning_candidate_id is null then
-		return;
-	end if;
-
-	delete from text_constitution;
-	insert into text_constitution ("text")
-	select "text" from candidate_constitution where id = winning_candidate_id;
-
-	delete from yes_or_no;
-	delete from candidate_constitution;
-end;
-$$ language plpgsql;
-
-
+	select update_proposal_status(p_proposal_id);
+$$ language sql;
 
 
 -- insert into member (id, "name") values
 -- 	(gen_random_uuid(), 'alice'),
 -- 	(gen_random_uuid(), 'bob'),
 -- 	(gen_random_uuid(), 'carol');
-
--- insert into candidate_constitution (id, nominator_id, "text")
--- select
--- 	gen_random_uuid(),
--- 	(select id from member where "name" = 'alice'),
--- 	'this is a test constitution';
-
--- select vote_yes_or_no((member.id, candidate.id, true)::yes_or_no)
--- from member
--- cross join candidate_constitution as candidate
--- where member."name" = 'alice';
-
--- select * from text_constitution;
-
-
--- select vote_yes_or_no((member.id, candidate.id, true)::yes_or_no)
--- from member
--- cross join candidate_constitution as candidate
--- where member."name" = 'bob';
-
--- select * from text_constitution;
-
-
--- select vote_yes_or_no((member.id, candidate.id, true)::yes_or_no)
--- from member
--- cross join candidate_constitution as candidate
--- where member."name" = 'carol';
-
--- select * from text_constitution;
