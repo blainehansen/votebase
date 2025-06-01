@@ -4,6 +4,7 @@ mod test;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use deno_core::{v8, OpState};
 use uuid::Uuid;
+use votebase_queries::types::votebase_catalog::GranularityEnum;
 use crate::{queries, PgConfig, PgPool, PgClient, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role, postgres};
 
 #[derive(thiserror::Error, Debug)]
@@ -147,6 +148,7 @@ fn demand_external_allowed(state: &RefCell<OpState>) -> Result<(), deno_error::J
 	Ok(())
 }
 
+// op_fetch: (url: string) => Promise<string>,
 #[deno_core::op2(async)]
 #[string]
 async fn op_fetch(
@@ -315,6 +317,8 @@ fn convert_col(row: &postgres::Row, ret: &PgTypeHint, i: usize) -> Result<serde_
 // 	v8::String::new(scope, "wassup").unwrap().into()
 // }
 
+// op_sql_fetch_all: <P extends ParamHint[], R extends FullRetHint>
+// 	(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
 #[deno_core::op2(async)]
 #[serde]
 async fn op_sql_fetch_all(
@@ -344,6 +348,8 @@ async fn op_sql_fetch_all(
 	Ok(rows)
 }
 
+// op_sql_fetch_one: <P extends ParamHint[], R extends FullRetHint>
+// 	(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>>,
 #[deno_core::op2(async)]
 #[serde]
 async fn op_sql_fetch_one(
@@ -378,6 +384,8 @@ async fn op_sql_fetch_one(
 	first.ok_or_else(|| deno_error::JsErrorBox::generic("query returned no rows".to_string()))
 }
 
+// op_sql_fetch_optional: <P extends ParamHint[], R extends FullRetHint>
+// 	(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R> | null>,
 #[deno_core::op2(async)]
 #[serde]
 async fn op_sql_fetch_optional(
@@ -412,6 +420,8 @@ async fn op_sql_fetch_optional(
 	Ok(first)
 }
 
+// op_sql_execute_statement: <P extends ParamHint[]>
+// 	(sql: string, params: ActualParams<P>, hints: P) => Promise<number>,
 #[deno_core::op2(async)]
 async fn op_sql_execute_statement(
 	state: Rc<RefCell<OpState>>,
@@ -437,6 +447,7 @@ async fn op_sql_execute_statement(
 	Ok(rows_affected)
 }
 
+// op_sql_execute_statements: (sql: string) => Promise<void>,
 #[deno_core::op2(async)]
 async fn op_sql_execute_statements(
 	state: Rc<RefCell<OpState>>,
@@ -465,6 +476,7 @@ pub enum Fn {
 	View(v8::Global<v8::Function>),
 }
 
+// op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T, userId: string | null) => Promise<string | void>) => void,
 #[deno_core::op2]
 fn op_register_fn(
 	#[state] fn_map: &mut FnMap,
@@ -495,6 +507,7 @@ fn op_register_fn(
 	}
 }
 
+// // op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
 #[deno_core::op2(async)]
 #[string]
 async fn op_create_recurring_action(
@@ -526,6 +539,7 @@ async fn op_create_recurring_action(
 	Ok(action.id.to_string())
 }
 
+// op_remove_recurring_action: (uuid: string) => Promise<void>,
 #[deno_core::op2(async)]
 #[string]
 async fn op_remove_recurring_action(
@@ -544,6 +558,7 @@ async fn op_remove_recurring_action(
 }
 
 
+// op_schedule_action: (description: string, scheduled_time: string, action_name: string, action_arg: JsonValue) => Promise<string>,
 #[deno_core::op2(async)]
 #[string]
 async fn op_schedule_action(
@@ -573,6 +588,7 @@ async fn op_schedule_action(
 	Ok(id.to_string())
 }
 
+// op_unschedule_action: (uuid: string) => Promise<void>,
 #[deno_core::op2(async)]
 #[string]
 async fn op_unschedule_action(
@@ -590,6 +606,7 @@ async fn op_unschedule_action(
 	Ok(())
 }
 
+// op_enroll_member: (email: string) => Promise<string>,
 #[deno_core::op2(async)]
 #[string]
 async fn op_enroll_member(
@@ -610,6 +627,7 @@ async fn op_enroll_member(
 	Ok(id.to_string())
 }
 
+// op_remove_member_by_email: (email: string) => Promise<void>,
 #[deno_core::op2(async)]
 async fn op_remove_member_by_email(
 	state: Rc<RefCell<OpState>>,
@@ -627,6 +645,7 @@ async fn op_remove_member_by_email(
 
 	Ok(())
 }
+// op_remove_member_by_uuid: (uuid: string) => Promise<void>,
 #[deno_core::op2(async)]
 async fn op_remove_member_by_uuid(
 	state: Rc<RefCell<OpState>>,
@@ -645,18 +664,56 @@ async fn op_remove_member_by_uuid(
 	Ok(())
 }
 
+// TODO op_add_members_to_ruleset: (full_path: string, uuids: string[]) => Promise<void>,
+// TODO op_add_members_to_ruleset_by_condition: (full_path: string, condition: string) => Promise<void>,
+// TODO op_remove_members_from_ruleset: (full_path: string, uuids: string[]) => Promise<void>,
+
 #[derive(Debug, serde::Deserialize)]
-struct CandidateSelfReplacement {
+struct ConcreteRuleset {
 	code: String,
 	db_schema: String,
 	db_migration: String,
+
+	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
+	// fns: { [fn_name: string]: Fn<JsonValue> },
+
+	static_children: HashMap<String, ConcreteRuleset>,
+
+	static_recurring_actions: Vec<StaticRecurringAction>,
 }
 
+#[derive(Debug,serde::Deserialize)]
+enum KeepOrReplace<T> {
+	Keep,
+	Replace(T),
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CandidateRuleset {
+	code: String,
+	db_schema: String,
+	db_migration: String,
+
+	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
+	// fns: { [fn_name: string]: Fn<JsonValue> },
+
+	static_children: HashMap<String, KeepOrReplace<CandidateRuleset>>,
+
+	static_recurring_actions: Vec<StaticRecurringAction>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct StaticRecurringAction {
+	description: String, start: chrono::DateTime<chrono::Utc>, recurrence_granularity: GranularityEnum, recurrence_multiplier: i16,
+	action_name: String, action_arg: serde_json::Value,
+}
+
+// op_propose_self_replacement: (candidate: CandidateRuleset) => Promise<string>,
 #[deno_core::op2(async, reentrant)]
 #[string]
 async fn op_propose_self_replacement(
 	state: Rc<RefCell<OpState>>,
-	#[serde] candidate: CandidateSelfReplacement,
+	#[serde] candidate: CandidateRuleset,
 ) -> Result<String, deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
@@ -664,6 +721,7 @@ async fn op_propose_self_replacement(
 	let server_pg_config = deno_core::_ops::opstate_borrow::<ServerPgConfig>(&state);
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
 	let server_pg_client = server_role_pool.get().await.map_err(run_err)?;
+	// TODO do this for real
 	let (actions, views) = validate_candidate(current_full_path, &server_pg_config.0, &server_pg_client, &candidate).await?;
 
 	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
@@ -675,13 +733,47 @@ async fn op_propose_self_replacement(
 	Ok(candidate_uuid.to_string())
 }
 
+// op_create_child_ruleset: (
+// 	name: string, initial: ConcreteRuleset,
+// 	// tables in the parent ruleset that the view role of the child ruleset are granted select and the migrator role is granted references to
+// 	allowed_view_tables: string[],
+// 	// functions in the parent ruleset that the action role of the child ruleset are granted execute
+// 	allowed_action_functions: string[],
+// ) => Promise<string>,
+#[deno_core::op2(async, reentrant)]
+#[string]
+async fn op_create_child_ruleset(
+	state: Rc<RefCell<OpState>>,
+	#[string] name: String,
+	#[serde] initial: ConcreteRuleset,
+	#[serde] allowed_view_tables: Vec<String>,
+	#[serde] allowed_action_functions: Vec<String>,
+) -> String {
+	unimplemented!()
+}
+
+// op_delete_child_ruleset: (name: string) => Promise<void>,
+#[deno_core::op2(async, reentrant)]
+#[string]
+async fn op_delete_child_ruleset(
+	state: Rc<RefCell<OpState>>,
+	#[string] name: String,
+) -> String {
+	unimplemented!()
+}
+
+// // this is just the child version of op_propose_self_replacement
+// op_propose_child_replacement: (name: string, candidate: CandidateRuleset) => Promise<string>,
+// // the table with candidate_id already has the name and full_path etc to know where it's headed
+// op_replace_child: (candidate_id: string) => Promise<void>,
+
 // TODO all of this makes me nervous for performance. the repeated connecting over and over
 // it would be nice to have a separate database server for this kind of analysis?
 async fn validate_candidate(
 	current_full_path: &str,
 	server_pg_config: &PgConfig,
 	server_pg_client: &PgClient,
-	candidate: &CandidateSelfReplacement,
+	candidate: &CandidateRuleset,
 ) -> Result<(Vec<String>, Vec<String>), deno_error::JsErrorBox> {
 	let mut inner = Runtime::new(&candidate.code).await.map_err(|e| js_err(e.root_cause()))?;
 

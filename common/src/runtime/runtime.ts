@@ -56,7 +56,13 @@ const { core } = (globalThis as any).Deno as { core: {
 
 		// these two create and destroy rulesets entirely. they cannot create or destroy static children
 		// this initial ruleset is expected to have db_schema == db_migration, because this ruleset didn't previously exist, there's nothing to migrate
-		op_create_child_ruleset: (name: string, initial: ConcreteRuleset, allowed_action_functions: string[]) => Promise<string>,
+		op_create_child_ruleset: (
+			name: string, initial: ConcreteRuleset,
+			// tables in the parent ruleset that the view role of the child ruleset are granted select and the migrator role is granted references to
+			allowed_view_tables: string[],
+			// functions in the parent ruleset that the action role of the child ruleset are granted execute
+			allowed_action_functions: string[],
+		) => Promise<string>,
 		// all of the children, static and dynamic, are deleted here as well
 		op_delete_child_ruleset: (name: string) => Promise<void>,
 
