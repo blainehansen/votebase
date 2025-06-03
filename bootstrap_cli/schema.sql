@@ -33,6 +33,7 @@ alter default privileges in schema votebase_catalog grant all privileges on type
 
 create extension if not exists pgcrypto with schema votebase_catalog;
 
+
 create table votebase_catalog.ruleset (
 	full_path text primary key generated always as (case
 		when parent_full_path is null then "name"

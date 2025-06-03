@@ -29,4 +29,5 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 
 [build-dependencies]
 deno_core = { workspace = true }
+deno_error = { workspace = true }
 votebase_transpile = { path = "../transpile" }

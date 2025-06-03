@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 deno_core = { workspace = true }
 deno_error = { workspace = true }
+thiserror = { workspace = true }
 deno_ast = { version = "0.44", features = ["transpiling"] }
