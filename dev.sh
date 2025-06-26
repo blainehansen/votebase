@@ -8,10 +8,10 @@
 
 # podman build -t uv-with-python .
 podman run --rm -it \
-  -v uv-cache:/root/.cache/uv \
-  -v $(pwd):/workspace \
-  uv-with-python \
-  tool run -p 3.11 --with psycopg2-binary --with setuptools migra --help
+	-v uv-cache:/root/.cache/uv \
+	-v $(pwd):/workspace \
+	uv-with-python \
+	tool run -p 3.11 --with psycopg2-binary --with setuptools migra --help
 
 
 # podman run --rm -it \
@@ -28,3 +28,13 @@ podman run --rm -it \
 # 	tool run -p 3.11 --with psycopg2-binary --with setuptools "migra --help"
 
 	# sh -c "uv tool run "
+
+
+# https://hub.docker.com/r/mgoltzsche/podman
+# docker run --privileged mgoltzsche/podman:minimal docker run alpine:latest echo hello from nested container
+
+
+# podman run --privileged quay.io/podman/stable podman run ubi8 echo hello
+
+
+# podman run --privileged -v ./mycontainers:/var/lib/containers quay.io/podman/stable podman run ubi8 echo hello
