@@ -1,3 +1,12 @@
+What if the role names were all cryptographically secure?
+Reset role makes the more annoying, but here me out
+We have four main roles and pools:
+One for server operations which is special
+Three for views, actions, and migrations, each of each is a "shell" role that has no powers to do anything but switch to those roles underneath. Then security is gained by making the role names underneath cryptographically secure, meaning
+
+
+
+
 https://secutils.dev/docs/blog/rust-application-with-js-extensions
 https://deno.com/blog/roll-your-own-javascript-runtime
 
