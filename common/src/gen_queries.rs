@@ -157,12 +157,11 @@ fn pg_type_hint(typ: &postgres::types::Type, is_not_null: bool) -> String {
 			ts_hint.to_string()
 		},
 		postgres::types::Kind::Composite(fields) => {
-			let mut ts_hints = vec![];
-			for field in fields {
+			let ts_hints = fields.iter().map(|field| {
 				let field_name = field.name();
 				let ts_hint = pg_type_hint(field.type_(), false);
-				ts_hints.push(format!("{field_name}: {ts_hint}"));
-			}
+				format!("{field_name}: {ts_hint}")
+			});
 			format!("{{ {} }}", ts_hints.join(", "))
 		},
 		_ => panic!("don't know what to do with pg type: {}", typ),
