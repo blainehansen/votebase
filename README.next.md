@@ -2,13 +2,13 @@
 
 Votebase is a *governable server*. What is a governable server and why would you want one?
 
-A server is just a computer program that can send and receive messages, and can save data in some kind of database. They're used to run things like reddit, bluesky, kickstarter, etc.
+A server is just a computer program that can send and receive messages, and can save data in some kind of database. Servers are behind the operation of every website on the internet.
 
 Normal servers are controlled by *admins*, some users that actually run the server and have complete control of what it does: what messages it can receive, what messages it sends in response, and what data it holds. A server admin can delete data or change the code of the server in any way they want.
 
 [Many smart people]() have pointed out that since these servers often create *digital social spaces* or community tools, it would be nice if they could be controlled [by the people who use them](). This kind of democratic control could prevent the kind of [platform decay]() that has become common.
 
-But how can groups control these kinds of servers? Servers are often complicated to update, and you would need to create some legal structure to delegate someone to make the code changes to the server you want made.
+But how can groups control a server? Servers are often complicated to update, and you would need to create some legal structure to delegate someone to make the code changes to the server you want made.
 
 
 
@@ -45,8 +45,10 @@ These Members interact with **Rulesets**, which are just chunks of code, possibl
 A Ruleset can specify a few things that define how it works:
 
 - The **Data Schema** of the Ruleset is what data it can store and where, as well as whatever "built-in functions" the data layer has access to. This layer uses [`postgres sql`](), and is defined in a `schema.sql` file when writing your own Ruleset.
-- The **Actions** of the Ruleset, which are the messages Members can send *to* the Ruleset to change the data stored inside it.
-- The **Views** of the Ruleset, which are the messages Members receive *from* the Ruleset to see what its current state is.
+- The available **Actions** of the Ruleset, which are the messages Members can send *to* the Ruleset to change the data stored inside it.
+- The available **Views** of the Ruleset, which are the messages Members receive *from* the Ruleset to see what its current state is.
+- The **Events** of the Ruleset, which are times when something should happen (specifically when a particular Action should be called). Events can be dynamically created by Actions (either recurring or one-off), and also *static* Events can be specified in the Ruleset itself (only recurring). A recurring Event is defined by a `start date` and a `recurrence duration` (which for now are limited to an int with a unit, such as days or months or years, and can't do things like "last thursday in november"), a one-off event is defined only by a `date`.
+- The **Children** of the Ruleset, which are other Rulesets that can be replaced or destroyed by the parent. Children can be dynamically created by Actions, and *static* Children can be specified in the Ruleset itself.
 
 Actions and Views are both written in [Typescript](), and have access to a special Votebase runtime [built using `deno_core`](https://deno.com/blog/roll-your-own-javascript-runtime). They are defined in the `ruleset.ts` file when writing your own Ruleset.
 
@@ -103,7 +105,7 @@ Rulesets form a [tree](https://en.wikipedia.org/wiki/Tree_(abstract_data_type)),
 
 Rulesets can have *static* children, meaning children that are specified up front in the Ruleset itself, or *dynamic* children that are created using runtime functions. Dynamic children can be created and destroyed according to the code in the Ruleset, whereas static children always exist.
 
-A parent Ruleset is given the power to delete a child Ruleset, or to replace it. Importantly this power is only actually *exercised* if the Ruleset is written to actually ever *use* this power.
+A parent Ruleset is given the power to delete a child Ruleset, or to replace it. Importantly this power is only actually *exercised* if the Ruleset is written to actually ever *use* this power. If a Ruleset is written in such a way that it will never actually *use* its ability to delete a child Ruleset, then it is as if it didn't have that power at all.
 
 Why have static children? It allows Rulesets to specify different, possibly easier, rules for changing these children rulesets than for changing the parent Ruleset itself. The reason for the tree is to allow subdivision of decisions, and subsidiarity.
 
@@ -188,11 +190,15 @@ When type checking an abstract Ruleset:
 
 When type checking a concrete Ruleset:
 
-- the real server schema this will drop into is put into the local db.
+- the real server schema this will drop into is put into the local db, importantly only the "exposed" version of it that is simplified and so much smaller
 - the values in `vars.json` are templated into the actual sql, with errors happening if things don't make sense at this point with the way `vars.json` aligns with the real previously input server schema. also query preparation occurs.
 - typescript type checking occurs.
 
 When the server gives out this "preparatory" schema, perhaps it only gives the exported objects? That way it's much smaller and more amenable to inspection.
+
+
+
+
 
 
 ### Design a new Ruleset from scratch
@@ -204,7 +210,8 @@ Rulesets have these files:
 - `queries` **optional**: a directory where you can place sql files that will be made available as typesafe functions for your Ruleset to use. You can write a single query, a single statement, or even multiple statements separated by `;`. You can specify [query parameters]
 - `ruleset.json`: specifies:
   - `exports: string[]` **optional**: A list of table and function names that can be queried/referenced and called (respectively) by external Rulesets. (Do this with sql comments or something instead?)
-  - `requires: { [type/table/function name]: signature }` **optional**: A mapping of abstract table/function names and the signature expected. All the table/function names can be referenced as `$table/function name` in your `schema.sql` and `queries` files. These values are then fulfilled by a `vars.json` file when using `compile`. The real tables/functions in `vars.json` don't have to match perfectly, but merely must be "assignable" from a type perspective.
+  - `requires: { [type/table/function name]: signature }` **optional**: A mapping of abstract table/function names and the signature expected. All the table/function names can be referenced as `$table/function name` in your `schema.sql` and `queries` files. These values are then fulfilled by a `vars.json` file when using `compile`. The real tables/functions in `vars.json` don't have to match perfectly, but merely must be "assignable" from a type perspective. (Blaine it's likely this would need to be separated into the different use cases for permissions reasons, as in `references`, `reads`, `calls_readonly`, `calls_mut` or something. this also allows us to check more granularly that these things are even possible given the finally vars object)
+  - `member attributes`? this is the place where the declarative statements for new member attributes that are being added go?
 
 ### Use a template Ruleset
 
