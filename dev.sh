@@ -6,6 +6,17 @@
 # 	dev
 
 
+podman run --name clorinde_postgres -p 5432:5432 \
+	-e POSTGRES_DB=dev_db -e POSTGRES_USER=dev_admin_user -e POSTGRES_PASSWORD=dev_admin_password \
+	docker.io/library/postgres:latest
+
+PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c 'select 1' | cat
+
+podman exec clorinde_postgres pg_isready
+
+podman stop clorinde_postgres; podman rm -v clorinde_postgres
+
+
 # podman build -t uv-with-python .
 podman run --rm -it \
 	-v uv-cache:/root/.cache/uv \

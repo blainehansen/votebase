@@ -7,6 +7,7 @@ members = [
 	"bootstrap_cli",
 	"server",
 	"queries",
+	"container_test",
 ]
 
 [workspace.dependencies]

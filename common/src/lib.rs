@@ -1,7 +1,6 @@
 #[macro_use] extern crate log;
 
 pub mod runtime;
-pub mod container;
 pub mod gen_queries;
 pub mod gen_ts;
 
