@@ -1,6 +1,21 @@
 # Votebase
 
-Votebase is a *governable server*. What is a governable server and why would you want one?
+explanation and summary and philosophy, links to other things
+main concepts
+
+guide for hosting your own server (bootstrap cli)
+guide for creating a ruleset
+
+guide for interacting with a server?
+couple different ways we could go about this:
+- the way you were planning, just allowing views to be arbitrary html and therefore apps
+- a cli focused way (perhaps at this early stage?)
+- a way based on baked in ui concepts? probably not, too rigid
+
+
+
+
+Votebase is a *governable server*. What is a governable server and why would you want one? (TODO maybe constitutional server?)
 
 A server is just a computer program that can send and receive messages, and can save data in some kind of database. Servers are behind the operation of every website on the internet.
 
@@ -172,21 +187,125 @@ We can actually stop *parent* Rulesets from referencing their childrens' anythin
 
 
 
+---
 
-## Designing and submitting a Ruleset
+# Guides
 
-You can use the `votebase` [command-line tool]() to create and package your Ruleset.
+## Creating your own Ruleset
 
-`dev` command prepares all the `queries` into `queries.ts`, erroring if something is wrong.
-`check` type checks the Ruleset, keeping all abstract table/function names abstract. More for checking internal consistency, mostly to ensure a templated Ruleset is correct.
-`compile` type checks the Ruleset against the real intended server schema, using the `vars.json` file specifying any templated values if necessary, then places everything into a `_compiled.json` file ready to be given as a Candidate.
+Creating your own Ruleset will usually pass through all the commands of the `votebase` cli, so I'll explain them in order.
 
+### `init`
 
+`init` sets up a directory with the skeleton of a new Ruleset:
+
+```bash
+votebase init some_ruleset_directory
+```
+
+which creates these files:
+
+- `ruleset.ts`: specifies the actual code of the Ruleset, which should call `votebase.Action` and `votebase.View` to register the Actions and Views. Empty examples of both kinds are given.
+- `schema.sql` **optional**: specifies the data schema of the Ruleset, using postgres sql. If you don't need a schema just delete this file, and it will be assumed your Ruleset will store no data of its own.
+- `queries` **optional**: a directory where you can place sql files that will be made available as Typescript functions for your Ruleset to use. You can write a single query, a single statement, or even multiple statements separated by `;`. You can specify [query parameters]() for these queries that will be filled in by using the form `:parameter_name` instead of `$1` etc, and these parameters will be arguments to the Typescript function.
+- `ruleset.json` **optional**: information about the ruleset that isn't captured by the above files, which might not be necessary for your Ruleset. Must have the format implied by this Rust struct:
+
+```rust
+/// The format for the `ruleset.json` file that describes a reusable Ruleset.
+struct RulesetJson {
+  /// A mapping of "var" names to objects that must be available to this Ruleset, which can be tables or types or functions.
+  requires: HashMap<String, RequireDescription>,
+  member_attributes: HashMap<String, MemberAttribute>,
+  // - `member attributes`? this is the place where the declarative statements for new member attributes that are being added go?
+}
+
+enum RequireDescription {
+  // https://www.postgresql.org/docs/current/ddl-priv.html#DDL-PRIV-SELECT
+  // https://www.postgresql.org/docs/current/ddl-priv.html#DDL-PRIV-REFERENCES
+  Table { queryable: bool, referenceable: bool, structure: TableDescription },
+  // https://www.postgresql.org/docs/current/ddl-priv.html#DDL-PRIV-USAGE
+  Type { structure: TypeDescription },
+  // https://www.postgresql.org/docs/current/ddl-priv.html#DDL-PRIV-EXECUTE
+  QueryFunction { structure: FunctionDescription },
+  ActionFunction { structure: FunctionDescription },
+}
+
+enum MemberAttribute {
+  Stored { typ: PgType },
+  Computed { computation_sql: String },
+}
+
+struct TableDescription {
+  columns: Vec<PgType>,
+  /// A list of lists of columns, each list representing a unique constraint across some number of columns.
+  unique_constraints: Vec<Vec<String>>,
+}
+
+struct PgType {
+  typ: Typ,
+  nullable: bool,
+}
+```
+
+### `dev`
+
+The `dev` command prepares all the `queries` into `queries.ts`, erroring if something is wrong. This stays at the "abstract" level, so it doesn't need a concrete server to compare against.
+
+This implies a certain amount of checking that the schema of your Ruleset makes sense.
+
+```bash
+votebase dev
+```
+
+### `check`
+
+`check` is similarly abstract, so it type checks the Ruleset, keeping all abstract table/function names abstract. More for checking internal consistency, mostly to ensure a templated Ruleset is correct. This also checks the schema of your Ruleset makes sense.
+
+```bash
+votebase check
+```
+
+<!-- https://www.postgresql.org/docs/current/app-pgrestore.html -->
+
+<!--
 When type checking an abstract Ruleset:
 
 - required tables/functions are given random "real" names and merely declared to exist (created in proper order if the tables rely on each other), templated into the actual sql, and then put into a local postgres db starting using a podman internal process
 - the sql checking and query preparation process occurs
 - typescript type checking occurs, using a podman internal process
+ -->
+
+---
+
+### `bundle`
+
+`bundle` type checks the Ruleset against the real intended server schema, using the `vars.json` file specifying any templated values if necessary, then places everything into a `_bundled.json` file ready to be given as a Candidate.
+
+```rust
+struct PackagedRulesetCandidate {
+  /// a description of the actual objects this candidate references from other Rulesets
+  uses:
+}
+```
+
+
+```rust
+/// The manifest info that is stored in a bundled Ruleset
+struct RulesetManifest {
+  // maybe the idea of exports is silly? perhaps the requires system is enough, since someone can just bundle their ruleset with whatever objects they want, and whether or not those requirements is acceptable is a decision made when either adopting or not adopting that ruleset!
+  // this would imply that when type checking a ruleset, only the objects actually implicated by a requires would be pulled forward into the schema put into the database during the checking phase, and a simplified version of them?
+  exports: String[],
+}
+```
+
+
+
+
+
+
+
+
+
 
 When type checking a concrete Ruleset:
 
@@ -199,25 +318,90 @@ When the server gives out this "preparatory" schema, perhaps it only gives the e
 
 
 
+## Providing a Ruleset to an Action
 
+Rulesets can be arbitrary code that can accept any input, but the idea of a Packaged Ruleset Candidate is a reusable concept that Ruleset Actions can accept in a standard way. The `votebase` cli can be used to bundle a Ruleset so it can be provided to an Action.
 
-### Design a new Ruleset from scratch
+You need to provide the directory the Ruleset code is located in (can be the current directory `.`), and a `vars.json` file which at least includes a `name` for the final bundled Ruleset.
 
-Rulesets have these files:
+```bash
+# writes to my_ruleset_directory.json directly next to my_ruleset_directory
+votebase bundle --server https://my.server --ruleset my_ruleset_directory --vars my_vars.json
+```
 
-- `ruleset.ts`: specifies the actual code of the Ruleset, which should call `votebase.Action` and `votebase.View` to register the Actions and Views.
-- `schema.sql` **optional**: specifies the data schema of the Ruleset, using postgres sql. If you don't have this file, it will be assumed your Ruleset will store no data of its own, and so the schema will simply be blank.
-- `queries` **optional**: a directory where you can place sql files that will be made available as typesafe functions for your Ruleset to use. You can write a single query, a single statement, or even multiple statements separated by `;`. You can specify [query parameters]
-- `ruleset.json`: specifies:
-  - `exports: string[]` **optional**: A list of table and function names that can be queried/referenced and called (respectively) by external Rulesets. (Do this with sql comments or something instead?)
-  - `requires: { [type/table/function name]: signature }` **optional**: A mapping of abstract table/function names and the signature expected. All the table/function names can be referenced as `$table/function name` in your `schema.sql` and `queries` files. These values are then fulfilled by a `vars.json` file when using `compile`. The real tables/functions in `vars.json` don't have to match perfectly, but merely must be "assignable" from a type perspective. (Blaine it's likely this would need to be separated into the different use cases for permissions reasons, as in `references`, `reads`, `calls_readonly`, `calls_mut` or something. this also allows us to check more granularly that these things are even possible given the finally vars object)
-  - `member attributes`? this is the place where the declarative statements for new member attributes that are being added go?
+This `ruleset.json` file can now be provided to the [file upload ruleset input component]() provided in the votebase standard library.
 
-### Use a template Ruleset
+The `vars.json` file should match the format implied by this Rust struct:
 
-- `vars.json`: specifies the values for templated values in the ruleset. This can be used to specify:
-  - `name: string`: The name of the Ruleset, which must be a valid Ruleset name consisting of only lower case letters and the `_` character (?). This is put in `vars.json` because the name must be unique in context in the real Votebase server.
-  - `params: { [type/table/function name]: real name }`: specifications of the types/tables/functions in the real server that fill in for the `requires`.
+```rust
+struct RulesetVars {
+  /// The name of the bundled Ruleset, which must be a valid Ruleset name consisting of only lower case letters and the `_` character. The name must be unique in context in the real Votebase server.
+  name: String,
+  // TODO
+  params: Option<HashMap<String, String>>,
+}
+```
 
+You can call bundle with different output options.
+
+```bash
+# accepts a flag --output that writes the ruleset to a different filename
+votebase bundle --server https://my.server --ruleset my_ruleset_directory --vars my_vars.json --output my_ruleset_1.json
+# accepts a flag --output-stdout that outputs the Packaged Ruleset to stdout
+votebase bundle --server https://my.server --ruleset my_ruleset_directory --vars my_vars.json --output-stdout
+```
 
 ## Starting and maintaining a Votebase server
+
+The votebase server itself is just a [docker image](TODO location of pullable image), so any place you can get a docker image running and visible to the internet, you're good to go. It needs access to a Postgres database.
+
+First you need to set up a postgres database, which you can do any way you like. Once you've done so, follow these steps:
+
+<!-- TODO blaine it would be cool to make the bootstrap cli ask for all these things if they aren't provided, so power users can provide a connection url but otherwise it asks for them -->
+
+```bash
+# TODO correct?
+cargo install votebase_admin_cli
+
+YOUR_ADMIN_DB_USERNAME=<fill in here>
+YOUR_ADMIN_DB_PASSWORD=<fill in here>
+# these two should be the overall admin username/password for your postgres database. This username/password will *not* be the one used by the votebase server! This is the only place you should ever need to use your overall admin username/password!
+DB_HOST=<fill in here> # determined by your postgres database hosting situation
+DB_PORT=<fill in here> # determined by your postgres database hosting situation
+DB_NAME=<fill in here> # chosen by you! you must have already created this database
+
+VOTEBASE_SERVER_PASSWORD=$(votebase_admin_cli bootstrap "postgres://$YOUR_ADMIN_DB_USERNAME:$YOUR_ADMIN_DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME")
+echo $VOTEBASE_SERVER_PASSWORD
+```
+
+The `VOTEBASE_SERVER_PASSWORD` above can now be provided to the docker image of Votebase itself.
+
+Here are all the environment variables you need to provide to the server. `DB_HOST`, `DB_PORT`, `DB_DATABASE` should all be the same as those above.
+
+- `DB_HOST` and `DB_PORT`: host and port your postgres server is running on
+- `DB_NAME`: the database name the server should use, which needs to have already been created
+- `VOTEBASE_SERVER_PASSWORD`: the password the server itself should use to access the database, representing its admin privileges
+- `VOTEBASE_HOST` and `VOTEBASE_PORT`: the host and port the server itself should listen on, (TODO blaine this should probably just always be 0.0.0.0 and 80/443 or whatever right?)
+- `DATABASE_MAX_CONNECTIONS`: (optional) the max number of database connections the server should add to its pool, defaults to 5
+
+Above when you called `votebase_admin_cli bootstrap`, a few things happened:
+
+- `DB_NAME` was loaded with the overall votebase database schema.
+- A user `votebase_server_$DB_NAME` was created to act as the user for the votebase server itself.
+- A random password was generated and assigned to the above `votebase_server_$DB_NAME`.
+- **The blank "accept any" Ruleset was loaded into the database.** This ["accept any"](TODO location of accept-any definition) is a minimal Ruleset that literally does nothing other than accept the first Ruleset proposed to the `__insert_initial` Action.
+
+
+
+TODO the accept any thing makes sense for an *internal* tool for `votebase.org` that defers a real Ruleset, but honestly it probably makes way more sense to just provide the first initial Ruleset immediately? Even for an internal tool, the web interface should accept an initial and pipe it into the database.
+
+<!--
+## (Someday) Using votebase.org to create a new Polity
+
+votebase.org/polity/new
+
+click the button
+give payment info, and even a means for splitting costs across members
+give your polity a name
+provide an initial Ruleset to be loaded
+ -->

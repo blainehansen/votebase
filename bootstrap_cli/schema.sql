@@ -1,19 +1,19 @@
 -- this file is meant to be run by an admin role at polity creation time
 -- this needs the ability to create roles to create new rulesets and their sub roles
 -- and to create databases to do the migration checking
-create role "votebase_server" with createrole createdb nosuperuser noinherit login password '{votebase_server_password}';
+create role "votebase_server_{db_name}" with createrole createdb nosuperuser noinherit login password '{votebase_server_password}';
 
 alter default privileges revoke all privileges on tables from PUBLIC;
 alter default privileges revoke all privileges on sequences from PUBLIC;
 alter default privileges revoke all privileges on functions from PUBLIC;
 alter default privileges revoke all privileges on types from PUBLIC;
 alter default privileges revoke all privileges on schemas from PUBLIC;
-revoke all privileges on database "{db_database}" from PUBLIC;
-grant connect on database "{db_database}" to PUBLIC;
+revoke all privileges on database "{db_name}" from PUBLIC;
+grant connect on database "{db_name}" to PUBLIC;
 revoke all privileges on parameter search_path from PUBLIC;
 
 -- CREATE | CONNECT | TEMPORARY | TEMP
-grant all privileges on database "{db_database}" to "votebase_server";
+grant all privileges on database "{db_name}" to "votebase_server";
 -- SET | ALTER SYSTEM
 grant all privileges on parameter search_path to "votebase_server";
 -- USAGE | CREATE

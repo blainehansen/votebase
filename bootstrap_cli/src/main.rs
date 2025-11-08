@@ -23,8 +23,8 @@ async fn main() -> Result<(), AnyError> {
 		base64::prelude::BASE64_STANDARD.encode(random_bytes)
 	};
 
-	let db_database = config.get_dbname().unwrap().to_owned();
-	let schema_sql = format!(include_str!("../schema.sql"), db_database=db_database, votebase_server_password=votebase_server_password);
+	let db_name = config.get_dbname().unwrap().to_owned();
+	let schema_sql = format!(include_str!("../schema.sql"), db_name=db_name, votebase_server_password=votebase_server_password);
 	client.batch_execute(&schema_sql).await?;
 
 	votebase_common::runtime::create_ruleset(

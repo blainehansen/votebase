@@ -22,24 +22,24 @@ async fn main() -> std::io::Result<()> {
 	let db_host = std::env::var("DB_HOST").expect("DB_HOST must be set");
 
 	#[cfg(debug_assertions)]
-	let db_database = std::env::var("DB_DATABASE").unwrap_or("dev_db".to_string());
+	let db_name = std::env::var("DB_NAME").unwrap_or("dev_db".to_string());
 	#[cfg(not(debug_assertions))]
-	let db_database = std::env::var("DB_DATABASE").expect("DB_DATABASE must be set");
+	let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
 
-	let db_votebase_user = "votebase_server";
+	let db_votebase_user = format!("votebase_server_{db_name}");
 
 	#[cfg(debug_assertions)]
-	let db_votebase_pass = std::env::var("VOTEBASE_PASS").unwrap_or("votebase_server_dev_pass".to_string());
+	let db_votebase_server_password = std::env::var("VOTEBASE_SERVER_PASSWORD").unwrap_or("votebase_server_dev_pass".to_string());
 	#[cfg(not(debug_assertions))]
-	let db_votebase_pass = std::env::var("VOTEBASE_PASS").expect("VOTEBASE_PASS must be set");
+	let db_votebase_server_password = std::env::var("VOTEBASE_SERVER_PASSWORD").expect("VOTEBASE_SERVER_PASSWORD must be set");
 
 	let mut server_pg_config = postgres::Config::new();
 	server_pg_config
 		.port(db_port)
 		.host(&db_host)
-		.dbname(&db_database)
+		.dbname(&db_name)
 		.user(db_votebase_user)
-		.password(&db_votebase_pass);
+		.password(&db_votebase_server_password);
 
 	let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
 
