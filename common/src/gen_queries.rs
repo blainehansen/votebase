@@ -161,7 +161,7 @@ fn pg_type_hint(typ: &postgres::types::Type, is_not_null: bool) -> String {
 				let field_name = field.name();
 				let ts_hint = pg_type_hint(field.type_(), false);
 				format!("{field_name}: {ts_hint}")
-			});
+			}).collect::<Vec<_>>();
 			format!("{{ {} }}", ts_hints.join(", "))
 		},
 		_ => panic!("don't know what to do with pg type: {}", typ),
@@ -302,7 +302,7 @@ impl VisitorMut for NamedParamReplacer {
 
 fn convert_named_params_to_positional(sql: &str) -> Result<(String, HashMap<usize, String>, Vec<String>), String> {
 	let mut stmts = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::PostgreSqlDialect{}, sql)
-		.map_err(|e| format!("Failed to parse SQL: {}", e))?;
+    .map_err(|e| format!("Failed to parse SQL:\n{sql}\n{}", e))?;
 
 	let mut replacer = NamedParamReplacer::new();
 	stmts.visit(&mut replacer);
@@ -312,4 +312,13 @@ fn convert_named_params_to_positional(sql: &str) -> Result<(String, HashMap<usiz
 		.collect::<Vec<_>>();
 
 	Ok((stmts.join("; "), replacer.param_map, stmts))
+}
+
+fn parse_expr(sql: &str) -> Result<sqlparser::ast::Expr, String> {
+	let mut parser = sqlparser::parser::Parser::new(&sqlparser::dialect::PostgreSqlDialect{})
+		.try_with_sql(sql)
+    .map_err(|e| format!("Failed to parse SQL:\n{sql}\n{}", e))?;
+
+	parser.parse_expr()
+    .map_err(|e| format!("Failed to parse SQL expression:\n{sql}\n{}", e))
 }

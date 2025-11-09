@@ -36,6 +36,10 @@ const { core } = (globalThis as any).Deno as { core: {
 
 		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T, userId: string | null) => Promise<string | void>) => void,
 
+		op_yield_params_if_should_run: <T>(name: string) => { arg: T, user_id: string | null } | undefined,
+		op_give_action_result: (value: string | undefined) => void,
+		op_give_view_result: (value: string) => void,
+
 		// TODO need to figure out what the necessary rust interface is
 		op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
 		op_remove_recurring_action: (uuid: string) => Promise<void>,
@@ -47,22 +51,16 @@ const { core } = (globalThis as any).Deno as { core: {
 		op_remove_member_by_email: (email: string) => Promise<void>,
 		op_remove_member_by_uuid: (uuid: string) => Promise<void>,
 
-		op_add_members_to_ruleset: (full_path: string, uuids: string[]) => Promise<void>,
-		// op_add_members_to_ruleset_by_condition: (full_path: string, condition: string) => Promise<void>,
-		op_remove_members_from_ruleset: (full_path: string, uuids: string[]) => Promise<void>,
+		// op_add_members_to_ruleset: (full_path: string, uuids: string[]) => Promise<void>,
+		// // op_add_members_to_ruleset_by_condition: (full_path: string, condition: string) => Promise<void>,
+		// op_remove_members_from_ruleset: (full_path: string, uuids: string[]) => Promise<void>,
 
 		op_propose_self_replacement: (candidate: CandidateRuleset) => Promise<string>,
 		// replacing self is always done by returning the candidate uuid from an action
 
 		// these two create and destroy rulesets entirely. they cannot create or destroy static children
 		// this initial ruleset is expected to have db_schema == db_migration, because this ruleset didn't previously exist, there's nothing to migrate
-		op_create_child_ruleset: (
-			name: string, initial: ConcreteRuleset,
-			// tables in the parent ruleset that the view role of the child ruleset are granted select and the migrator role is granted references to
-			allowed_view_tables: string[],
-			// functions in the parent ruleset that the action role of the child ruleset are granted execute
-			allowed_action_functions: string[],
-		) => Promise<string>,
+		op_create_child_ruleset: (name: string, initial: ConcreteRuleset) => Promise<string>,
 		// all of the children, static and dynamic, are deleted here as well
 		op_delete_child_ruleset: (name: string) => Promise<void>,
 
@@ -124,9 +122,9 @@ declare global {
 		function removeMemberByEmail(email: string): Promise<void>
 		function removeMemberByUuid(uuid: string): Promise<void>
 
-		function addMembersToRuleset(full_path: string, uuids: string[]): Promise<void>
-		// function addMembersToRulesetByCondition(full_path: string, condition: string): Promise<void>
-		function removeMembersFromRuleset(full_path: string, uuids: string[]): Promise<void>
+		// function addMembersToRuleset(full_path: string, uuids: string[]): Promise<void>
+		// // function addMembersToRulesetByCondition(full_path: string, condition: string): Promise<void>
+		// function removeMembersFromRuleset(full_path: string, uuids: string[]): Promise<void>
 
 		function proposeSelfReplacement(candidate: CandidateRuleset): Promise<string>
 
@@ -141,17 +139,31 @@ declare global {
 }
 globalThis.votebase = {
 	Action<Arg>(name: string, func: (arg: Arg, userId: string | null) => Promise<string | void>) {
-		// const jsonSchema = zodToJsonSchema(schema)
 		const isAction = true
-		// core.ops.op_register_fn(name, jsonSchema, isAction, func)
-		core.ops.op_register_fn(name, isAction, func)
+		const params = core.ops.op_yield_params_if_should_run<Arg>(name)
+		if (params !== undefined) {
+			func(params.arg, params.user_id).then(value => core.ops.op_give_action_result(value as string | undefined))
+		}
+		else {
+			// const jsonSchema = zodToJsonSchema(schema)
+			// core.ops.op_register_fn(name, jsonSchema, isAction, func)
+			core.ops.op_register_fn(name, isAction, func)
+		}
+
 		return { name, isAction, func }
 	},
 	View<Query>(name: string, func: (query: Query, userId: string | null) => Promise<string>) {
-		// const jsonSchema = zodToJsonSchema(schema)
 		const isAction = false
-		// core.ops.op_register_fn(name, jsonSchema, isAction, func)
-		core.ops.op_register_fn(name, isAction, func)
+		const params = core.ops.op_yield_params_if_should_run<Query>(name)
+		if (params !== undefined) {
+			func(params.arg, params.user_id).then(value => core.ops.op_give_view_result(value))
+		}
+		else {
+			// const jsonSchema = zodToJsonSchema(schema)
+			// core.ops.op_register_fn(name, jsonSchema, isAction, func)
+			core.ops.op_register_fn(name, isAction, func)
+		}
+
 		return { name, isAction, func }
 	},
 	// RecurringAction({ description, start, hour, frequencyGranularity, frequencyMultiplier, callAction }) {
@@ -185,15 +197,15 @@ globalThis.votebase = {
 	removeMemberByUuid(uuid) {
 		return core.ops.op_remove_member_by_uuid(uuid)
 	},
-	addMembersToRuleset(full_path, uuids) {
-		return core.ops.op_add_members_to_ruleset(full_path, uuids)
-	},
-	// addMembersToRulesetByCondition(full_path, condition) {
-	// 	return core.ops.op_add_members_to_ruleset_by_condition(full_path, condition)
+	// addMembersToRuleset(full_path, uuids) {
+	// 	return core.ops.op_add_members_to_ruleset(full_path, uuids)
 	// },
-	removeMembersFromRuleset(full_path, uuids) {
-		return core.ops.op_remove_members_from_ruleset(full_path, uuids)
-	},
+	// // addMembersToRulesetByCondition(full_path, condition) {
+	// // 	return core.ops.op_add_members_to_ruleset_by_condition(full_path, condition)
+	// // },
+	// removeMembersFromRuleset(full_path, uuids) {
+	// 	return core.ops.op_remove_members_from_ruleset(full_path, uuids)
+	// },
 
 	proposeSelfReplacement(candidate) {
 		return core.ops.op_propose_self_replacement(candidate)

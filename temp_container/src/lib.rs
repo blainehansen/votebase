@@ -6,6 +6,12 @@ fn random_string(len: usize) -> String {
 	rand::distr::Alphanumeric.sample_string(&mut rng, len)
 }
 
+fn random_port() -> u16 {
+	let mut rng = rand::rng();
+	use rand::Rng;
+	rng.random_range(6000..=65535)
+}
+
 // async fn is_installed(tool: &str) -> bool {
 // 	let status = tokio::process::Command::new(tool)
 // 		.arg("--version")
@@ -42,7 +48,7 @@ async fn podman_cmd(args: &[&str], action: &'static str) -> anyhow::Result<()> {
 	}
 }
 
-async fn spawn_postgres(container_name: &str, pg_pass: &str, pg_user: &str, pg_db: &str, pg_port: usize) -> anyhow::Result<()> {
+async fn spawn_postgres(container_name: &str, pg_pass: &str, pg_user: &str, pg_db: &str, pg_port: u16) -> anyhow::Result<()> {
 	podman_cmd(&[
 		"run",
 		"--name", &container_name,
@@ -92,12 +98,12 @@ pub async fn with_temp_postgres<
 	Fut: Future,
 	F: FnOnce(Config) -> Fut,
 >(f: F) -> anyhow::Result<Fut::Output> {
-	let random_suffix = random_string(16);
+	let random_suffix = random_string(20);
 	let container_name = format!("temp_postgres_{random_suffix}");
 	let pg_pass = "temppass";
 	let pg_user = "tempuser";
 	let pg_db = "tempdb";
-	let pg_port = 5432;
+	let pg_port = random_port();
 
 	// defensively kill
 	podman_cmd(&["stop", "--ignore", &container_name], "stop container").await?;

@@ -16,7 +16,7 @@ fn main() {
 			cargo_manifest_dir: std::env!("CARGO_MANIFEST_DIR"),
 			startup_snapshot: None,
 			skip_op_registration: false,
-			extensions: vec![votebase::init_ops_and_esm()],
+			extensions: vec![votebase::init()],
 			with_runtime_cb: None,
 			extension_transpiler: Some(std::rc::Rc::new(|module_name, module_code| {
 				votebase_transpile::transpile_typescript(module_name, module_code)

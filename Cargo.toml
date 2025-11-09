@@ -7,12 +7,12 @@ members = [
 	"bootstrap_cli",
 	"server",
 	"queries",
-	"container_test",
+	"temp_container",
 ]
 
 [workspace.dependencies]
-deno_core = "0.341.0"
-deno_error = "0.5.5"
+deno_core = "0.367.0"
+deno_error = "0.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", default-features = false }
 uuid = { version = "*", features = ["serde", "v4"] }

@@ -13,23 +13,23 @@ grant connect on database "{db_name}" to PUBLIC;
 revoke all privileges on parameter search_path from PUBLIC;
 
 -- CREATE | CONNECT | TEMPORARY | TEMP
-grant all privileges on database "{db_name}" to "votebase_server";
+grant all privileges on database "{db_name}" to "votebase_server_{db_name}";
 -- SET | ALTER SYSTEM
-grant all privileges on parameter search_path to "votebase_server";
+grant all privileges on parameter search_path to "votebase_server_{db_name}";
 -- USAGE | CREATE
-alter default privileges grant all privileges on schemas to "votebase_server";
+alter default privileges grant all privileges on schemas to "votebase_server_{db_name}";
 
 drop schema public;
 create schema votebase_catalog;
 
 -- SELECT | INSERT | UPDATE | DELETE | TRUNCATE | REFERENCES | TRIGGER | MAINTAIN
-alter default privileges in schema votebase_catalog grant all privileges on tables to "votebase_server";
+alter default privileges in schema votebase_catalog grant all privileges on tables to "votebase_server_{db_name}";
 -- USAGE | SELECT | UPDATE
-alter default privileges in schema votebase_catalog grant all privileges on sequences to "votebase_server";
+alter default privileges in schema votebase_catalog grant all privileges on sequences to "votebase_server_{db_name}";
 -- EXECUTE
-alter default privileges in schema votebase_catalog grant all privileges on functions to "votebase_server";
+alter default privileges in schema votebase_catalog grant all privileges on functions to "votebase_server_{db_name}";
 -- USAGE
-alter default privileges in schema votebase_catalog grant all privileges on types to "votebase_server";
+alter default privileges in schema votebase_catalog grant all privileges on types to "votebase_server_{db_name}";
 
 create extension if not exists pgcrypto with schema votebase_catalog;
 
@@ -40,7 +40,7 @@ create table votebase_catalog.ruleset (
 		else parent_full_path || '|' || "name"
 	end) stored,
 	parent_full_path text references votebase_catalog.ruleset(full_path) on delete cascade,
-	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
+	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z0-9]+'),
 
 	actions text[] not null,
 	views text[] not null,

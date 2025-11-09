@@ -5,7 +5,7 @@ mod rulesets;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use deno_core::{v8, OpState};
 use uuid::Uuid;
-use crate::{queries, PgConfig, PgPool, PgClient, FnType, RoleType, ScheduledActionKind, format_ruleset_schema, format_ruleset_role, postgres};
+use crate::{queries, PgConfig, PgPool, /*PgClient,*/ FnType, RoleType, ScheduledActionKind, /*format_ruleset_schema,*/ format_ruleset_role, postgres};
 
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimeError {
@@ -60,7 +60,7 @@ impl Runtime {
 		let js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
 			module_loader: None,
 			startup_snapshot: Some(RUNTIME_SNAPSHOT),
-			extensions: vec![votebase::init_ops()],
+			extensions: vec![votebase::init()],
 			..Default::default()
 		});
 
@@ -147,7 +147,8 @@ struct ServerPgConfig(PgConfig);
 
 fn demand_external_allowed(state: &RefCell<OpState>) -> Result<(), deno_error::JsErrorBox> {
 	let state = state.borrow();
-	let external_allowed = deno_core::_ops::opstate_borrow::<bool>(&state);
+
+	let external_allowed = state.borrow::<bool>();
 	if !external_allowed {
 		return Err(deno_error::JsErrorBox::generic(ERR_EXTERNAL_NOT_ALLOWED))
 	}
@@ -194,7 +195,7 @@ enum PgTypeHint {
 fn prepare_param(
 	raw_param: serde_json::Value,
 	hint: PgTypeHint,
-) -> Result<(Box<(dyn postgres::types::ToSql + Sync)>, postgres::types::Type), RuntimeError> {
+) -> Result<(Box<dyn postgres::types::ToSql + Sync>, postgres::types::Type), RuntimeError> {
 	#[allow(non_snake_case)]
 	let HSTORE = postgres::types::Type::new("hstore".to_string(), 0, postgres::types::Kind::Simple, "public".to_string());
 	use postgres::types::Type;
@@ -257,7 +258,7 @@ fn prepare_param(
 fn prepare_params(
 	raw_params: Vec<serde_json::Value>,
 	hints: Vec<PgTypeHint>,
-) -> Result<Vec<(Box<(dyn postgres::types::ToSql + Sync)>, postgres::types::Type)>, RuntimeError> {
+) -> Result<Vec<(Box<dyn postgres::types::ToSql + Sync>, postgres::types::Type)>, RuntimeError> {
 	if raw_params.len() != hints.len() {
 		return Err(RuntimeError::OtherError("params and hints must be the same length".to_string()))
 	}
@@ -338,7 +339,7 @@ async fn op_sql_fetch_all(
 	demand_external_allowed(state)?;
 	let state = state.borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
+	let fn_config = state.borrow::<PgConfig>();
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
@@ -369,7 +370,7 @@ async fn op_sql_fetch_one(
 	demand_external_allowed(state)?;
 	let state = state.borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
+	let fn_config = state.borrow::<PgConfig>();
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
@@ -405,7 +406,7 @@ async fn op_sql_fetch_optional(
 	demand_external_allowed(state)?;
 	let state = state.borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
+	let fn_config = state.borrow::<PgConfig>();
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
@@ -439,7 +440,7 @@ async fn op_sql_execute_statement(
 	demand_external_allowed(state)?;
 	let state = state.borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
+	let fn_config = state.borrow::<PgConfig>();
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
@@ -463,7 +464,7 @@ async fn op_sql_execute_statements(
 	demand_external_allowed(state)?;
 	let state = state.borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = deno_core::_ops::opstate_borrow::<PgConfig>(&state);
+	let fn_config = state.borrow::<PgConfig>();
 	let (mut client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
 	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
 
@@ -527,10 +528,10 @@ async fn op_create_recurring_action(
 ) -> Result<String, deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_pg_config = deno_core::_ops::opstate_borrow::<ServerPgConfig>(&state).0.clone();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
-	let scheduled_action_queue = deno_core::_ops::opstate_borrow::<ScheduledActionQueue>(&state);
-	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
+	let server_pg_config = state.borrow::<ServerPgConfig>().0.clone();
+	let server_role_pool = state.borrow::<PgPool>();
+	let scheduled_action_queue = state.borrow::<ScheduledActionQueue>();
+	let current_full_path = state.borrow::<String>();
 
 	let client = server_role_pool.get().await.map_err(run_err)?;
 	let action = queries::scheduled::create_detached_recurring_action()
@@ -554,7 +555,7 @@ async fn op_remove_recurring_action(
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
+	let server_role_pool = state.borrow::<PgPool>();
 
 	let client = server_role_pool.get().await.map_err(run_err)?;
 	queries::scheduled::remove_detached_recurring_action()
@@ -576,10 +577,10 @@ async fn op_schedule_action(
 ) -> Result<String, deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
-	let server_pg_config = deno_core::_ops::opstate_borrow::<ServerPgConfig>(&state).0.clone();
-	let scheduled_action_queue = deno_core::_ops::opstate_borrow::<ScheduledActionQueue>(&state);
-	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
+	let server_role_pool = state.borrow::<PgPool>();
+	let server_pg_config = state.borrow::<ServerPgConfig>().0.clone();
+	let scheduled_action_queue = state.borrow::<ScheduledActionQueue>();
+	let current_full_path = state.borrow::<String>();
 
 	let client = server_role_pool.get().await.map_err(run_err)?;
 	let id = queries::scheduled::create_detached_scheduled_action()
@@ -603,7 +604,7 @@ async fn op_unschedule_action(
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
+	let server_role_pool = state.borrow::<PgPool>();
 
 	let client = server_role_pool.get().await.map_err(run_err)?;
 	queries::scheduled::remove_detached_scheduled_action()
@@ -621,7 +622,7 @@ async fn op_enroll_member(
 ) -> Result<String, deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
+	let server_role_pool = state.borrow::<PgPool>();
 
 	let client = server_role_pool.get().await.map_err(run_err)?;
 	let id = queries::members::enroll_member()
@@ -641,7 +642,7 @@ async fn op_remove_member_by_email(
 ) -> Result<(), deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
+	let server_role_pool = state.borrow::<PgPool>();
 
 	let client = server_role_pool.get().await.map_err(run_err)?;
 	queries::members::remove_member_by_email()
@@ -660,7 +661,7 @@ async fn op_remove_member_by_uuid(
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
 
-	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
+	let server_role_pool = state.borrow::<PgPool>();
 	let client = server_role_pool.get().await.map_err(run_err)?;
 	queries::members::remove_member_by_uuid()
 		.bind(&client, &member_uuid).await.map_err(run_err)?;
@@ -683,12 +684,14 @@ async fn op_propose_self_replacement(
 ) -> Result<String, deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	let current_full_path = deno_core::_ops::opstate_borrow::<String>(&state);
-	let server_pg_config = deno_core::_ops::opstate_borrow::<ServerPgConfig>(&state);
-	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
+	let current_full_path = state.borrow::<String>();
+	let server_pg_config = state.borrow::<ServerPgConfig>();
+	let server_role_pool = state.borrow::<PgPool>();
 	let server_pg_client = server_role_pool.get().await.map_err(run_err)?;
 
-	let candidate_uuid = rulesets::propose_candidate_ruleset().await.map_err(run_err)?;
+	let candidate_uuid = rulesets::propose_candidate_ruleset(
+		current_full_path, &server_pg_config.0, server_role_pool, &server_pg_client, &candidate,
+	).await.map_err(run_err)?;
 
 	Ok(candidate_uuid.to_string())
 }
@@ -966,6 +969,17 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	server_role_pool: PgPool,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<V, RuntimeError> {
+	// TODO you can fix all this by:
+	// - don't do the "return a function" thing anymore. instead have a top level Runtime method that is given either a view or action name, and the javascript side View and Action actually run their function iff some op "should_run" with their name returns true, and call a "give_view/action_result" op that sticks the value into OpState as a json::Value or whatever. and since the func is async and Action isn't async you'll have to resolve it once you pull it out of OpState. then you have it and it's a global and you're in the middle of an op? so you put the deserialized version into some other spot in OpState and then once the whole event loop is done you can pull it out and return it again?
+	// https://docs.rs/deno_core/0.367.0/deno_core/struct.JsRuntime.html#method.resolve
+	// just kidding, you can use `then` to do that work, so these functions just have to be implemented
+
+	// op_yield_params_if_should_run: <T>(name: string) => { arg: T, user_id: string | null } | undefined,
+	// op_give_action_result: (value: string | undefined) => void,
+	// op_give_view_result: (value: string) => void,
+
+
+
 	let mut runtime = Runtime::new(&ruleset_code).await.map_err(|e| RuntimeError::OtherError(e.to_string()))?;
 
 	// fn_role_config encodes the user, and therefore the role and powers of the connection
@@ -979,12 +993,6 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 		_ => { return Err(RuntimeError::OtherError(format!("'{}' isn't of type {}", function_name, function_type))) },
 	};
 
-	let function_arg = {
-		let mut scope = runtime.js_runtime.handle_scope();
-		let function_arg = deno_core::serde_v8::to_v8(&mut scope, function_arg)?;
-		v8::Global::new(&mut scope, function_arg)
-	};
-
 	runtime.set_external_allowed(true);
 	runtime.set_action_queue(scheduled_action_queue);
 	runtime.set_server_pool(server_role_pool);
@@ -992,13 +1000,39 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	runtime.set_fn_config(fn_role_config);
 	runtime.set_current_full_path(current_full_path);
 
-	// TODO also pass user_id here, maybe with some other context in the future
-	let call = runtime.js_runtime.call_with_args(function, &[function_arg]);
-	let call_return_value = runtime.js_runtime
-		.with_event_loop_promise(call, deno_core::PollEventLoopOptions::default())
-		.await?;
+	let function_arg = {
+		let mut isolate = runtime.js_runtime.v8_isolate();
+		let context = runtime.js_runtime.main_context();
+		v8::scope_with_context!(let scope, isolate, context);
+		let function_arg = deno_core::serde_v8::to_v8(scope, function_arg)?;
+		v8::Global::new(&mut isolate, function_arg)
+	};
 
-	let mut scope = runtime.js_runtime.handle_scope();
-	let call_return_value = v8::Local::new(&mut scope, call_return_value);
-	Ok(deno_core::serde_v8::from_v8(&mut scope, call_return_value)?)
+
+	// TODO also pass user_id here, maybe with some other context in the future
+	// let mut isolate = runtime.js_runtime.v8_isolate();
+	// v8::scope!(let scope, isolate);
+
+	let call_return_value = {
+		let mut isolate = runtime.js_runtime.v8_isolate();
+		// let context = runtime.js_runtime.main_context();
+		v8::scope!(let scope, isolate);
+
+		let call = runtime.js_runtime.call_with_args(function, &[function_arg]);
+		let call_return_value = runtime.js_runtime
+			.with_event_loop_promise(call, deno_core::PollEventLoopOptions::default())
+			.await?;
+
+		let mut isolate = runtime.js_runtime.v8_isolate();
+		let context = runtime.js_runtime.main_context();
+		v8::scope_with_context!(let scope, isolate, context);
+		let call_return_value = v8::Local::new(&mut scope, call_return_value);
+		deno_core::serde_v8::from_v8(scope, call_return_value)?
+	};
+	Ok(call_return_value)
+
+
+	// let mut isolate = runtime.js_runtime.v8_isolate();
+	// let context = runtime.js_runtime.main_context();
+	// v8::scope_with_context!(let scope, isolate, context);
 }

@@ -7,4 +7,4 @@ edition = "2024"
 deno_core = { workspace = true }
 deno_error = { workspace = true }
 thiserror = { workspace = true }
-deno_ast = { version = "0.44", features = ["transpiling"] }
+deno_ast = { version = "0.51", features = ["transpiling"] }

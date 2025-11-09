@@ -215,7 +215,7 @@ which creates these files:
 struct RulesetJson {
   /// A mapping of "var" names to objects that must be available to this Ruleset, which can be tables or types or functions.
   requires: HashMap<String, RequireDescription>,
-  member_attributes: HashMap<String, MemberAttribute>,
+  // member_attributes: HashMap<String, MemberAttribute>,
   // - `member attributes`? this is the place where the declarative statements for new member attributes that are being added go?
 }
 
@@ -230,11 +230,6 @@ enum RequireDescription {
   ActionFunction { structure: FunctionDescription },
 }
 
-enum MemberAttribute {
-  Stored { typ: PgType },
-  Computed { computation_sql: String },
-}
-
 struct TableDescription {
   columns: Vec<PgType>,
   /// A list of lists of columns, each list representing a unique constraint across some number of columns.
@@ -245,6 +240,11 @@ struct PgType {
   typ: Typ,
   nullable: bool,
 }
+
+// enum MemberAttribute {
+//   Stored { typ: PgType },
+//   Computed { computation_sql: String },
+// }
 ```
 
 ### `dev`
@@ -257,6 +257,10 @@ This implies a certain amount of checking that the schema of your Ruleset makes 
 votebase dev
 ```
 
+- in a temp podman postgres
+  - execute `schema.sql` against it, including rendering placeholders for any abstract requires by choosing random "real" names for each
+  - generate the queries and write them into the file
+
 ### `check`
 
 `check` is similarly abstract, so it type checks the Ruleset, keeping all abstract table/function names abstract. More for checking internal consistency, mostly to ensure a templated Ruleset is correct. This also checks the schema of your Ruleset makes sense.
@@ -265,60 +269,105 @@ votebase dev
 votebase check
 ```
 
-<!-- https://www.postgresql.org/docs/current/app-pgrestore.html -->
+- in a temp podman postgres
+  - execute `schema.sql` against it, including rendering placeholders for any abstract requires by choosing random "real" names for each
+  - generate the queries and write them into the file
+- using a temp podman typescript, runs a typecheck with the votebase tsconfig
 
-<!--
-When type checking an abstract Ruleset:
 
-- required tables/functions are given random "real" names and merely declared to exist (created in proper order if the tables rely on each other), templated into the actual sql, and then put into a local postgres db starting using a podman internal process
-- the sql checking and query preparation process occurs
-- typescript type checking occurs, using a podman internal process
- -->
-
----
+Both `dev` and `check` allow a `--vars` option that makes the operation act against a *concrete* Ruleset. This is for when you want to make a concrete one from the beginning.
 
 ### `bundle`
 
-`bundle` type checks the Ruleset against the real intended server schema, using the `vars.json` file specifying any templated values if necessary, then places everything into a `_bundled.json` file ready to be given as a Candidate.
+`bundle` type checks a Ruleset against a real intended server schema, using a `vars.json` file to specify any templated values if necessary, then places everything into a `ruleset.bundle.json` file ready to be given as a Candidate for that server.
+
+A Votebase server is a holistic entity, and Rulesets as a concept only exist to allow flexibility in dividing up pieces of decision making to be done in different ways. The holistic nature however means that preparing a new candidate Ruleset has to take the entire server into account. This holism is necessary in order to allow many very natural and practical governance patterns, such as interactions between institutions or across levels of governance.
+
+The `vars.json` file should match the format implied by this Rust struct:
 
 ```rust
-struct PackagedRulesetCandidate {
-  /// a description of the actual objects this candidate references from other Rulesets
-  uses:
+struct RulesetVars {
+  /// The name of the bundled Ruleset, which must be a valid Ruleset name consisting of only lower case letters and the `_` character. The name must be unique in context in the real Votebase server.
+  /// an optional mapping from the abstract "var" name in this Ruleset to the fully qualified name actually intended
+  db_uses: HashMap<String, String>,
+
+  // /// a list of fully qualified Views that this Ruleset relies on
+  // view_uses: Vec<String>
+  /// a list of fully qualified Actions that this Ruleset relies on
+  // /// action_uses: Vec<String>
+
+  /// a mapping from names to KeepOrReplace of pairings of further ruleset directories and vars
+  static_children: HashMap<String, KeepOrReplace<(String, RulesetVars)>>,
+  /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
+  dynamic_children_keep_rule: String,
+
+  /// a list of static recurring actions of this Ruleset. all others not mentioned here are deleted
+  static_recurring_events: Vec<StaticRecurringEvent>,
+  /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
+  dynamic_recurring_event_keep_rule: String,
+  /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
+  dynamic_standalone_event_keep_rule: String,
 }
 ```
 
 
-```rust
-/// The manifest info that is stored in a bundled Ruleset
-struct RulesetManifest {
-  // maybe the idea of exports is silly? perhaps the requires system is enough, since someone can just bundle their ruleset with whatever objects they want, and whether or not those requirements is acceptable is a decision made when either adopting or not adopting that ruleset!
-  // this would imply that when type checking a ruleset, only the objects actually implicated by a requires would be pulled forward into the schema put into the database during the checking phase, and a simplified version of them?
-  exports: String[],
-}
-```
 
+<!-- https://www.postgresql.org/docs/current/app-pgrestore.html -->
 
-
-
-
-
-
-
-
-
-When type checking a concrete Ruleset:
-
-- the real server schema this will drop into is put into the local db, importantly only the "exposed" version of it that is simplified and so much smaller
-- the values in `vars.json` are templated into the actual sql, with errors happening if things don't make sense at this point with the way `vars.json` aligns with the real previously input server schema. also query preparation occurs.
-- typescript type checking occurs.
+- fetch the pg archive and the full Ruleset tree from the real server with whatever caching rules (???) (hash the schema, and when the dev tools request the schema they can specify which one they already have including null, and server tells them they're good if nothing's changed)
+- in a temp podman postgres
+  - restore the pg archive to a "current" db
+  - fulfill `schema.sql` using the actual provided values in `vars`, then write it to an "intended" db, then get a diff from "current" to "intended", using the `schema` parameter to narrow to only this ruleset. then apply that diff as the migration on top of the archive, to be used for real typechecking. can do shenanigans with diffing the arhive against nothing with a schema narrowing to get the "current" standalone schema, perhaps
+  - generate the queries and write them into the file
+- using a temp podman typescript, run a typecheck with the votebase tsconfig
+- analyze the ruleset by executing it, and use the migration generated above to create the bundle
 
 When the server gives out this "preparatory" schema, perhaps it only gives the exported objects? That way it's much smaller and more amenable to inspection.
 
 
+```rust
+/// this definition is used both for candidates and entirely new rulesets
+/// for entirely new rulesets, to specify "keep" for a static child makes no sense and will be rejected
+/// similarly to give anything but the nonempty keep rules for any of the dynamic things will be rejected
+struct PackagedRuleset {
+  name: String,
+  /// the typescript code representing all the Actions and Views
+  code: String,
+  /// the final intended schema, used to check that the db_migration is correct
+  db_schema: String,
+  /// the migration intended to actually be run to reach the state of db_schema
+  db_migration: String,
+  /// the fully qualified names of all the database objects this Ruleset uses as its requires. derived from looking at the params in the vars and cross-referencing
+  db_uses: Vec<String>,
+  /// a list of fully qualified Views that this Ruleset relies on
+  // view_uses: Vec<String>
+  /// a list of fully qualified Actions that this Ruleset relies on
+  // action_uses: Vec<String>
+  /// a mapping of the static children of this Ruleset. any ruleset not mentioned here is deleted
+  static_children: HashMap<String, KeepOrReplace<PackagedRuleset>>,
+  /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
+  dynamic_children_keep_rule: String, // maybe dynamic children is the scope to cut?
+
+  /// a list of static recurring actions of this Ruleset. all others not mentioned here are deleted
+  static_recurring_events: Vec<StaticRecurringEvent>,
+  /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
+  dynamic_recurring_event_keep_rule: String,
+  /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
+  dynamic_standalone_event_keep_rule: String,
+}
+
+enum KeepOrReplace<R> {
+  Keep,
+  Replace(R),
+}
+```
+
+When running the `bundle` command, your specifications will imply changes and deletions to rulesets, and the cli will show these to you to make sure you're okay with them. when bundling an entirely new Ruleset, this won't really happen since it isn't that relevant. when bundling a replacement one it will show you which specific Rulesets will be kept, replaced (and with what), and deleted, and in a replacement will show what children and events will be kept or deleted.
 
 
-## Providing a Ruleset to an Action
+
+
+
 
 Rulesets can be arbitrary code that can accept any input, but the idea of a Packaged Ruleset Candidate is a reusable concept that Ruleset Actions can accept in a standard way. The `votebase` cli can be used to bundle a Ruleset so it can be provided to an Action.
 
@@ -331,17 +380,6 @@ votebase bundle --server https://my.server --ruleset my_ruleset_directory --vars
 
 This `ruleset.json` file can now be provided to the [file upload ruleset input component]() provided in the votebase standard library.
 
-The `vars.json` file should match the format implied by this Rust struct:
-
-```rust
-struct RulesetVars {
-  /// The name of the bundled Ruleset, which must be a valid Ruleset name consisting of only lower case letters and the `_` character. The name must be unique in context in the real Votebase server.
-  name: String,
-  // TODO
-  params: Option<HashMap<String, String>>,
-}
-```
-
 You can call bundle with different output options.
 
 ```bash
@@ -350,6 +388,9 @@ votebase bundle --server https://my.server --ruleset my_ruleset_directory --vars
 # accepts a flag --output-stdout that outputs the Packaged Ruleset to stdout
 votebase bundle --server https://my.server --ruleset my_ruleset_directory --vars my_vars.json --output-stdout
 ```
+
+
+
 
 ## Starting and maintaining a Votebase server
 
@@ -404,4 +445,10 @@ click the button
 give payment info, and even a means for splitting costs across members
 give your polity a name
 provide an initial Ruleset to be loaded
+
+## (Someday) Once votebase is a language or a set of macros over a database language
+
+Instead of all these json declarations of requires, it will be basically the coq/lean concept of parameterized modules, where the parameters can be types or functions etc.
+
+Then it's all just in the type system baby.
  -->

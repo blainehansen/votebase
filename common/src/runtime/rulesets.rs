@@ -95,11 +95,15 @@ pub async fn create_ruleset(
 }
 
 pub async fn propose_candidate_ruleset(
-	current_full_path: String,
-) -> Result<uuid::Uuid, RuntimeError> {
-	let (actions, views) = validate_candidate(current_full_path, &server_pg_config.0, &server_pg_client, &candidate).await?;
+	current_full_path: &String,
+	server_pg_config: &PgConfig,
+	server_role_pool: &PgPool,
+	server_pg_client: &PgClient,
+	candidate: &CandidateRuleset,
 
-	let server_role_pool = deno_core::_ops::opstate_borrow::<PgPool>(&state);
+) -> Result<uuid::Uuid, RuntimeError> {
+	let (actions, views) = validate_candidate(current_full_path, &server_pg_config, &server_pg_client, &candidate).await?;
+
 	let client = server_role_pool.get().await?;
 	let candidate_uuid = queries::rulesets::insert_candidate_replacement()
 		.bind(&client, &current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration)
@@ -143,8 +147,8 @@ async fn validate_candidate(
 	let mut views = vec![];
 	for (fn_name, fn_type) in fn_map {
 		match fn_type {
-			Fn::Action(_) => { actions.push(fn_name.to_owned()) },
-			Fn::View(_) => { views.push(fn_name.to_owned()) },
+			crate::FnType::Action(_) => { actions.push(fn_name.to_owned()) },
+			crate::FnType::View(_) => { views.push(fn_name.to_owned()) },
 		}
 	}
 
