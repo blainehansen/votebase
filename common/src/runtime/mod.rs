@@ -486,7 +486,7 @@ pub enum Fn {
 // op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T, userId: string | null) => Promise<string | void>) => void,
 #[deno_core::op2]
 fn op_register_fn(
-	#[state] fn_map: &mut FnMap,
+	state: &mut OpState,
 	#[string] fn_name: &str,
 	// #[serde] schema: serde_json::Value,
 	is_action: bool,
@@ -502,6 +502,7 @@ fn op_register_fn(
 		false => Fn::View(func),
 	};
 
+	let fn_map = state.borrow_mut::<FnMap>();
 	use std::collections::hash_map::Entry;
 	match fn_map.entry(fn_name.to_owned()) {
 		Entry::Vacant(entry) => {
@@ -509,7 +510,7 @@ fn op_register_fn(
 			Ok(())
 		},
 		Entry::Occupied(_) => {
-			Err(deno_error::JsErrorBox::generic(format!("already a view or action with name {}", &fn_name)))
+			Err(deno_error::JsErrorBox::generic(format!("already a View or Action with name {fn_name}")))
 		}
 	}
 }
@@ -969,17 +970,6 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	server_role_pool: PgPool,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<V, RuntimeError> {
-	// TODO you can fix all this by:
-	// - don't do the "return a function" thing anymore. instead have a top level Runtime method that is given either a view or action name, and the javascript side View and Action actually run their function iff some op "should_run" with their name returns true, and call a "give_view/action_result" op that sticks the value into OpState as a json::Value or whatever. and since the func is async and Action isn't async you'll have to resolve it once you pull it out of OpState. then you have it and it's a global and you're in the middle of an op? so you put the deserialized version into some other spot in OpState and then once the whole event loop is done you can pull it out and return it again?
-	// https://docs.rs/deno_core/0.367.0/deno_core/struct.JsRuntime.html#method.resolve
-	// just kidding, you can use `then` to do that work, so these functions just have to be implemented
-
-	// op_yield_params_if_should_run: <T>(name: string) => { arg: T, user_id: string | null } | undefined,
-	// op_give_action_result: (value: string | undefined) => void,
-	// op_give_view_result: (value: string) => void,
-
-
-
 	let mut runtime = Runtime::new(&ruleset_code).await.map_err(|e| RuntimeError::OtherError(e.to_string()))?;
 
 	// fn_role_config encodes the user, and therefore the role and powers of the connection
@@ -1000,39 +990,25 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	runtime.set_fn_config(fn_role_config);
 	runtime.set_current_full_path(current_full_path);
 
-	let function_arg = {
-		let mut isolate = runtime.js_runtime.v8_isolate();
-		let context = runtime.js_runtime.main_context();
-		v8::scope_with_context!(let scope, isolate, context);
-		let function_arg = deno_core::serde_v8::to_v8(scope, function_arg)?;
-		v8::Global::new(&mut isolate, function_arg)
-	};
+	// https://questions.deno.com/m/1201661871959310346
+	// https://github.com/denoland/deno_core/issues/515
+	// maybe a better way to do this that isn't based on registration? accessing things as a Local<Object>?
+	// https://github.com/tailcallhq/tailcall/pull/1144/files#diff-2a08de1a47319583d4bb5559a203d98bb29ba13b2ea658cae1597231a6177770R40
 
+	let function_arg = {
+		deno_core::scope!(scope, runtime.js_runtime);
+		let function_arg = deno_core::serde_v8::to_v8(scope, function_arg)?;
+		v8::Global::new(scope, function_arg)
+	};
 
 	// TODO also pass user_id here, maybe with some other context in the future
-	// let mut isolate = runtime.js_runtime.v8_isolate();
-	// v8::scope!(let scope, isolate);
 
-	let call_return_value = {
-		let mut isolate = runtime.js_runtime.v8_isolate();
-		// let context = runtime.js_runtime.main_context();
-		v8::scope!(let scope, isolate);
+	let call = runtime.js_runtime.call_with_args(function, &[function_arg]);
+	let call_return_value = runtime.js_runtime
+		.with_event_loop_promise(call, deno_core::PollEventLoopOptions::default())
+		.await?;
 
-		let call = runtime.js_runtime.call_with_args(function, &[function_arg]);
-		let call_return_value = runtime.js_runtime
-			.with_event_loop_promise(call, deno_core::PollEventLoopOptions::default())
-			.await?;
-
-		let mut isolate = runtime.js_runtime.v8_isolate();
-		let context = runtime.js_runtime.main_context();
-		v8::scope_with_context!(let scope, isolate, context);
-		let call_return_value = v8::Local::new(&mut scope, call_return_value);
-		deno_core::serde_v8::from_v8(scope, call_return_value)?
-	};
-	Ok(call_return_value)
-
-
-	// let mut isolate = runtime.js_runtime.v8_isolate();
-	// let context = runtime.js_runtime.main_context();
-	// v8::scope_with_context!(let scope, isolate, context);
+	deno_core::scope!(scope, runtime.js_runtime);
+	let call_return_value = v8::Local::new(scope, call_return_value);
+	Ok(deno_core::serde_v8::from_v8(scope, call_return_value)?)
 }

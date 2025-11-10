@@ -1,3 +1,20 @@
+I'm trying to create a custom runtime where the following can be achieved:
+
+- Someone can give me (the runtime) some packaging of code that contains a bunch of functions.
+- I can somehow reach into that code and choose just one of those functions, and call it with args and a particular set of permissions/capabilities
+- and get back the return value of that function.
+
+You can think of this kinda like I'm making an api metaframework, but with particular weird needs that are hard to explain ha.
+
+Previously I had done this:
+
+- the runtime provides a function `op_register_fn(name: String, fn: v8::Global<v8::Function>)` that stores `fn` in a `HashMap` in `op_state`
+- the whole system accepts a single script that can call `op_register_fn`, so I can gather up all the functions by executing the script with `load_main_es_module_from_code`, `mod_evaluate`, and `run_event_loop`
+- and then I would pull out the function I wanted, and call it with `call_with_args` and `with_event_loop_promise` to get the return value
+- both the args I pass in and the return value I convert to/from v8 objects with `serde_v8`
+
+
+
 What if the role names were all cryptographically secure?
 Reset role makes the more annoying, but here me out
 We have four main roles and pools:

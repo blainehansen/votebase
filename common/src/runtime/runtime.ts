@@ -36,10 +36,6 @@ const { core } = (globalThis as any).Deno as { core: {
 
 		op_register_fn: <T>(name: string, isAction: boolean, func: (arg: T, userId: string | null) => Promise<string | void>) => void,
 
-		op_yield_params_if_should_run: <T>(name: string) => { arg: T, user_id: string | null } | undefined,
-		op_give_action_result: (value: string | undefined) => void,
-		op_give_view_result: (value: string) => void,
-
 		// TODO need to figure out what the necessary rust interface is
 		op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
 		op_remove_recurring_action: (uuid: string) => Promise<void>,
@@ -140,30 +136,16 @@ declare global {
 globalThis.votebase = {
 	Action<Arg>(name: string, func: (arg: Arg, userId: string | null) => Promise<string | void>) {
 		const isAction = true
-		const params = core.ops.op_yield_params_if_should_run<Arg>(name)
-		if (params !== undefined) {
-			func(params.arg, params.user_id).then(value => core.ops.op_give_action_result(value as string | undefined))
-		}
-		else {
-			// const jsonSchema = zodToJsonSchema(schema)
-			// core.ops.op_register_fn(name, jsonSchema, isAction, func)
-			core.ops.op_register_fn(name, isAction, func)
-		}
-
+		// const jsonSchema = zodToJsonSchema(schema)
+		// core.ops.op_register_fn(name, jsonSchema, isAction, func)
+		core.ops.op_register_fn(name, isAction, func)
 		return { name, isAction, func }
 	},
 	View<Query>(name: string, func: (query: Query, userId: string | null) => Promise<string>) {
 		const isAction = false
-		const params = core.ops.op_yield_params_if_should_run<Query>(name)
-		if (params !== undefined) {
-			func(params.arg, params.user_id).then(value => core.ops.op_give_view_result(value))
-		}
-		else {
-			// const jsonSchema = zodToJsonSchema(schema)
-			// core.ops.op_register_fn(name, jsonSchema, isAction, func)
-			core.ops.op_register_fn(name, isAction, func)
-		}
-
+		// const jsonSchema = zodToJsonSchema(schema)
+		// core.ops.op_register_fn(name, jsonSchema, isAction, func)
+		core.ops.op_register_fn(name, isAction, func)
 		return { name, isAction, func }
 	},
 	// RecurringAction({ description, start, hour, frequencyGranularity, frequencyMultiplier, callAction }) {
