@@ -55,6 +55,7 @@ async fn spawn_postgres(container_name: &str, pg_pass: &str, pg_user: &str, pg_d
 		"-e", &format!("POSTGRES_PASSWORD={pg_pass}"),
 		"-e", &format!("POSTGRES_USER={pg_user}"),
 		"-e", &format!("POSTGRES_DB={pg_db}"),
+		"-e", &format!("PGPORT={pg_port}"),
 		"-p", &format!("{pg_port}:{pg_port}"),
 		"-d",
 		"docker.io/library/postgres:latest",
@@ -65,6 +66,15 @@ async fn is_postgres_healthy(config: &Config) -> bool {
 	// let args = ["exec", container_name, "pg_isready"];
 	// Ok(podman_cmd(&args, "check container health").await.is_ok())
 	config.connect(tokio_postgres::NoTls).await.is_ok()
+
+	// let res = config.connect(tokio_postgres::NoTls).await;
+	// match res {
+	// 	Ok(_) => true,
+	// 	Err(e) => {
+	// 		eprintln!("{:?}", e);
+	// 		false
+	// 	},
+	// }
 }
 
 async fn healthcheck_postgres(
@@ -97,7 +107,48 @@ async fn healthcheck_postgres(
 pub async fn with_temp_postgres<
 	Fut: Future,
 	F: FnOnce(Config) -> Fut,
->(f: F) -> anyhow::Result<Fut::Output> {
+>(func: F) -> anyhow::Result<Fut::Output> {
+	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
+
+	kill_container(&container_name).await?;
+
+	spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port).await?;
+	healthcheck_postgres(&config, 50, 100).await?;
+
+	// call user function
+	let result = func(config).await;
+
+	kill_container(&container_name).await?;
+
+	Ok(result)
+}
+
+pub async fn with_temp_postgres_client<
+	Fut: Future,
+	F: FnOnce(Config, tokio_postgres::Client) -> Fut,
+>(func: F) -> anyhow::Result<Fut::Output> {
+	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
+
+	kill_container(&container_name).await?;
+
+	spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port).await?;
+	healthcheck_postgres(&config, 50, 100).await?;
+
+	// call user function
+	let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
+	tokio::spawn(async move {
+		if let Err(e) = connection.await {
+			eprintln!("connection error: {}", e);
+		}
+	});
+	let result = func(config, client).await;
+
+	kill_container(&container_name).await?;
+
+	Ok(result)
+}
+
+fn generate_temp_config() -> (String, Config, String, String, String, u16) {
 	let random_suffix = random_string(20);
 	let container_name = format!("temp_postgres_{random_suffix}");
 	let pg_pass = "temppass";
@@ -105,27 +156,22 @@ pub async fn with_temp_postgres<
 	let pg_db = "tempdb";
 	let pg_port = random_port();
 
-	// defensively kill
-	podman_cmd(&["stop", "--ignore", &container_name], "stop container").await?;
-	podman_cmd(&["rm", "-v", "--ignore", &container_name], "cleanup container").await?;
-
 	let mut config = Config::new();
 	config.host("localhost");
 	config.password(pg_pass);
 	config.user(pg_user);
 	config.dbname(pg_db);
+	config.port(pg_port);
 
-	spawn_postgres(&container_name, pg_pass, pg_user, pg_db, pg_port).await?;
-	healthcheck_postgres(&config, 20, 50).await?;
+	(container_name, config, pg_pass.to_string(), pg_user.to_string(), pg_db.to_string(), pg_port)
+}
 
-	// call user function
-	let result = f(config).await;
-
+async fn kill_container(container_name: &str) -> anyhow::Result<()> {
 	podman_cmd(&["stop", "--ignore", &container_name], "stop container").await?;
 	podman_cmd(&["rm", "-v", "--ignore", &container_name], "cleanup container").await?;
-
-	Ok(result)
+	Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -162,6 +208,26 @@ mod tests {
 			Ok(())
 		}).await??;
 
+		with_temp_postgres_client(async |client| -> anyhow::Result<()> {
+			client.execute(
+				"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
+				&[]
+			).await?;
+
+			client.execute(
+				"INSERT INTO test_users (name) VALUES ($1), ($2)",
+				&[&"Alice", &"Bob"]
+			).await?;
+
+			let rows = client.query("SELECT id, name FROM test_users ORDER BY id", &[]).await?;
+
+			assert_eq!(rows.len(), 2);
+			assert_eq!(rows[0].get::<_, i32>(0), 1);
+			assert_eq!(rows[0].get::<_, &str>(1), "Alice");
+			assert_eq!(rows[1].get::<_, &str>(1), "Bob");
+
+			Ok(())
+		}).await??;
 
 		Ok(())
 	}

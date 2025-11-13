@@ -49,6 +49,11 @@ async fn main() -> Result<(), AnyError> {
 
 			file.write_all(generated.as_bytes()).await?;
 		},
+
+		SubCommand::Check(_) => {
+
+		},
+
 		SubCommand::Bundle(Bundle { migration_file }) => {
 			let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &client).await?;
 
@@ -107,7 +112,10 @@ enum SubCommand {
 /// prepare all ruleset queries and place them in the dev typescript file next to the queries directory (e.g. for `./queries/` dir `./queries.ts`)
 struct Dev {}
 
-// TODO do we need a standalone migration check command? or is that just included in what bundle does?
+#[derive(argh::FromArgs, Debug)]
+#[argh(subcommand, name = "check")]
+/// prepare all ruleset queries and place them in the dev typescript file next to the queries directory (e.g. for `./queries/` dir `./queries.ts`), and run the Typescript check
+struct Check {}
 
 #[derive(argh::FromArgs, Debug)]
 #[argh(subcommand, name = "bundle")]

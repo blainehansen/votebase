@@ -1,0 +1,33 @@
+# https://halcyonnouveau.github.io/clorinde/configuration.html
+
+use-workspace-deps = "../Cargo.toml"
+
+[manifest.package]
+name = "generated_queries"
+version = "1.0.0"
+description = "Hmm?"
+license = "MIT"
+edition = "2024"
+
+[manifest.dependencies]
+# serde = { version = "1.0", features = ["derive"] }
+# my_custom_types = { path = "../types" }
+
+
+# [types]
+# # Applied to all generated structs and postgres types
+# derive-traits = ["serde::Serialize", "serde::Deserialize"]
+
+# [types.type-traits-mapping]
+# # Applied to specfic custom postgres types (eg. enums, domains, composites)
+# votebase_catalog.granularity_enum = ["serde::Deserialize"]
+
+# [manifest.dependencies]
+# # Dependencies required for custom type mappings
+# ctypes = { path = "../ctypes" }
+# postgres_range = { version = "0.11.1", features = ["with-chrono-0_4"] }
+
+# [types.mapping]
+# # Map PostgreSQL types to custom Rust types
+# "pg_catalog.date" = "ctypes::date::Date"
+# "pg_catalog.tstzrange" = "postgres_range::Range<chrono::DateTime<chrono::FixedOffset>>"

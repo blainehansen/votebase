@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-votebase_queries = { path = "../queries" }
+tokio-postgres = { workspace = true }
+deadpool-postgres = { workspace = true }
 votebase_common = { path = "../common" }
 tokio = { workspace = true }
 rand = "0.9"

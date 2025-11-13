@@ -14,7 +14,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 votebase_transpile = { path = "../transpile" }
-votebase_queries = { path = "../queries" }
 reqwest = "0.12"
 urlencoding = "2"
 
@@ -24,6 +23,8 @@ sqlparser = { version = "0.59", features = ["visitor"] }
 postgres-from-row = "0.5"
 futures-util = "0.3.31"
 
+# generated_queries = { path = "generated_queries", package = "generated_queries" }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 
@@ -31,3 +32,8 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 deno_core = { workspace = true }
 deno_error = { workspace = true }
 votebase_transpile = { path = "../transpile" }
+
+clorinde = { version = "1.1" }
+tokio-postgres = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
+temp_containers = { path = "../temp_containers" }

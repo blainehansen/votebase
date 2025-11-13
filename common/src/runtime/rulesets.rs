@@ -142,7 +142,7 @@ async fn validate_candidate(
 
 	let inner_state = inner.js_runtime.op_state();
 	let inner_state = inner_state.as_ref().borrow();
-	let fn_map = deno_core::_ops::opstate_borrow::<FnMap>(&inner_state);
+	let fn_map = inner_state.borrow::<FnMap>();
 	let mut actions = vec![];
 	let mut views = vec![];
 	for (fn_name, fn_type) in fn_map {

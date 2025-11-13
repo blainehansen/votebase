@@ -1,4 +1,5 @@
-use votebase_queries::{tokio_postgres as postgres, deadpool_postgres as deadpool};
+use tokio_postgres as postgres;
+use deadpool_postgres as deadpool;
 
 type AnyError = Box<dyn std::error::Error>;
 
@@ -11,21 +12,8 @@ async fn main() -> Result<(), AnyError> {
 
 	let mut client = pool.get().await?;
 
-	#[cfg(debug_assertions)]
-	let votebase_server_password = "votebase_server_dev_pass".to_string();
-	#[cfg(not(debug_assertions))]
-	let votebase_server_password = {
-		use base64::Engine;
-		use rand::{Rng, SeedableRng};
-		let mut random_bytes = [0u8; 526];
-		let mut rng = rand::rngs::StdRng::from_os_rng();
-		rng.fill(&mut random_bytes);
-		base64::prelude::BASE64_STANDARD.encode(random_bytes)
-	};
-
 	let db_name = config.get_dbname().unwrap().to_owned();
-	let schema_sql = format!(include_str!("../schema.sql"), db_name=db_name, votebase_server_password=votebase_server_password);
-	client.batch_execute(&schema_sql).await?;
+	let votebase_server_password = votebase_common::load_votebase_server_schema(db_name, &mut client).await?;
 
 	votebase_common::runtime::create_ruleset(
 		&config, &mut client,

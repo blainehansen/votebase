@@ -55,62 +55,25 @@ A Votebase server represents some [**Polity**](https://en.wikipedia.org/wiki/Pol
 
 Every Votebase server has a list of **Members**, people who are allowed to interact with the server.
 
-These Members interact with **Rulesets**, which are just chunks of code, possibly with some text included.
+And for Votebase the most important concept is that of the **Ruleset**, since it is the fundamental unit of governance *code* that can be interacted with and changed.
+
+Members interact with **Rulesets**, which are just chunks of code, possibly with some text included.
 
 A Ruleset can specify a few things that define how it works:
 
 - The **Data Schema** of the Ruleset is what data it can store and where, as well as whatever "built-in functions" the data layer has access to. This layer uses [`postgres sql`](), and is defined in a `schema.sql` file when writing your own Ruleset.
 - The available **Actions** of the Ruleset, which are the messages Members can send *to* the Ruleset to change the data stored inside it.
 - The available **Views** of the Ruleset, which are the messages Members receive *from* the Ruleset to see what its current state is.
-- The **Events** of the Ruleset, which are times when something should happen (specifically when a particular Action should be called). Events can be dynamically created by Actions (either recurring or one-off), and also *static* Events can be specified in the Ruleset itself (only recurring). A recurring Event is defined by a `start date` and a `recurrence duration` (which for now are limited to an int with a unit, such as days or months or years, and can't do things like "last thursday in november"), a one-off event is defined only by a `date`.
+- The **Events** of the Ruleset, which are times when something should happen (specifically when a particular Action should be executed). Events can be dynamically created by Actions (either recurring or one-off), and also *static* Events can be specified in the Ruleset itself (only recurring). A recurring Event is defined by a `start date` and a `recurrence duration` (which for now are limited to an int with a unit, such as days or months or years, and can't do things like "last thursday in november"), a one-off event is defined only by a `date`.
 - The **Children** of the Ruleset, which are other Rulesets that can be replaced or destroyed by the parent. Children can be dynamically created by Actions, and *static* Children can be specified in the Ruleset itself.
 
-Actions and Views are both written in [Typescript](), and have access to a special Votebase runtime [built using `deno_core`](https://deno.com/blog/roll-your-own-javascript-runtime). They are defined in the `ruleset.ts` file when writing your own Ruleset.
+Actions and Views are both written in [Typescript](), and have access to a special Votebase runtime [built using `deno_core`](https://deno.com/blog/roll-your-own-javascript-runtime).
 
 Since Actions and Views are just Typescript, they can perform arbitrary computations, and can interact with the outside world in any way that's allowed by the Votebase runtime.
 
 Views are only allowed to *read* data from the server database, and are expected to return a string representing [HTML]() or just normal text.
 
 Actions are allowed to *read and write* data in the server database, and can't return any data back.
-
-The `votebase.Action` and `votebase.View` functions are used in `ruleset.ts` to define Actions and Views. These functions take a `name` that defines the name of the Action or View, and a Typescript function that defines their actual code. Here are the full signatures:
-
-```ts
-TODO
-```
-
-function proposeSelfReplacement(candidate: CandidateRuleset): Promise<string>
-
-// TODO needs to account for possibility of failure
-function proposeSelfReplacement(candidate: CandidateRuleset): Promise<string>
-
-function createChildRuleset(name: string, initial: ConcreteRuleset): Promise<string>
-function deleteChildRuleset(name: string): Promise<void>
-function proposeChildReplacement(name: string, candidate: CandidateRuleset): Promise<string>
-function replaceChild(uuid: string): Promise<void>
-
-
-
-
-
-// function RecurringAction(definition: RecurringAction): void
-
-function createRecurringAction<Arg extends JsonValue>(definition: RecurringAction<Arg>): Promise<string>
-function removeRecurringAction(uuid: string): Promise<void>
-function scheduleAction<Arg extends JsonValue>(description: string, at: Date, action: FnAction<Arg>, arg: Arg): Promise<string>
-function unscheduleAction(uuid: string): Promise<void>
-
-function enrollMember(email: string): Promise<string>
-function removeMemberByEmail(email: string): Promise<void>
-function removeMemberByUuid(uuid: string): Promise<void>
-
-function addMembersToRuleset(full_path: string, uuids: string[]): Promise<void>
-// function addMembersToRulesetByCondition(full_path: string, condition: string): Promise<void>
-function removeMembersFromRuleset(full_path: string, uuids: string[]): Promise<void>
-
-
-
-
 
 
 ### The Ruleset Tree
@@ -203,11 +166,11 @@ Creating your own Ruleset will usually pass through all the commands of the `vot
 votebase init some_ruleset_directory
 ```
 
-which creates these files:
+which creates the files specified below. Some of these are optional, meaning you can delete them if you don't need them.
 
 - `ruleset.ts`: specifies the actual code of the Ruleset, which should call `votebase.Action` and `votebase.View` to register the Actions and Views. Empty examples of both kinds are given.
 - `schema.sql` **optional**: specifies the data schema of the Ruleset, using postgres sql. If you don't need a schema just delete this file, and it will be assumed your Ruleset will store no data of its own.
-- `queries` **optional**: a directory where you can place sql files that will be made available as Typescript functions for your Ruleset to use. You can write a single query, a single statement, or even multiple statements separated by `;`. You can specify [query parameters]() for these queries that will be filled in by using the form `:parameter_name` instead of `$1` etc, and these parameters will be arguments to the Typescript function.
+- `queries` **optional**: a directory where you can place sql files that will be made available as Typescript functions for your Ruleset to use. You can write a single query, a single statement, or even multiple statements separated by `;`. For single queries and statements you can specify [query parameters]() for these queries that will be filled in by using the form `:parameter_name` instead of `$1` etc, and these parameters will be arguments to the Typescript function.
 - `ruleset.json` **optional**: information about the ruleset that isn't captured by the above files, which might not be necessary for your Ruleset. Must have the format implied by this Rust struct:
 
 ```rust
@@ -231,9 +194,11 @@ enum RequireDescription {
 }
 
 struct TableDescription {
+  // TODO perhaps use the ColumnInfo struct you already have instead?
   columns: Vec<PgType>,
   /// A list of lists of columns, each list representing a unique constraint across some number of columns.
   unique_constraints: Vec<Vec<String>>,
+  // do we need anything else? should columns
 }
 
 struct PgType {
@@ -287,14 +252,13 @@ The `vars.json` file should match the format implied by this Rust struct:
 
 ```rust
 struct RulesetVars {
-  /// The name of the bundled Ruleset, which must be a valid Ruleset name consisting of only lower case letters and the `_` character. The name must be unique in context in the real Votebase server.
   /// an optional mapping from the abstract "var" name in this Ruleset to the fully qualified name actually intended
   db_uses: HashMap<String, String>,
 
   // /// a list of fully qualified Views that this Ruleset relies on
   // view_uses: Vec<String>
-  /// a list of fully qualified Actions that this Ruleset relies on
-  // /// action_uses: Vec<String>
+  /// /// a list of fully qualified Actions that this Ruleset relies on
+  // action_uses: Vec<String>
 
   /// a mapping from names to KeepOrReplace of pairings of further ruleset directories and vars
   static_children: HashMap<String, KeepOrReplace<(String, RulesetVars)>>,
@@ -303,13 +267,12 @@ struct RulesetVars {
 
   /// a list of static recurring actions of this Ruleset. all others not mentioned here are deleted
   static_recurring_events: Vec<StaticRecurringEvent>,
-  /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
+  /// a predicate that determines what dynamic recurring children to keep, and all others will be recursively deleted
   dynamic_recurring_event_keep_rule: String,
-  /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
+  /// a predicate that determines what dynamic standalone children to keep, and all others will be recursively deleted
   dynamic_standalone_event_keep_rule: String,
 }
 ```
-
 
 
 <!-- https://www.postgresql.org/docs/current/app-pgrestore.html -->
@@ -317,20 +280,20 @@ struct RulesetVars {
 - fetch the pg archive and the full Ruleset tree from the real server with whatever caching rules (???) (hash the schema, and when the dev tools request the schema they can specify which one they already have including null, and server tells them they're good if nothing's changed)
 - in a temp podman postgres
   - restore the pg archive to a "current" db
-  - fulfill `schema.sql` using the actual provided values in `vars`, then write it to an "intended" db, then get a diff from "current" to "intended", using the `schema` parameter to narrow to only this ruleset. then apply that diff as the migration on top of the archive, to be used for real typechecking. can do shenanigans with diffing the arhive against nothing with a schema narrowing to get the "current" standalone schema, perhaps
+  - fulfill `schema.sql` using the actual provided values in `vars`, then write it to an "intended" db, then get a diff from "current" to "intended", using the `schema` parameter to narrow to only this ruleset. then apply that diff as the migration on top of the archive, to be used for real typechecking. can do shenanigans with diffing the archive against nothing with a schema narrowing to get the "current" standalone schema, perhaps
   - generate the queries and write them into the file
 - using a temp podman typescript, run a typecheck with the votebase tsconfig
 - analyze the ruleset by executing it, and use the migration generated above to create the bundle
 
 When the server gives out this "preparatory" schema, perhaps it only gives the exported objects? That way it's much smaller and more amenable to inspection.
 
-
 ```rust
 /// this definition is used both for candidates and entirely new rulesets
 /// for entirely new rulesets, to specify "keep" for a static child makes no sense and will be rejected
 /// similarly to give anything but the nonempty keep rules for any of the dynamic things will be rejected
 struct PackagedRuleset {
-  name: String,
+  // /// the name? is this necessary? given that ruleset candidates are given against *named slots* I think this is just not needed
+  // name: String,
   /// the typescript code representing all the Actions and Views
   code: String,
   /// the final intended schema, used to check that the db_migration is correct
@@ -339,7 +302,7 @@ struct PackagedRuleset {
   db_migration: String,
   /// the fully qualified names of all the database objects this Ruleset uses as its requires. derived from looking at the params in the vars and cross-referencing
   db_uses: Vec<String>,
-  /// a list of fully qualified Views that this Ruleset relies on
+  /// a list of fully qualified Views that this Ruleset relies on. not bothering with this since javascript is easy to share with modules or whatever, but database objects relate to *state*, so that's more necessary
   // view_uses: Vec<String>
   /// a list of fully qualified Actions that this Ruleset relies on
   // action_uses: Vec<String>
@@ -404,9 +367,10 @@ First you need to set up a postgres database, which you can do any way you like.
 # TODO correct?
 cargo install votebase_admin_cli
 
+# these two should be the overall admin username/password for your postgres database. This username/password will *not* be the one used by the votebase server! This is the only place you should ever need to use your overall admin username/password!
 YOUR_ADMIN_DB_USERNAME=<fill in here>
 YOUR_ADMIN_DB_PASSWORD=<fill in here>
-# these two should be the overall admin username/password for your postgres database. This username/password will *not* be the one used by the votebase server! This is the only place you should ever need to use your overall admin username/password!
+
 DB_HOST=<fill in here> # determined by your postgres database hosting situation
 DB_PORT=<fill in here> # determined by your postgres database hosting situation
 DB_NAME=<fill in here> # chosen by you! you must have already created this database
@@ -444,7 +408,7 @@ votebase.org/polity/new
 click the button
 give payment info, and even a means for splitting costs across members
 give your polity a name
-provide an initial Ruleset to be loaded
+provide an initial Ruleset to be loaded, even an abstract one and then the vars are prompted if they exist
 
 ## (Someday) Once votebase is a language or a set of macros over a database language
 
@@ -452,3 +416,47 @@ Instead of all these json declarations of requires, it will be basically the coq
 
 Then it's all just in the type system baby.
  -->
+
+
+
+
+---
+
+## Runtime Reference
+
+Mostly you should go look at [runtime.ts]
+
+The `votebase.Action` and `votebase.View` functions are used in `ruleset.ts` to define Actions and Views. These functions take a `name` that defines the name of the Action or View, and a Typescript function that defines their actual code. Here are the full signatures:
+
+```ts
+TODO
+
+function proposeSelfReplacement(candidate: CandidateRuleset): Promise<string>
+
+// TODO needs to account for possibility of failure
+function proposeSelfReplacement(candidate: CandidateRuleset): Promise<string>
+
+function createChildRuleset(name: string, initial: ConcreteRuleset): Promise<string>
+function deleteChildRuleset(name: string): Promise<void>
+function proposeChildReplacement(name: string, candidate: CandidateRuleset): Promise<string>
+function replaceChild(uuid: string): Promise<void>
+
+
+
+
+
+// function RecurringAction(definition: RecurringAction): void
+
+function createRecurringAction<Arg extends JsonValue>(definition: RecurringAction<Arg>): Promise<string>
+function removeRecurringAction(uuid: string): Promise<void>
+function scheduleAction<Arg extends JsonValue>(description: string, at: Date, action: FnAction<Arg>, arg: Arg): Promise<string>
+function unscheduleAction(uuid: string): Promise<void>
+
+function enrollMember(email: string): Promise<string>
+function removeMemberByEmail(email: string): Promise<void>
+function removeMemberByUuid(uuid: string): Promise<void>
+
+function addMembersToRuleset(full_path: string, uuids: string[]): Promise<void>
+// function addMembersToRulesetByCondition(full_path: string, condition: string): Promise<void>
+function removeMembersFromRuleset(full_path: string, uuids: string[]): Promise<void>
+```

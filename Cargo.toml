@@ -1,13 +1,12 @@
 [workspace]
 resolver = "2"
+	# "transpile",
+	# "cli",
+	# "bootstrap_cli",
+	# "server",
 members = [
-	"transpile",
 	"common",
-	"cli",
-	"bootstrap_cli",
-	"server",
-	"queries",
-	"temp_container",
+	"temp_containers",
 ]
 
 [workspace.dependencies]
@@ -17,6 +16,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", default-features = false }
 uuid = { version = "*", features = ["serde", "v4"] }
 chrono = { version = "*", features = ["serde"] }
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.48", features = ["full", "rt"] }
 log = "0.4"
 thiserror = "2"
+
+tokio-postgres = { version = "0.7" }
+deadpool-postgres = { version = "0.14" }
