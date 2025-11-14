@@ -16,7 +16,7 @@ pub fn generate_votebase_server_pass() -> String {
 
 pub async fn load_votebase_server_schema(db_name: String, client: &mut tokio_postgres::Client) -> Result<String, tokio_postgres::Error> {
 	let votebase_server_password = generate_votebase_server_pass();
-	let schema_sql = format!(include_str!("../../db_schema.sql"), db_name=db_name, votebase_server_password=votebase_server_password);
+	let schema_sql = format!(include_str!("../schema.sql"), db_name=db_name, votebase_server_password=votebase_server_password);
 	client.batch_execute(&schema_sql).await?;
 
 	Ok(votebase_server_password)

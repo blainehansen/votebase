@@ -13,7 +13,7 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
-transpile_utils = { path = "../transpile" }
+transpile_utils = { path = "../transpile_utils" }
 reqwest = "0.12"
 urlencoding = "2"
 
@@ -23,7 +23,7 @@ sqlparser = { version = "0.59", features = ["visitor"] }
 postgres-from-row = "0.5"
 futures-util = "0.3.31"
 
-# generated_queries = { path = "generated_queries", package = "generated_queries" }
+db_generated = { path = "../db_generated" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
@@ -31,4 +31,4 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 [build-dependencies]
 deno_core = { workspace = true }
 deno_error = { workspace = true }
-transpile_utils = { path = "../transpile" }
+transpile_utils = { path = "../transpile_utils" }

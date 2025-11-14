@@ -9,10 +9,7 @@ frontend/.vitepress/cache
 frontend/.vitepress/dist
 
 # generated sql query code
-gen_queries/auto_gen_queries
-# queries
-# !common/**/queries
-# !rulesets/**/queries
+db_generated
 queries.ts
 
 # Added by cargo

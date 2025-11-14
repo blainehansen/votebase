@@ -3,12 +3,12 @@ resolver = "2"
 	# "cli",
 	# "bootstrap_cli",
 	# "server",
-	# "common",
 members = [
+	"common",
 	"db_schema_utils",
 	"transpile_utils",
 	"temp_container_utils",
-	"gen_queries",
+	# "gen_queries", intentionally leaving this out because it's generated? doesn't seem to need to be included to be imported by common
 ]
 
 [workspace.dependencies]

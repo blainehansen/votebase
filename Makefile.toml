@@ -12,50 +12,14 @@ default_to_workspace = false
 # workspace = true
 
 
-# agh, have to make a standalone crate that runs and does this, and is then made a dep of other things
-
 [tasks.do_gen_queries]
-# condition = { files_modified = { input = ["./db_schema/**/*"], output = ["./gen_queries/**/*"] } }
-script_runner = "@rust"
-script = '''
-//! ```cargo
-//! [dependencies]
-//! clorinde = { version = "1.1" }
-//! tokio = { version = "1", features = ["rt"] }
-//! temp_container_utils = { path = "./temp_container_utils" }
-//! db_schema_utils = { path = "./db_schema_utils" }
-//! ```
-#[tokio::main]
-async fn main() {
-	use clorinde::config::Config;
-	let queries_path = "queries";
-	let schema_file = "./db_schema.sql";
-
-	let config = Config::builder_from_file("./db_schema/clorinde.toml").unwrap()
-		.queries(queries_path)
-		.destination("gen_queries")
-		// .async(true)
-		.build();
-
-	temp_container_utils::with_temp_postgres_client(async |db_config, mut client| {
-		let db_name = db_config.get_dbname().unwrap().to_string();
-		db_schema_utils::load_votebase_server_schema(db_name, &mut client).await.unwrap();
-
-		clorinde::gen_live(&client, config).unwrap();
-	}).await.unwrap();
-}
-'''
-
-
-# [tasks.do_gen_queries]
-# command = "cargo"
-# args = ["run", "-p", "gen_queries"]
-
+command = "cargo"
+args = ["run", "-p", "db_schema_utils"]
+condition = { files_modified = { input = ["./db_schema_utils/**/*"], output = ["./db_generated/**/*"] } }
 
 [tasks.dev_test]
 command = "cargo"
 args = ["test", "--", "--nocapture"]
-
 
 # [tasks.dev]
 # command = "cargo"

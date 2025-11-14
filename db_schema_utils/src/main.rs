@@ -1,15 +1,9 @@
 #[tokio::main]
 async fn main() {
 	use clorinde::config::Config;
-	let queries_path = "queries";
-	let schema_file = "../db_schema.sql";
-	println!("cargo:rerun-if-changed={queries_path}");
-	println!("cargo:rerun-if-changed={schema_file}");
-	println!("cargo:rerun-if-changed=clorinde.toml");
-
-	let config = Config::builder_from_file("clorinde.toml").unwrap()
-		.queries(queries_path)
-		.destination("auto_gen_queries")
+	let config = Config::builder_from_file("db_schema_utils/clorinde.toml").unwrap()
+		.queries("db_schema_utils/queries")
+		.destination("db_generated")
 		// .async(true)
 		.build();
 
