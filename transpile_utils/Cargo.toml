@@ -1,5 +1,5 @@
 [package]
-name = "votebase_transpile"
+name = "transpile_utils"
 version = "0.1.0"
 edition = "2024"
 

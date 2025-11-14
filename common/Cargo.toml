@@ -13,7 +13,7 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
-votebase_transpile = { path = "../transpile" }
+transpile_utils = { path = "../transpile" }
 reqwest = "0.12"
 urlencoding = "2"
 
@@ -31,9 +31,4 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 [build-dependencies]
 deno_core = { workspace = true }
 deno_error = { workspace = true }
-votebase_transpile = { path = "../transpile" }
-
-clorinde = { version = "1.1" }
-tokio-postgres = { workspace = true }
-tokio = { workspace = true, features = ["rt"] }
-temp_containers = { path = "../temp_containers" }
+transpile_utils = { path = "../transpile" }

@@ -1,12 +1,14 @@
 [workspace]
 resolver = "2"
-	# "transpile",
 	# "cli",
 	# "bootstrap_cli",
 	# "server",
+	# "common",
 members = [
-	"common",
-	"temp_containers",
+	"db_schema_utils",
+	"transpile_utils",
+	"temp_container_utils",
+	"gen_queries",
 ]
 
 [workspace.dependencies]

@@ -20,7 +20,7 @@ pub enum RuntimeError {
 	#[error(transparent)]
 	UuidParseError(#[from] uuid::Error),
 	#[error(transparent)]
-	TranspileError(#[from] votebase_transpile::TranspileError),
+	TranspileError(#[from] transpile_utils::TranspileError),
 	#[error(transparent)]
 	ModuleResolutionError(#[from] deno_core::ModuleResolutionError),
 
@@ -68,7 +68,7 @@ impl Runtime {
 		runtime.set_fn_map();
 		runtime.set_external_allowed(false);
 
-		let (code, _) = votebase_transpile::transpile_typescript(
+		let (code, _) = transpile_utils::transpile_typescript(
 			deno_core::ascii_str!(MAIN_SPECIFIER).into(),
 			code.to_string().into(),
 		)?;

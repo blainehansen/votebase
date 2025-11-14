@@ -3,9 +3,9 @@
 use-workspace-deps = "../Cargo.toml"
 
 [manifest.package]
-name = "generated_queries"
+name = "auto_gen_queries"
 version = "1.0.0"
-description = "Hmm?"
+description = "Automatically generated query functions against the votebase server db schema."
 license = "MIT"
 edition = "2024"
 
