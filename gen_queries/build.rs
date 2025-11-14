@@ -1,5 +1,3 @@
-// TODO maybe truly just merge this into common? given that the trick to have it bootstrap cleanly didn't work, just lean into it and remove the layer of indirection that is gen_queries
-
 #[tokio::main]
 async fn main() {
 	use clorinde::config::Config;

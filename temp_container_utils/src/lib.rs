@@ -208,7 +208,7 @@ mod tests {
 			Ok(())
 		}).await??;
 
-		with_temp_postgres_client(async |client| -> anyhow::Result<()> {
+		with_temp_postgres_client(async |_, client| -> anyhow::Result<()> {
 			client.execute(
 				"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
 				&[]
