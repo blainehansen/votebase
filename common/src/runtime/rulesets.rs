@@ -1,8 +1,8 @@
-use std::{collections::HashMap};
-use votebase_queries::types::votebase_catalog::GranularityEnum;
+use std::collections::HashMap;
+use crate::db_types::votebase_catalog::GranularityEnum;
 use crate::{queries, PgConfig, PgPool, PgClient, RoleType, format_ruleset_schema, format_ruleset_role, postgres};
 
-use super::RuntimeError;
+use super::{Runtime, RuntimeError};
 
 // the bootstrap process ensures there's always a ruleset at the root
 
@@ -22,7 +22,7 @@ pub struct ConcreteRuleset {
 	pub db_migration: String,
 
 	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
-	// fns: { [fn_name: string]: Fn<JsonValue> },
+	// fns: { [fn_name: string]: VotebaseFn<JsonValue> },
 
 	pub static_children: HashMap<String, ConcreteRuleset>,
 
@@ -42,7 +42,7 @@ pub struct CandidateRuleset {
 	pub db_migration: String,
 
 	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
-	// fns: { [fn_name: string]: Fn<JsonValue> },
+	// fns: { [fn_name: string]: VotebaseFn<JsonValue> },
 
 	pub static_children: HashMap<String, KeepOrReplace<CandidateRuleset>>,
 
@@ -138,51 +138,51 @@ async fn validate_candidate(
 	server_pg_client: &PgClient,
 	candidate: &CandidateRuleset,
 ) -> Result<(Vec<String>, Vec<String>), RuntimeError> {
-	let mut inner = super::Runtime::new(&candidate.code).await.map_err(|e| js_err(e.root_cause()))?;
+	let inner = Runtime::new(&candidate.code).await?;
 
 	let inner_state = inner.js_runtime.op_state();
 	let inner_state = inner_state.as_ref().borrow();
-	let fn_map = inner_state.borrow::<FnMap>();
+	let fn_map = inner_state.borrow::<crate::runtime::VotebaseFnMap>();
 	let mut actions = vec![];
 	let mut views = vec![];
 	for (fn_name, fn_type) in fn_map {
 		match fn_type {
-			crate::FnType::Action(_) => { actions.push(fn_name.to_owned()) },
-			crate::FnType::View(_) => { views.push(fn_name.to_owned()) },
+			super::VotebaseFn::Action(_) => { actions.push(fn_name.to_owned()) },
+			super::VotebaseFn::View(_) => { views.push(fn_name.to_owned()) },
 		}
 	}
 
 	let pgschema = format_ruleset_schema(current_full_path);
 	let declared_full_path = &format!("{current_full_path}|declared");
 	let (declared_tempdb_config, declared_dbname) = new_tempdb(&pgschema, declared_full_path, server_pg_config, server_pg_client)
-		.await.map_err(js_err)?;
+		.await?;
 	let intended_full_path = &format!("{current_full_path}|actual");
 	let (actual_tempdb_config, actual_dbname) = new_tempdb(&pgschema, intended_full_path, server_pg_config, server_pg_client)
-		.await.map_err(js_err)?;
+		.await?;
 
 	let result = (|| async {
-		let (declared_client, declared_conn) = declared_tempdb_config.connect(postgres::NoTls).await.map_err(js_err)?;
+		let (declared_client, declared_conn) = declared_tempdb_config.connect(postgres::NoTls).await?;
 		tokio::spawn(async move { if let Err(e) = declared_conn.await { log::error!("DB connection error: {}", e); } });
-		declared_client.batch_execute(&format!(r#"create schema "{pgschema}";"#)).await.map_err(js_err)?;
-		declared_client.batch_execute(&candidate.db_schema).await.map_err(js_err)?;
+		declared_client.batch_execute(&format!(r#"create schema "{pgschema}";"#)).await?;
+		declared_client.batch_execute(&candidate.db_schema).await?;
 
-		let current_schema = compute_diff(&pgschema, &actual_tempdb_config, server_pg_config).await.map_err(js_err)?;
-		let (actual_client, actual_conn) = actual_tempdb_config.connect(postgres::NoTls).await.map_err(js_err)?;
+		let current_schema = compute_diff(&pgschema, &actual_tempdb_config, server_pg_config).await?;
+		let (actual_client, actual_conn) = actual_tempdb_config.connect(postgres::NoTls).await?;
 		tokio::spawn(async move { if let Err(e) = actual_conn.await { log::error!("DB connection error: {}", e); } });
-		actual_client.batch_execute(&current_schema).await.map_err(js_err)?;
-		actual_client.batch_execute(&candidate.db_migration).await.map_err(js_err)?;
+		actual_client.batch_execute(&current_schema).await?;
+		actual_client.batch_execute(&candidate.db_migration).await?;
 
-		let diff = compute_diff(&pgschema, &declared_tempdb_config, &actual_tempdb_config).await.map_err(js_err)?;
+		let diff = compute_diff(&pgschema, &declared_tempdb_config, &actual_tempdb_config).await?;
 		if !diff.is_empty() {
 			log::error!("{}", diff);
-			Err(deno_error::JsErrorBox::generic(format!("candidate for {current_full_path} has misdeclared schema")))
+			Err(RuntimeError::OtherError(format!("candidate for {current_full_path} has misdeclared schema")))
 		}
 		else { Ok(()) }
 	})().await;
 
 	let (drop_declared, drop_actual) = tokio::join!(
-		async { drop_tempdb(declared_dbname, server_pg_client).await.map_err(js_err) },
-		async { drop_tempdb(actual_dbname, server_pg_client).await.map_err(js_err) },
+		async { drop_tempdb(declared_dbname, server_pg_client).await },
+		async { drop_tempdb(actual_dbname, server_pg_client).await },
 	);
 	drop_declared?;
 	drop_actual?;
@@ -224,7 +224,7 @@ async fn compute_diff(
 	pgschema: &str,
 	current_config: &PgConfig,
 	intended_config: &PgConfig,
-) -> Result<String, deno_error::JsErrorBox> {
+) -> Result<String, RuntimeError> {
 	#[cfg(debug_assertions)]
 	let mut command = {
 		let mut command = tokio::process::Command::new("uv");
@@ -241,17 +241,16 @@ async fn compute_diff(
 		.arg(convert_db_config(current_config))
 		.arg(convert_db_config(intended_config))
 		.output()
-		.await
-		.map_err(js_err)?;
+		.await?;
 
 	if !output.stderr.is_empty() {
 		let e = format!("migra failed: {}\n\n{}", output.status, String::from_utf8_lossy(&output.stderr));
-		return Err(deno_error::JsErrorBox::generic(e));
+		return Err(RuntimeError::OtherError(e));
 	}
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn convert_db_config(url: &PgConfig) -> String {
+pub fn convert_db_config(url: &PgConfig) -> String {
 	let user = url.get_user().unwrap_or_default();
 	let password = urlencoding::encode_binary(url.get_password().unwrap_or_default());
 	// let host = url.get_hosts().get(0).map(|host| host.into()).unwrap_or_default();

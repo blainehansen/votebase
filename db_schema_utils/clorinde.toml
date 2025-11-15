@@ -18,9 +18,10 @@ edition = "2024"
 # # Applied to all generated structs and postgres types
 # derive-traits = ["serde::Serialize", "serde::Deserialize"]
 
-# [types.type-traits-mapping]
-# # Applied to specfic custom postgres types (eg. enums, domains, composites)
-# votebase_catalog.granularity_enum = ["serde::Deserialize"]
+[types.type-traits-mapping]
+# Applied to specfic custom postgres types (eg. enums, domains, composites)
+# "votebase_catalog.granularity_enum" = ["serde::Deserialize"]
+"granularity_enum" = ["serde::Deserialize"]
 
 # [manifest.dependencies]
 # # Dependencies required for custom type mappings

@@ -23,6 +23,8 @@ pub enum RuntimeError {
 	TranspileError(#[from] transpile_utils::TranspileError),
 	#[error(transparent)]
 	ModuleResolutionError(#[from] deno_core::ModuleResolutionError),
+	#[error(transparent)]
+	StdIoError(#[from] std::io::Error),
 
 	#[error("internal error: {0}")]
 	OtherError(String),
@@ -38,6 +40,7 @@ impl Into<deno_error::JsErrorBox> for RuntimeError {
 			RuntimeError::UuidParseError(e) => deno_error::JsErrorBox::generic(e.to_string()),
 			RuntimeError::TranspileError(e) => deno_error::JsErrorBox::generic(e.to_string()),
 			RuntimeError::ModuleResolutionError(e) => deno_error::JsErrorBox::from_err(e),
+			RuntimeError::StdIoError(e) => deno_error::JsErrorBox::from_err(e),
 			RuntimeError::OtherError(m) => deno_error::JsErrorBox::generic(m),
 		}
 	}
@@ -82,9 +85,9 @@ impl Runtime {
 	}
 
 	pub fn set_fn_map(&mut self) {
-		self.js_runtime.op_state().borrow_mut().put(FnMap::new());
+		self.js_runtime.op_state().borrow_mut().put(VotebaseFnMap::new());
 	}
-	pub fn take_fn_map(&mut self) -> FnMap {
+	pub fn take_fn_map(&mut self) -> VotebaseFnMap {
 		self.js_runtime.op_state().borrow_mut().take()
 	}
 
@@ -475,10 +478,10 @@ async fn op_sql_execute_statements(
 	Ok(())
 }
 
-pub type FnMap = std::collections::HashMap<String, Fn>;
+pub type VotebaseFnMap = std::collections::HashMap<String, VotebaseFn>;
 
 #[derive(Debug)]
-pub enum Fn {
+pub enum VotebaseFn {
 	Action(v8::Global<v8::Function>),
 	View(v8::Global<v8::Function>),
 }
@@ -498,11 +501,11 @@ fn op_register_fn(
 	// https://docs.rs/jsonschema/latest/jsonschema/struct.Validator.html
 	// then we've effectively demanded actions/views to type their inputs!
 	let func = match is_action {
-		true => Fn::Action(func),
-		false => Fn::View(func),
+		true => VotebaseFn::Action(func),
+		false => VotebaseFn::View(func),
 	};
 
-	let fn_map = state.borrow_mut::<FnMap>();
+	let fn_map = state.borrow_mut::<VotebaseFnMap>();
 	use std::collections::hash_map::Entry;
 	match fn_map.entry(fn_name.to_owned()) {
 		Entry::Vacant(entry) => {
@@ -522,7 +525,7 @@ async fn op_create_recurring_action(
 	state: Rc<RefCell<OpState>>,
 	#[string] description: String,
 	#[serde] start: chrono::DateTime<chrono::Utc>,
-	#[serde] recurrence_granularity: votebase_queries::types::votebase_catalog::GranularityEnum,
+	#[serde] recurrence_granularity: crate::db_types::votebase_catalog::GranularityEnum,
 	recurrence_multiplier: i16,
 	#[string] action_name: String,
 	#[serde] action_arg: serde_json::Value,
@@ -978,8 +981,8 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 		.ok_or_else(|| RuntimeError::OtherError(format!("{} '{}' not found", function_type, function_name)))?;
 
 	let function = match (function_type, function) {
-		(FnType::Action, Fn::Action(function)) => function,
-		(FnType::View, Fn::View(function)) => function,
+		(FnType::Action, VotebaseFn::Action(function)) => function,
+		(FnType::View, VotebaseFn::View(function)) => function,
 		_ => { return Err(RuntimeError::OtherError(format!("'{}' isn't of type {}", function_name, function_type))) },
 	};
 

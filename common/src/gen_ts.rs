@@ -1,4 +1,4 @@
-use votebase_queries::{tokio_postgres as postgres};
+use crate::postgres;
 
 macro_rules! match_pg_type {
 	($expr:expr, $($variant:ident => $e:expr;)*) => {

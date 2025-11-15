@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-	# "cli",
-	# "bootstrap_cli",
-	# "server",
 members = [
 	"common",
+	"cli",
+	"bootstrap_cli",
+	"server",
 	"db_schema_utils",
 	"transpile_utils",
 	"temp_container_utils",

@@ -13,7 +13,7 @@ fn boil_string(s: &str) -> String {
 
 #[test]
 fn test_convert_db_url() {
-	assert_eq!(convert_db_config(&conf()), "postgresql://dev_admin_user:dev_admin_password@localhost:5432/dev_db");
+	assert_eq!(rulesets::convert_db_config(&conf()), "postgresql://dev_admin_user:dev_admin_password@localhost:5432/dev_db");
 }
 
 #[tokio::test(start_paused = true)]
@@ -63,7 +63,7 @@ async fn test_propose_self_replacement() {
 	"#).await.unwrap();
 
 	let current_full_path = "root";
-	create_ruleset(
+	rulesets::create_ruleset(
 		&conf(), &mut client, None, &current_full_path, &vec![], &vec![],
 		"", "create table stuff (id uuid primary key);",
 	).await.unwrap();

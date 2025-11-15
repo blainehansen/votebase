@@ -12,7 +12,7 @@ type ConcreteRuleset = {
 	db_migration: string,
 
 	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
-	// fns: { [fn_name: string]: Fn<JsonValue> },
+	// fns: { [fn_name: string]: VotebaseFn<JsonValue> },
 
 	// static children are *at least* necessary for situations where in one ruleset you create an election for something that must be a ruleset! and one where that election can't change the ruleset itself that specifies that election
 	// you literally can't do the idea of a constitutional tree with a kernel root without child rulesets,
@@ -87,7 +87,7 @@ export type FnView<Q extends JsonValue> = Readonly<{
 	func: (query: Q, userId: string | null) => Promise<string>,
 }>
 
-export type Fn<T extends JsonValue> = FnAction<T> | FnView<T>
+export type VotebaseFn<T extends JsonValue> = FnAction<T> | FnView<T>
 
 export type RecurrenceGranularity = 'Day' | 'Week' | 'Month' | 'Year'
 

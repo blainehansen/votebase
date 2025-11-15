@@ -1,4 +1,4 @@
-use votebase_queries::{tokio_postgres as postgres, deadpool_postgres as deadpool};
+use votebase_common::{postgres, deadpool, queries};
 use tokio::io::AsyncWriteExt;
 
 type AnyError = Box<dyn std::error::Error>;

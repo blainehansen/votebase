@@ -1,4 +1,4 @@
-use votebase_queries::{tokio_postgres as postgres, deadpool_postgres as deadpool};
+use crate::{postgres, deadpool};
 use std::collections::HashMap;
 
 type AnyError = Box<dyn std::error::Error>;
@@ -305,7 +305,7 @@ fn convert_named_params_to_positional(sql: &str) -> Result<(String, HashMap<usiz
     .map_err(|e| format!("Failed to parse SQL:\n{sql}\n{}", e))?;
 
 	let mut replacer = NamedParamReplacer::new();
-	stmts.visit(&mut replacer);
+	let _ = stmts.visit(&mut replacer);
 
 	let stmts = stmts.into_iter()
 		.map(|stmt| stmt.to_string())
@@ -314,11 +314,11 @@ fn convert_named_params_to_positional(sql: &str) -> Result<(String, HashMap<usiz
 	Ok((stmts.join("; "), replacer.param_map, stmts))
 }
 
-fn parse_expr(sql: &str) -> Result<sqlparser::ast::Expr, String> {
-	let mut parser = sqlparser::parser::Parser::new(&sqlparser::dialect::PostgreSqlDialect{})
-		.try_with_sql(sql)
-    .map_err(|e| format!("Failed to parse SQL:\n{sql}\n{}", e))?;
+// fn parse_expr(sql: &str) -> Result<sqlparser::ast::Expr, String> {
+// 	let mut parser = sqlparser::parser::Parser::new(&sqlparser::dialect::PostgreSqlDialect{})
+// 		.try_with_sql(sql)
+//     .map_err(|e| format!("Failed to parse SQL:\n{sql}\n{}", e))?;
 
-	parser.parse_expr()
-    .map_err(|e| format!("Failed to parse SQL expression:\n{sql}\n{}", e))
-}
+// 	parser.parse_expr()
+//     .map_err(|e| format!("Failed to parse SQL expression:\n{sql}\n{}", e))
+// }
