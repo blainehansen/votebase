@@ -12,13 +12,13 @@ enum FileSystem {
 }
 
 impl FileSystem {
-	async fn get_file_content(&self, p: &PathBuf) -> io::Result<&String> {
+	async fn get_file_content(&self, path_buf: &PathBuf) -> std::io::Result<String> {
 		match self {
 			FileSystem::ActualFiles => {
 				tokio::fs::read_to_string(p).await
 			},
 			FileSystem::Stored(files_map) => {
-				let content = files_map.get(path_buf).ok_or_else(|| io::error::Error::OtherError(format!("")))?;
+				let content = files_map.get(path_buf).ok_or_else(|| std::io::Error::(format!("")))?;
 				std::future::ready(Ok(content.to_string()))
 			},
 		}
