@@ -1,5 +1,4 @@
 use votebase_common::{postgres, deadpool, queries};
-use tokio::io::AsyncWriteExt;
 
 type AnyError = Box<dyn std::error::Error>;
 
@@ -7,53 +6,54 @@ type AnyError = Box<dyn std::error::Error>;
 async fn main() -> Result<(), AnyError> {
 	let args: VotebaseCliArgs = argh::from_env();
 
-	let config = args.db_url.parse::<postgres::Config>()?;
-	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(1).build()?;
-	let client = pool.get().await?;
+	// let config = args.db_url.parse::<postgres::Config>()?;
+	// let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(1).build()?;
+	// let client = pool.get().await?;
 
 	let ruleset_dir = args.ruleset_dir;
 	let queries_dir = ruleset_dir.join("queries");
 	match args.subcommand {
+		// - in a temp podman postgres
+		//   - execute `schema.sql` against it, including rendering placeholders for any abstract requires by choosing random "real" names for each
+		//   - generate the queries and write them into the file
 		SubCommand::Dev(_) => {
-			let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-			let temp_dbname = format!("votebase_temp_db_{now}");
-			client.execute(&format!(r#"create database "{temp_dbname}""#), &[]).await?;
+			let generated = temp_container_utils::with_temp_postgres_client(async |db_config, mut client| {
+				let db_name = db_config.get_dbname().unwrap().to_string();
+				db_schema_utils::load_votebase_server_schema(db_name, &mut client).await?;
 
-			let generated = {
-				let mut temp_config = config.clone();
-				temp_config.dbname(&temp_dbname);
-				let temp_pool = deadpool::Pool::builder(deadpool::Manager::new(temp_config, postgres::NoTls)).max_size(1).build()?;
-				let mut temp_client = temp_pool.get().await?;
+				// 	votebase_common::runtime::create_ruleset(
+				// 		&config, &mut temp_client,
+				// 		None, "root",
+				// 		&vec!["__insert_initial".to_string()], &vec![],
+				// 		include_str!("../../rulesets/accept-any/ruleset.ts"), "",
+				// 	).await?;
 
-				let schema_sql = format!(include_str!("../../bootstrap_cli/schema.sql"), db_database=temp_dbname, votebase_server_password="votebase_server_password");
-				temp_client.batch_execute(&schema_sql).await?;
-				temp_client.batch_execute(&format!(r#"create schema public; alter database "{temp_dbname}" reset search_path;"#)).await?;
+				let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &client).await?;
+				Ok(format!("import 'votebase'\nexport default {{\n{generated_fields}\n}}"))
+			}).await??;
 
-				votebase_common::runtime::create_ruleset(
-					&config, &mut temp_client,
-					None, "root",
-					&vec!["__insert_initial".to_string()], &vec![],
-					include_str!("../../rulesets/accept-any/ruleset.ts"), "",
-				).await?;
-
-				let db_schema = tokio::fs::read_to_string(ruleset_dir.join("schema.sql")).await?;
-				temp_client.batch_execute(&db_schema).await?;
-
-				let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &temp_client).await?;
-				format!("import 'votebase'\nexport default {{\n{generated_fields}\n}}")
-			};
-			client.batch_execute(&format!(r#"drop database if exists "{temp_dbname}""#)).await?;
-
+			use tokio::io::AsyncWriteExt;
 			let mut file = tokio::fs::OpenOptions::new().write(true).create(true)
 				.open(format!("{}.ts", queries_dir.to_string_lossy())).await?;
 
 			file.write_all(generated.as_bytes()).await?;
 		},
 
+		// - in a temp podman postgres
+		//   - execute `schema.sql` against it, including rendering placeholders for any abstract requires by choosing random "real" names for each
+		//   - generate the queries and write them into the file
+		// - using a temp podman typescript, runs a typecheck with the votebase tsconfig
 		SubCommand::Check(_) => {
 
 		},
 
+		// - fetch the pg archive and the full Ruleset tree from the real server with whatever caching rules (???) (hash the schema, and when the dev tools request the schema they can specify which one they already have including null, and server tells them they're good if nothing's changed)
+		// - in a temp podman postgres
+		//   - restore the pg archive to a "current" db
+		//   - fulfill `schema.sql` using the actual provided values in `vars`, then write it to an "intended" db, then get a diff from "current" to "intended", using the `schema` parameter to narrow to only this ruleset. then apply that diff as the migration on top of the archive, to be used for real typechecking. can do shenanigans with diffing the archive against nothing with a schema narrowing to get the "current" standalone schema, perhaps
+		//   - generate the queries and write them into the file
+		// - using a temp podman typescript, run a typecheck with the votebase tsconfig
+		// - analyze the ruleset by executing it, and use the migration generated above to create the bundle
 		SubCommand::Bundle(Bundle { migration_file }) => {
 			let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &client).await?;
 
@@ -66,6 +66,8 @@ async fn main() -> Result<(), AnyError> {
 
 			let bundled_ruleset = serde_json::to_string(&BundledRuleset { code, db_schema, db_migration })?;
 			let bundle_file = ruleset_dir.join("ruleset.json");
+
+			use tokio::io::AsyncWriteExt;
 			let mut file = tokio::fs::OpenOptions::new().write(true).create(true).truncate(true)
 				.open(bundle_file).await?;
 			file.write_all(bundled_ruleset.as_bytes()).await?;
@@ -74,6 +76,10 @@ async fn main() -> Result<(), AnyError> {
 
 	Ok(())
 }
+
+
+
+
 
 #[derive(Debug, serde::Serialize)]
 struct BundledRuleset {
@@ -104,6 +110,7 @@ struct VotebaseCliArgs {
 #[argh(subcommand)]
 enum SubCommand {
 	Dev(Dev),
+	Check(Check),
 	Bundle(Bundle),
 }
 

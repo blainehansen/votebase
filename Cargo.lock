@@ -4492,8 +4492,10 @@ name = "votebase_cli"
 version = "0.1.0"
 dependencies = [
  "argh",
+ "db_schema_utils",
  "serde",
  "serde_json",
+ "temp_container_utils",
  "tokio",
  "votebase_common",
 ]

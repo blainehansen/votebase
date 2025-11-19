@@ -1,4 +1,4 @@
-use crate::{postgres, deadpool};
+use crate::postgres;
 use std::collections::HashMap;
 
 type AnyError = Box<dyn std::error::Error>;
@@ -49,7 +49,7 @@ struct RawQuery {
 }
 
 
-pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &deadpool::Client) -> Result<String, AnyError> {
+pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &impl postgres::GenericClient) -> Result<String, AnyError> {
 	let sql_files = tokio::task::spawn_blocking(move || {
 		walkdir::WalkDir::new(queries_dir).follow_links(false).into_iter()
 			.filter_map(|e| e.ok())
@@ -82,12 +82,12 @@ pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &deadpool
 	"#, &[]).await?.iter()
 		.map(ColumnInfo::from_row)
 		.map(|info| ((info.table_oid, info.column_id), info))
-		.collect::<HashMap<_, _>>();
+		.collect();
 
 	let full_statements = futures::future::try_join_all(
 		sql_files.into_iter().map(async |path| {
 			let raw_query = read_sql_file(path).await?;
-			let full_statement = prepare_query(&client, &table_column_map, raw_query).await?;
+			let full_statement = prepare_query(client, &table_column_map, raw_query).await?;
 			Ok::<_, AnyError>(full_statement)
 		})
 	).await?;
@@ -192,7 +192,7 @@ fn columns_to_type_hint(columns: Vec<FullColumn>) -> String {
 
 type TableColumnMap = HashMap<(u32, i16), ColumnInfo>;
 async fn prepare_query(
-	client: &deadpool::Client,
+	client: &impl postgres::GenericClient,
 	table_column_map: &TableColumnMap,
 	raw_query: RawQuery,
 ) -> Result<FullStatement, postgres::Error> {
