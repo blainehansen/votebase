@@ -1,4 +1,16 @@
+use std::io;
 use tokio_postgres::Config;
+
+#[derive(thiserror::Error, Debug)]
+pub enum ContainerError {
+	#[error(transparent)]
+	PostgresError(#[from] tokio_postgres::Error),
+	#[error(transparent)]
+	StdIoError(#[from] std::io::Error),
+}
+
+pub type ContainerResult<T> = Result<T, ContainerError>;
+
 
 fn random_string(len: usize) -> String {
 	let mut rng = rand::rng();
@@ -22,7 +34,7 @@ fn random_port() -> u16 {
 // 	status.is_ok_and(|s| s.success())
 // }
 
-// pub async fn setup(container_image: &str, container_wait: u64) -> anyhow::Result<()> {
+// pub async fn setup(container_image: &str, container_wait: u64) -> ContainerResult<()> {
 // 	let command = "podman";
 // 	if !is_installed(command).await {
 // 		return Err(anyhow::anyhow!("`{command}` is not installed or not found in PATH."));
@@ -33,7 +45,22 @@ fn random_port() -> u16 {
 // 	Ok(())
 // }
 
-async fn podman_cmd(args: &[&str], action: &'static str) -> anyhow::Result<()> {
+pub async fn run_workspace_podman_cmd(image: &str, workspace_volume: impl AsRef<str>, args: &[&str]) -> io::Result<std::process::Output> {
+	let workspace_volume = format!("{}:/workspace", workspace_volume.as_ref());
+
+	let args = [
+		["run", "--rm", "-v", &workspace_volume, image].as_slice(),
+		args,
+	].concat();
+
+	tokio::process::Command::new("podman")
+		.args(args)
+		.stderr(std::process::Stdio::piped())
+		.stdout(std::process::Stdio::piped())
+		.spawn()?.wait_with_output().await
+}
+
+async fn podman_cmd(args: &[&str], action: &'static str) -> io::Result<()> {
 	let output = tokio::process::Command::new("podman")
 		.args(args)
 		.stderr(std::process::Stdio::piped())
@@ -44,11 +71,11 @@ async fn podman_cmd(args: &[&str], action: &'static str) -> anyhow::Result<()> {
 		Ok(())
 	} else {
 		let err = String::from_utf8_lossy(&output.stderr);
-		Err(anyhow::anyhow!("`podman` couldn't {action}: {err}"))
+		Err(io::Error::new(io::ErrorKind::Other, format!("`podman` couldn't {action}: {err}")))
 	}
 }
 
-async fn spawn_postgres(container_name: &str, pg_pass: &str, pg_user: &str, pg_db: &str, pg_port: u16) -> anyhow::Result<()> {
+async fn spawn_postgres(container_name: &str, pg_pass: &str, pg_user: &str, pg_db: &str, pg_port: u16) -> io::Result<()> {
 	podman_cmd(&[
 		"run",
 		"--name", &container_name,
@@ -81,13 +108,13 @@ async fn healthcheck_postgres(
 	config: &Config,
 	max_retries: u64,
 	ms_per_retry: u64,
-) -> anyhow::Result<()> {
+) -> io::Result<()> {
 	let slow_threshold = 10 + max_retries / 10;
 	let mut nb_retries = 0;
 
 	while !is_postgres_healthy(config).await {
 		if nb_retries >= max_retries {
-			return Err(anyhow::anyhow!("reached the max number of connection retries while waiting for postgres"));
+			return Err(io::Error::new(io::ErrorKind::Other, "reached the max number of connection retries while waiting for postgres"))
 		};
 
 		tokio::time::sleep(std::time::Duration::from_millis(ms_per_retry)).await;
@@ -107,7 +134,7 @@ async fn healthcheck_postgres(
 pub async fn with_temp_postgres<
 	Fut: Future,
 	F: FnOnce(Config) -> Fut,
->(func: F) -> anyhow::Result<Fut::Output> {
+>(func: F) -> ContainerResult<Fut::Output> {
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
 	kill_container(&container_name).await?;
@@ -126,7 +153,7 @@ pub async fn with_temp_postgres<
 pub async fn with_temp_postgres_client<
 	Fut: Future,
 	F: FnOnce(Config, tokio_postgres::Client) -> Fut,
->(func: F) -> anyhow::Result<Fut::Output> {
+>(func: F) -> ContainerResult<Fut::Output> {
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
 	kill_container(&container_name).await?;
@@ -166,7 +193,7 @@ fn generate_temp_config() -> (String, Config, String, String, String, u16) {
 	(container_name, config, pg_pass.to_string(), pg_user.to_string(), pg_db.to_string(), pg_port)
 }
 
-async fn kill_container(container_name: &str) -> anyhow::Result<()> {
+async fn kill_container(container_name: &str) -> io::Result<()> {
 	podman_cmd(&["stop", "--ignore", &container_name], "stop container").await?;
 	podman_cmd(&["rm", "-v", "--ignore", &container_name], "cleanup container").await?;
 	Ok(())
@@ -178,8 +205,8 @@ mod tests {
 	use super::*;
 
 	#[tokio::test]
-	async fn test_postgres_with_process_setup() -> Result<(), Box<dyn std::error::Error>> {
-		with_temp_postgres(async |config| -> anyhow::Result<()> {
+	async fn test_postgres_with_process_setup() -> ContainerResult<()> {
+		with_temp_postgres(async |config| -> ContainerResult<()> {
 			let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
 
 			tokio::spawn(async move {
@@ -208,7 +235,7 @@ mod tests {
 			Ok(())
 		}).await??;
 
-		with_temp_postgres_client(async |_, client| -> anyhow::Result<()> {
+		with_temp_postgres_client(async |_, client| -> ContainerResult<()> {
 			client.execute(
 				"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
 				&[]
@@ -263,7 +290,7 @@ mod tests {
 // 		}
 // 	}
 
-// 	impl From<std::io::Error> for Error {
+// 	impl From<io::Error> for Error {
 // 		fn from(e: std::io::Error) -> Self {
 // 			Self {
 // 				msg: format!("{e:#}"),

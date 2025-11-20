@@ -21,6 +21,7 @@ chrono = { version = "*", features = ["serde"] }
 tokio = { version = "1.48", features = ["full", "rt"] }
 log = "0.4"
 thiserror = "2"
+anyhow = "1"
 
 tokio-postgres = { version = "0.7" }
 deadpool-postgres = { version = "0.14" }

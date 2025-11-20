@@ -10,4 +10,5 @@ db_schema_utils = { path = "../db_schema_utils" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+anyhow = { workspace = true }
 argh = "0.1"

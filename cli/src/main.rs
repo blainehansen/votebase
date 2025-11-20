@@ -1,9 +1,9 @@
-use votebase_common::{postgres, deadpool, queries};
+// use votebase_common::{postgres, deadpool, queries};
 
-type AnyError = Box<dyn std::error::Error>;
+use std::path::PathBuf;
 
 #[tokio::main]
-async fn main() -> Result<(), AnyError> {
+async fn main() -> anyhow::Result<()> {
 	let args: VotebaseCliArgs = argh::from_env();
 
 	// let config = args.db_url.parse::<postgres::Config>()?;
@@ -17,26 +17,7 @@ async fn main() -> Result<(), AnyError> {
 		//   - execute `schema.sql` against it, including rendering placeholders for any abstract requires by choosing random "real" names for each
 		//   - generate the queries and write them into the file
 		SubCommand::Dev(_) => {
-			let generated = temp_container_utils::with_temp_postgres_client(async |db_config, mut client| {
-				let db_name = db_config.get_dbname().unwrap().to_string();
-				db_schema_utils::load_votebase_server_schema(db_name, &mut client).await?;
-
-				// 	votebase_common::runtime::create_ruleset(
-				// 		&config, &mut temp_client,
-				// 		None, "root",
-				// 		&vec!["__insert_initial".to_string()], &vec![],
-				// 		include_str!("../../rulesets/accept-any/ruleset.ts"), "",
-				// 	).await?;
-
-				let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &client).await?;
-				Ok(format!("import 'votebase'\nexport default {{\n{generated_fields}\n}}"))
-			}).await??;
-
-			use tokio::io::AsyncWriteExt;
-			let mut file = tokio::fs::OpenOptions::new().write(true).create(true)
-				.open(format!("{}.ts", queries_dir.to_string_lossy())).await?;
-
-			file.write_all(generated.as_bytes()).await?;
+			run_sql_checking_and_generation(&queries_dir, true).await?;
 		},
 
 		// - in a temp podman postgres
@@ -44,7 +25,8 @@ async fn main() -> Result<(), AnyError> {
 		//   - generate the queries and write them into the file
 		// - using a temp podman typescript, runs a typecheck with the votebase tsconfig
 		SubCommand::Check(_) => {
-
+			run_sql_checking_and_generation(&queries_dir, false).await?;
+			run_votebase_tsc(&ruleset_dir).await?;
 		},
 
 		// - fetch the pg archive and the full Ruleset tree from the real server with whatever caching rules (???) (hash the schema, and when the dev tools request the schema they can specify which one they already have including null, and server tells them they're good if nothing's changed)
@@ -77,6 +59,44 @@ async fn main() -> Result<(), AnyError> {
 	Ok(())
 }
 
+async fn run_sql_checking_and_generation(queries_dir: &PathBuf, do_generation: bool) -> anyhow::Result<()> {
+	let generated = temp_container_utils::with_temp_postgres_client(async |db_config, mut client| -> anyhow::Result<String> {
+		let db_name = db_config.get_dbname().unwrap().to_string();
+		db_schema_utils::load_votebase_server_schema(db_name, &mut client).await?;
+
+		// 	votebase_common::runtime::create_ruleset(
+		// 		&config, &mut temp_client,
+		// 		None, "root",
+		// 		&vec!["__insert_initial".to_string()], &vec![],
+		// 		include_str!("../../rulesets/accept-any/ruleset.ts"), "",
+		// 	).await?;
+
+		let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &client).await?;
+		Ok(format!("import 'votebase'\nexport default {{\n{generated_fields}\n}}"))
+	}).await??;
+
+	if do_generation {
+		use tokio::io::AsyncWriteExt;
+		let mut file = tokio::fs::OpenOptions::new().write(true).create(true)
+			.open(format!("{}.ts", queries_dir.to_string_lossy())).await?;
+
+		file.write_all(generated.as_bytes()).await?;
+	}
+
+	Ok(())
+}
+
+async fn run_votebase_tsc(workspace_volume: &PathBuf) -> anyhow::Result<()> {
+	let output = temp_container_utils::run_workspace_podman_cmd("votebase-tsc", workspace_volume.to_string_lossy(), &["--noEmit"]).await?;
+
+	if !output.status.success() {
+		let err = String::from_utf8_lossy(&output.stderr);
+		Err(anyhow::anyhow!("typescript errors when checking with the votebase tsconfig:\n\n{err}"))
+	}
+	else { Ok(()) }
+}
+
+
 
 
 
@@ -100,7 +120,7 @@ struct VotebaseCliArgs {
 	/// - `schema.sql` file containing the desired *final* sql schema for the ruleset, as if it were being created from an empty database
 	/// - `ruleset.ts` the actual ruleset code that defines the Actions and Views
 	#[argh(option)]
-	ruleset_dir: std::path::PathBuf,
+	ruleset_dir: PathBuf,
 
 	#[argh(subcommand)]
 	subcommand: SubCommand,
@@ -130,6 +150,6 @@ struct Check {}
 struct Bundle {
 	/// the sql file meant to successfully migrate the particular ruleset to the final state specified in this ruleset's `schema.sql`
 	#[argh(option)]
-	migration_file: std::path::PathBuf,
+	migration_file: PathBuf,
 }
 

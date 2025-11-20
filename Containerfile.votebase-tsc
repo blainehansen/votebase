@@ -1,22 +1,22 @@
 FROM node:24-slim
 
-# Enable pnpm via corepack
+# enable pnpm via corepack
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
 
-# Set working directory
 WORKDIR /workspace
 
-# Install TypeScript globally using pnpm
+COPY tsconfig.votebase-rulesets.json .
+COPY common/src/runtime/runtime.ts votebase-runtime.ts
+
 RUN pnpm add -g typescript
 
-# Default command runs tsc
-ENTRYPOINT ["tsc"]
+ENTRYPOINT ["tsc", "--project", "tsconfig.votebase-rulesets.json"]
 CMD ["--help"]
 
 # we can avoid the need for a registry or any nonsense if we can:
-# - podman build the slim-tsc or whatever image locally, including the tsconfig or libraries we want etc
+# - podman build votebase-tsc or whatever image locally, including the tsconfig or libraries we want etc
 # - have the actual votebase server or whatever image *save that above exported tarfile*, so that it already comes packaged. this will require podman in podman or podman in docker
 # - at server startup (or in the votebase server image itself?) do podman *load* to get the image in the right place, and then the runtime etc can use it
 

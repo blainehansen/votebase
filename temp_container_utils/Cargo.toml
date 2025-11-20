@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1"
-rand = "0.9"
-rand_distr = "0.5"
+thiserror = { workspace = true }
+# anyhow = { workspace = true }
 tokio = { workspace = true }
 tokio-postgres = { workspace = true }
+rand = "0.9"
+rand_distr = "0.5"

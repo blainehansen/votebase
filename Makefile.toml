@@ -21,6 +21,10 @@ condition = { files_modified = { input = ["./db_schema_utils/**/*"], output = ["
 command = "cargo"
 args = ["test", "--", "--nocapture"]
 
+[tasks.votebase_tsc]
+command = "podman"
+args = ["build", "-t", "votebase-tsc", "-f", "Containerfile.votebase-tsc", "."]
+
 # [tasks.dev]
 # command = "cargo"
 # args = ["test", "--", "--nocapture"]
@@ -55,3 +59,95 @@ args = ["test", "--", "--nocapture"]
 # # 	"build",
 # # 	"test"
 # # ]
+
+
+
+
+
+
+# # PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c 'drop database dev_db' | cat
+# # PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c 'create database dev_db' | cat
+# # cargo run -p votebase_cli -- "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db"
+
+# # clorinde live \
+# # 	--async true \
+# # 	--queries-path ./queries-sql \
+# # 	--destination ./queries \
+# # 	"postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db"
+
+# cargo test -p votebase_common run_function_basics -- --nocapture
+# # cargo test -p votebase_common -- --nocapture
+
+# # cargo run -p votebase_cli "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db" 'q.local'
+
+
+
+
+
+# # cat << EOF
+# # {
+# #   "code": $(jq -R -s '.' < rulesets/three-yes/ruleset.ts),
+# #   "db_schema": $(jq -R -s '.' < rulesets/three-yes/schema.sql),
+# #   "db_migration": ""
+# # }
+# # EOF
+
+
+# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -c 'select full_path, actions, views from votebase_catalog.ruleset' | cat
+# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -c 'select * from votebase_catalog.candidate_replacement_ruleset' | cat
+
+# # code, db_schema
+# # migrator_pass, action_pass, view_pass
+
+# curl -v -H "Content-Type: application/json" --data @- 'http://localhost:8080/fn/action/root|__insert_initial' << EOF
+# {
+#   "code": $(jq -R -s '.' < rulesets/three-yes/ruleset.ts),
+#   "db_schema": $(jq -R -s '.' < rulesets/three-yes/schema.sql),
+#   "db_migration": ""
+# }
+# EOF
+
+# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -c 'select full_path, actions, views from votebase_catalog.ruleset' | cat
+# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -c 'select * from votebase_catalog.candidate_replacement_ruleset' | cat
+
+
+
+
+# set -euxo pipefail
+
+# # start over
+# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c 'drop database dev_db' | cat
+# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c 'create database dev_db' | cat
+# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c 'drop role if exists "votebase_server"' | cat
+
+# # bootstrap the database with the schema and root ruleset
+# cargo run -p votebase_cli -- "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db"
+
+# # prepare queries
+# DATABASE_URL="postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db" cargo sqlx prepare --workspace -- --all-targets --all-features
+
+# # # run the server
+# # cargo run -p votebase_server
+
+
+
+
+# set -euxo pipefail
+
+# # PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c 'drop database dev_db' | cat
+# # PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c 'create database dev_db' | cat
+# # PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c 'drop role if exists "votebase_server"' | cat
+# # PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -f ./bootstrap_cli/schema.sql | cat
+
+# # # boo can't do this because the schema has params in it
+# # clorinde schema common/schema.sql \
+# # 	--queries-path common/queries \
+# # 	--destination queries \
+# # 	--async true \
+# # 	--podman true
+
+# # clorinde live \
+# # 	--async true \
+# # 	--queries-path ./queries-sql \
+# # 	--destination ./queries \
+# # 	"postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db"

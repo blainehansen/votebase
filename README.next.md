@@ -51,7 +51,7 @@ I hope for a Cambrian explosion of experiments and new ways of working together
 
 ## The core concepts of Votebase
 
-A Votebase server represents some [**Polity**](https://en.wikipedia.org/wiki/Polity), some group of people with some shared goals and the desire to coordinate to achieve those goals.
+A Votebase server represents some [**Polity**](https://en.wikipedia.org/wiki/Polity), some group of people with shared goals and the desire to coordinate to achieve those goals.
 
 Every Votebase server has a list of **Members**, people who are allowed to interact with the server.
 
@@ -67,7 +67,7 @@ A Ruleset can specify a few things that define how it works:
 - The **Events** of the Ruleset, which are times when something should happen (specifically when a particular Action should be executed). Events can be dynamically created by Actions (either recurring or one-off), and also *static* Events can be specified in the Ruleset itself (only recurring). A recurring Event is defined by a `start date` and a `recurrence duration` (which for now are limited to an int with a unit, such as days or months or years, and can't do things like "last thursday in november"), a one-off event is defined only by a `date`.
 - The **Children** of the Ruleset, which are other Rulesets that can be replaced or destroyed by the parent. Children can be dynamically created by Actions, and *static* Children can be specified in the Ruleset itself.
 
-Actions and Views are both written in [Typescript](), and have access to a special Votebase runtime [built using `deno_core`](https://deno.com/blog/roll-your-own-javascript-runtime).
+Actions and Views are both written in [Typescript](), and have access to a special [Votebase runtime](TODO docs page for the runtime) ([built using `deno_core`](https://deno.com/blog/roll-your-own-javascript-runtime) if that's interesting to you).
 
 Since Actions and Views are just Typescript, they can perform arbitrary computations, and can interact with the outside world in any way that's allowed by the Votebase runtime.
 
@@ -83,7 +83,7 @@ Rulesets form a [tree](https://en.wikipedia.org/wiki/Tree_(abstract_data_type)),
 
 Rulesets can have *static* children, meaning children that are specified up front in the Ruleset itself, or *dynamic* children that are created using runtime functions. Dynamic children can be created and destroyed according to the code in the Ruleset, whereas static children always exist.
 
-A parent Ruleset is given the power to delete a child Ruleset, or to replace it. Importantly this power is only actually *exercised* if the Ruleset is written to actually ever *use* this power. If a Ruleset is written in such a way that it will never actually *use* its ability to delete a child Ruleset, then it is as if it didn't have that power at all.
+A parent Ruleset is given the power to delete a child Ruleset, or to replace it. Importantly this power only matters if the Ruleset is written to actually ever *use* this power. If a Ruleset is written in such a way that it will never actually use its ability to delete a child Ruleset, then it is as if it didn't have that power at all.
 
 Why have static children? It allows Rulesets to specify different, possibly easier, rules for changing these children rulesets than for changing the parent Ruleset itself. The reason for the tree is to allow subdivision of decisions, and subsidiarity.
 

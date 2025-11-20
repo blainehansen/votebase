@@ -1,7 +1,23 @@
 use crate::postgres;
 use std::collections::HashMap;
 
-type AnyError = Box<dyn std::error::Error>;
+#[derive(thiserror::Error, Debug)]
+pub enum GenQueryError {
+	#[error(transparent)]
+	PostgresError(#[from] postgres::Error),
+	#[error(transparent)]
+	StdIoError(#[from] std::io::Error),
+	#[error(transparent)]
+	JoinError(#[from] tokio::task::JoinError),
+	#[error(transparent)]
+	ParserError(#[from] ParserError),
+
+	// #[error("internal error: {0}")]
+	// OtherError(String),
+}
+
+pub type GenQueryResult<T> = Result<T, GenQueryError>;
+
 
 #[derive(Debug)]
 struct FullColumn {
@@ -49,7 +65,7 @@ struct RawQuery {
 }
 
 
-pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &impl postgres::GenericClient) -> Result<String, AnyError> {
+pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &impl postgres::GenericClient) -> GenQueryResult<String> {
 	let sql_files = tokio::task::spawn_blocking(move || {
 		walkdir::WalkDir::new(queries_dir).follow_links(false).into_iter()
 			.filter_map(|e| e.ok())
@@ -88,7 +104,7 @@ pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &impl pos
 		sql_files.into_iter().map(async |path| {
 			let raw_query = read_sql_file(path).await?;
 			let full_statement = prepare_query(client, &table_column_map, raw_query).await?;
-			Ok::<_, AnyError>(full_statement)
+			Ok::<_, GenQueryError>(full_statement)
 		})
 	).await?;
 
@@ -195,8 +211,9 @@ async fn prepare_query(
 	client: &impl postgres::GenericClient,
 	table_column_map: &TableColumnMap,
 	raw_query: RawQuery,
-) -> Result<FullStatement, postgres::Error> {
-	let (actual_sql, query_vars, stmts) = convert_named_params_to_positional(&raw_query.query).unwrap();
+) -> GenQueryResult<FullStatement> {
+	let (actual_sql, query_vars, stmts) = convert_named_params_to_positional(&raw_query.query)?;
+	// format!("Failed to parse SQL:\n{sql}\n{}", e)
 
 	let has_multiple = stmts.len() > 1;
 
@@ -247,7 +264,7 @@ async fn prepare_query(
 }
 
 
-use sqlparser::ast::{VisitMut, VisitorMut};
+use sqlparser::{ast::{VisitMut, VisitorMut}, parser::ParserError};
 
 struct NamedParamReplacer {
 	param_map: HashMap<usize, String>,
@@ -300,9 +317,8 @@ impl VisitorMut for NamedParamReplacer {
 	}
 }
 
-fn convert_named_params_to_positional(sql: &str) -> Result<(String, HashMap<usize, String>, Vec<String>), String> {
-	let mut stmts = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::PostgreSqlDialect{}, sql)
-    .map_err(|e| format!("Failed to parse SQL:\n{sql}\n{}", e))?;
+fn convert_named_params_to_positional(sql: &str) -> Result<(String, HashMap<usize, String>, Vec<String>), ParserError> {
+	let mut stmts = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::PostgreSqlDialect{}, sql)?;
 
 	let mut replacer = NamedParamReplacer::new();
 	let _ = stmts.visit(&mut replacer);

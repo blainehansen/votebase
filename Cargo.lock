@@ -3920,9 +3920,9 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 name = "temp_container_utils"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "rand 0.9.2",
  "rand_distr",
+ "thiserror",
  "tokio",
  "tokio-postgres",
 ]
@@ -4491,6 +4491,7 @@ dependencies = [
 name = "votebase_cli"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "argh",
  "db_schema_utils",
  "serde",
