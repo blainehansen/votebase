@@ -57,11 +57,12 @@ pub struct StaticRecurringAction {
 
 
 pub async fn create_ruleset(
-	base_config: &PgConfig, client: &mut PgClient,
+	base_config: &PgConfig, client: &mut (impl postgres::GenericClient + db_generated::client::GenericClient),
 	parent_full_path: Option<&str>, name: &str,
 	action_names: &Vec<String>, view_names: &Vec<String>,
 	ruleset_code: &str, db_schema: &str,
-) -> Result<(), postgres::Error> {
+) -> Result<postgres::Client, postgres::Error> {
+	println!("inserting ruleset");
 	let ruleset_row = queries::rulesets::insert_ruleset()
 		.bind(client, &parent_full_path, &name, &action_names, &view_names, &ruleset_code, &db_schema).one().await?;
 
@@ -70,6 +71,7 @@ pub async fn create_ruleset(
 	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
 	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
 
+	println!("creating ruleset schema");
 	let transaction = client.transaction().await?;
 	let create_sql = format!(include_str!("./create-ruleset.sql"),
 		formatted_ruleset_schema=format_ruleset_schema(&full_path),
@@ -87,11 +89,12 @@ pub async fn create_ruleset(
 	migrator_config.user(formatted_ruleset_role_migrator);
 	migrator_config.password(ruleset_row.migrator_pass);
 
+	println!("applying ruleset schema");
 	let (migrator_client, migrator_connection) = migrator_config.connect(postgres::NoTls).await?;
 	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
 	migrator_client.batch_execute(db_schema).await?;
 
-	Ok(())
+	Ok(migrator_client)
 }
 
 pub async fn propose_candidate_ruleset(

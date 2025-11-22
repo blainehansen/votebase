@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod test;
-mod rulesets;
+pub mod rulesets;
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use deno_core::{v8, OpState};

@@ -249,7 +249,7 @@ function argsToMessage(...args: unknown[]) {
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
 
-type Dict<T> = { [key: string]: T }
+// type Dict<T> = { [key: string]: T }
 
 
 declare global {
@@ -316,10 +316,10 @@ export type RetPrimitiveTypeHintMap = {
 	'Money': number,
 }
 export type RetPrimitiveTypeHint = keyof RetPrimitiveTypeHintMap
-// export type RetNullableTypeHint = `${RetPrimitiveTypeHint}?`
-// export type RetArrayTypeHint = `${RetPrimitiveTypeHint}[]`
+export type RetNullableTypeHint = `${RetPrimitiveTypeHint}?`
+export type RetArrayTypeHint = `${RetPrimitiveTypeHint}[]`
 
-export type RetHint = RetPrimitiveTypeHint // | RetNullableTypeHint | RetArrayTypeHint
+export type RetHint = RetPrimitiveTypeHint | RetNullableTypeHint | RetArrayTypeHint
 
 export type ParamPrimitiveTypeHintMap = {
 	'Json': JsonValue,
@@ -337,16 +337,16 @@ export type ParamPrimitiveTypeHintMap = {
 	'Money': number,
 }
 export type ParamPrimitiveTypeHint = keyof ParamPrimitiveTypeHintMap
-// export type ParamNullableTypeHint = `${ParamPrimitiveTypeHint}?`
-// export type ParamArrayTypeHint = `${ParamPrimitiveTypeHint}[]`
+export type ParamNullableTypeHint = `${ParamPrimitiveTypeHint}?`
+export type ParamArrayTypeHint = `${ParamPrimitiveTypeHint}[]`
 
-export type ParamHint = ParamPrimitiveTypeHint // | ParamNullableTypeHint | ParamArrayTypeHint
+export type ParamHint = ParamPrimitiveTypeHint | ParamNullableTypeHint | ParamArrayTypeHint
 
 
 export type TypeOfParamHint<H extends ParamHint> =
-	// H extends `${infer P}?` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P] | null : never)
-	// : H extends `${infer P}[]` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P][] : never)
-	// :
+	H extends `${infer P}?` ? (P extends ParamPrimitiveTypeHint ? ParamPrimitiveTypeHintMap[P] | null : never)
+	: H extends `${infer P}[]` ? (P extends ParamPrimitiveTypeHint ? ParamPrimitiveTypeHintMap[P][] : never)
+	:
 	H extends ParamPrimitiveTypeHint ? ParamPrimitiveTypeHintMap[H]
 	: never
 
@@ -354,9 +354,9 @@ type ActualParams<Hints extends ParamHint[]> = { [I in keyof Hints]: TypeOfParam
 
 
 export type TypeOfRetHint<H extends RetHint> =
-	// H extends `${infer P}?` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P] | null : never)
-	// : H extends `${infer P}[]` ? (P extends PrimitiveTypeHint ? PrimitiveTypeHintMap[P][] : never)
-	// :
+	H extends `${infer P}?` ? (P extends RetPrimitiveTypeHint ? RetPrimitiveTypeHintMap[P] | null : never)
+	: H extends `${infer P}[]` ? (P extends RetPrimitiveTypeHint ? RetPrimitiveTypeHintMap[P][] : never)
+	:
 	H extends RetPrimitiveTypeHint ? RetPrimitiveTypeHintMap[H]
 	: never
 
@@ -370,25 +370,25 @@ type ActualRet<R extends FullRetHint> =
 
 
 
-// it feels like this concept of a generic ruleset is literally only valuable for the "ruleset library ecosystem"
-// when an actual ruleset shows up for a specific place and use, it's fully concrete, no more vars or vals
-type GenericRuleset = Omit<ConcreteRuleset, 'static_children'> & {
-	// this is a bunch of "typed vars" that we have to fill in in both db_schema and db_migration
-	// since these are types, we can dummy together expressions that minimally satisfy them when we're checking the ruleset
-	// these are intended to be used as "relationships" or links to other rulesets. tables and functions and columns etc can be used from other rulesets
-	// the main thing I'm trying to enable is the persistent weights in the kernel, with child rulesets using them to actually make specific decisions
-	db_schema_vars: { [var_name: string]: PgType },
+// // it feels like this concept of a generic ruleset is literally only valuable for the "ruleset library ecosystem"
+// // when an actual ruleset shows up for a specific place and use, it's fully concrete, no more vars or vals
+// type GenericRuleset = Omit<ConcreteRuleset, 'static_children'> & {
+// 	// this is a bunch of "typed vars" that we have to fill in in both db_schema and db_migration
+// 	// since these are types, we can dummy together expressions that minimally satisfy them when we're checking the ruleset
+// 	// these are intended to be used as "relationships" or links to other rulesets. tables and functions and columns etc can be used from other rulesets
+// 	// the main thing I'm trying to enable is the persistent weights in the kernel, with child rulesets using them to actually make specific decisions
+// 	db_schema_vars: { [var_name: string]: PgType },
 
-	// this tells us to either apply the migration implied by the GenericRuleset, or leave it alone, or if not present in this map delete it
-	// maybe it makes more sense to require fully specifying 'delete' rather than allowing absence, it's more explicit
-	static_children: { [child_name: string]: GenericRuleset | 'keep' },
-}
+// 	// this tells us to either apply the migration implied by the GenericRuleset, or leave it alone, or if not present in this map delete it
+// 	// maybe it makes more sense to require fully specifying 'delete' rather than allowing absence, it's more explicit
+// 	static_children: { [child_name: string]: GenericRuleset | 'keep' },
+// }
 
-type CompilableRuleset = Omit<GenericRuleset, 'static_children'> & {
-	db_schema_vals: { [val_name: string]: PgExpr },
+// type CompilableRuleset = Omit<GenericRuleset, 'static_children'> & {
+// 	db_schema_vals: { [val_name: string]: PgExpr },
 
-	static_children: { [child_name: string]: CompilableRuleset | 'keep' },
-}
+// 	static_children: { [child_name: string]: CompilableRuleset | 'keep' },
+// }
 
-type PgType = 'Text' | 'Bool' | 'etc TODO'
-type PgExpr = string
+// type PgType = 'Text' | 'Bool' | 'etc TODO'
+// type PgExpr = string

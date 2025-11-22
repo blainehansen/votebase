@@ -28,7 +28,7 @@ struct FullColumn {
 
 #[derive(Debug)]
 struct FullParam {
-	// name: String,
+	name: String,
 	index: usize,
 	null_allowed: bool,
 	pg_type: postgres::types::Type,
@@ -102,7 +102,10 @@ pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &impl pos
 
 	let full_statements = futures::future::try_join_all(
 		sql_files.into_iter().map(async |path| {
-			let raw_query = read_sql_file(path).await?;
+			let p = path.to_string_lossy();
+			println!("reading {}", p);
+			let raw_query = read_sql_file(path.clone()).await?;
+			println!("preparing {}", p);
 			let full_statement = prepare_query(client, &table_column_map, raw_query).await?;
 			Ok::<_, GenQueryError>(full_statement)
 		})
@@ -110,25 +113,31 @@ pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &impl pos
 
 	let generated_fields = full_statements.into_iter().map(|mut full_statement| {
 		full_statement.params.sort_by_key(|p| p.index);
-		let hints = full_statement.params.into_iter()
-			.map(|param| pg_type_hint(&param.pg_type, !param.null_allowed))
-			.collect::<Vec<_>>()
-			.join(", ");
+		let (hints, named_hints) = full_statement.params.into_iter()
+			.map(|param| {
+				let raw_hint = pg_type_hint(&param.pg_type, !param.null_allowed);
+				let named_hint = format!("{}: {}", param.name, raw_hint);
+				(raw_hint, named_hint)
+			})
+			.collect::<(Vec<_>, Vec<_>)>();
+
+		let hints = hints.join(", ");
+		let named_hints = named_hints.join(", ");
 
 		// TODO ought to assert no backticks are present in the query
 
 		let ret = columns_to_type_hint(full_statement.columns);
 		let construction = match full_statement.statement_kind {
 			StatementKind::Query => { format!(
-				"new __.QueryExecutor(`{query}`, [{hints}], {ret})",
+				"new __.QueryExecutor(`{query}`, [{hints}] as [{named_hints}], {ret} as const)",
 				query=full_statement.query,
-				hints=hints,
+				hints=hints, named_hints=named_hints,
 				ret=ret,
 			) },
 			StatementKind::Statement => { format!(
-				"__.StatementExecutor(`{query}`, [{hints}])",
+				"__.StatementExecutor(`{query}`, [{hints}] as [{named_hints}])",
 				query=full_statement.query,
-				hints=hints,
+				hints=hints, named_hints=named_hints,
 			) },
 			StatementKind::Statements => { format!(
 				"__.StatementsExecutor(`{query}`)",
@@ -148,7 +157,9 @@ pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &impl pos
 
 async fn read_sql_file(path: std::path::PathBuf) -> Result<RawQuery, tokio::io::Error> {
 	let query = tokio::fs::read_to_string(&path).await?;
-	let name = path.to_string_lossy().to_string();
+	let name = path.file_stem()
+		.ok_or(std::io::Error::other(format!("expected file {} to have a name", path.to_string_lossy())))?
+		.to_string_lossy().to_string();
 	Ok(RawQuery { name, query })
 }
 
@@ -185,7 +196,7 @@ fn pg_type_hint(typ: &postgres::types::Type, is_not_null: bool) -> String {
 		// postgres::types::Kind::Multirange(inner) => {},
 	};
 
-	if is_not_null { ts_hint }
+	if is_not_null { format!("'{ts_hint}'") }
 	else { format!("'{ts_hint}?'") }
 }
 fn columns_to_type_hint(columns: Vec<FullColumn>) -> String {
@@ -236,9 +247,9 @@ async fn prepare_query(
 			.map(|(index, p)| {
 				let param_name = query_vars.get(&index).unwrap();
 				let null_allowed = param_name.ends_with("?");
-				// let param_name = param_name.strip_suffix("?").unwrap_or(param_name);
+				let param_name = param_name.strip_suffix("?").unwrap_or(param_name);
 
-				FullParam{ /*name: param_name.to_string(),*/ index, null_allowed, pg_type: p.to_owned() }
+				FullParam{ name: param_name.to_string(), index, null_allowed, pg_type: p.to_owned() }
 			})
 			.collect();
 

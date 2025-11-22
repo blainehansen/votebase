@@ -74,3 +74,7 @@ grant all privileges on functions to "{formatted_ruleset_role_migrator}";
 alter default privileges in schema "{formatted_ruleset_schema}"
 grant all privileges on types to "{formatted_ruleset_role_migrator}";
 -- includes: usage
+
+
+grant usage on schema votebase_catalog to "{formatted_ruleset_role_migrator}";
+grant references (id) on table votebase_catalog.member to "{formatted_ruleset_role_migrator}";

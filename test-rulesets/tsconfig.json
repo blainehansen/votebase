@@ -1,0 +1,14 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"extends": ["../tsconfig.strict.json"],
+	"compilerOptions": {
+		"composite": true,
+		"lib": ["ES2024"],
+		"baseUrl": ".",
+		"types": ["../common/src/runtime/runtime.ts"],
+		"paths": {
+			"votebase": ["../common/src/runtime/runtime.ts"]
+		}
+	},
+	"include": ["../common/src/runtime/runtime.ts", "./**/*.ts"]
+}

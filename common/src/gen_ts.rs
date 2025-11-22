@@ -13,6 +13,7 @@ macro_rules! match_pg_type {
 
 pub fn base_pg_type_hint(typ: &postgres::types::Type) -> &str {
 	match_pg_type!(*typ,
+		UUID => "Text";
 		TEXT => "Text";
 		VARCHAR => "Text";
 		JSON => "Json";

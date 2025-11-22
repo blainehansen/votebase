@@ -3,7 +3,6 @@
 	"compilerOptions": {
 		"lib": ["ES2024"],
 		"baseUrl": ".",
-		"types": ["votebase-runtime.ts"],
 		"paths": {
 			"votebase": ["votebase-runtime.ts"]
 		},
@@ -22,5 +21,5 @@
 
 		"esModuleInterop": true
 	},
-	"include": ["./**/*.ts"]
+	"include": ["votebase-runtime.ts", "./ruleset/**/*.ts"]
 }

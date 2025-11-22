@@ -14,9 +14,9 @@ edition = "2024"
 # my_custom_types = { path = "../types" }
 
 
-# [types]
-# # Applied to all generated structs and postgres types
-# derive-traits = ["serde::Serialize", "serde::Deserialize"]
+[types]
+# Applied to all generated structs and postgres types
+derive-traits = ["serde::Serialize"]
 
 [types.type-traits-mapping]
 # Applied to specfic custom postgres types (eg. enums, domains, composites)

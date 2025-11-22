@@ -6,9 +6,11 @@
 # 	dev
 
 
-podman build -t votebase-tsc -f Containerfile.votebase-tsc .
+podman run -it --rm -v "$(pwd)/rulesets/accept-any:/workspace/ruleset" --entrypoint="/bin/bash" votebase-tsc
 
-podman run --rm -v $(pwd):/workspace votebase-tsc --noEmit --project tsconfig.dev.json
+# podman build -t votebase-tsc -f Containerfile.votebase-tsc .
+
+# podman run --rm -v $(pwd):/workspace votebase-tsc --noEmit --project tsconfig.dev.json
 
 # podman run --name clorinde_postgres -p 5432:5432 \
 # 	-e POSTGRES_DB=dev_db -e POSTGRES_USER=dev_admin_user -e POSTGRES_PASSWORD=dev_admin_password \

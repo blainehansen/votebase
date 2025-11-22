@@ -242,6 +242,10 @@ votebase check
 
 Both `dev` and `check` allow a `--vars` option that makes the operation act against a *concrete* Ruleset. This is for when you want to make a concrete one from the beginning.
 
+### `generate_migration`
+
+Create a first draft to go from the schema specified in the current server information, to the one you've specified. You might want to modify the migration.
+
 ### `bundle`
 
 `bundle` type checks a Ruleset against a real intended server schema, using a `vars.json` file to specify any templated values if necessary, then places everything into a `ruleset.bundle.json` file ready to be given as a Candidate for that server.

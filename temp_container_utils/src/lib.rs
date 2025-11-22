@@ -45,11 +45,9 @@ fn random_port() -> u16 {
 // 	Ok(())
 // }
 
-pub async fn run_workspace_podman_cmd(image: &str, workspace_volume: impl AsRef<str>, args: &[&str]) -> io::Result<std::process::Output> {
-	let workspace_volume = format!("{}:/workspace", workspace_volume.as_ref());
-
+pub async fn run_workspace_podman_cmd(image: &str, workspace_arg: impl AsRef<str>, args: &[&str]) -> io::Result<std::process::Output> {
 	let args = [
-		["run", "--rm", "-v", &workspace_volume, image].as_slice(),
+		["run", "--rm", "-v", workspace_arg.as_ref(), image].as_slice(),
 		args,
 	].concat();
 

@@ -12,8 +12,17 @@ COPY common/src/runtime/runtime.ts votebase-runtime.ts
 
 RUN pnpm add -g typescript
 
+# RUN tsc --project tsconfig.votebase-rulesets.json --emitDeclarationOnly votebase-runtime.ts
+
+# consider compiling the runtime file to declarations and
+
 ENTRYPOINT ["tsc", "--project", "tsconfig.votebase-rulesets.json"]
 CMD ["--help"]
+
+# "paths": {
+# 	"votebase": ["votebase-runtime.ts"]
+# },
+# "types": ["votebase-runtime.ts"],
 
 # we can avoid the need for a registry or any nonsense if we can:
 # - podman build votebase-tsc or whatever image locally, including the tsconfig or libraries we want etc

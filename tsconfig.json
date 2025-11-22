@@ -4,6 +4,7 @@
 	"references": [
 		{ "path": "./frontend" },
 		{ "path": "./rulesets" },
+		{ "path": "./test-rulesets" },
 		{ "path": "./common" },
 	]
 }
