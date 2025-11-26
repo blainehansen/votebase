@@ -11,4 +11,12 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+url = { workspace = true }
+include_dir = "0.7"
 argh = "0.1"
+# serde_jsonc2 = "0.1"
+
+# [dev-dependencies]
+# assert_cmd = "2"
+# predicates = "3"
+# assert_fs = "1"

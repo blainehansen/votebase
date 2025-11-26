@@ -1,0 +1,9 @@
+{
+	"name": "<my votebase ruleset name>",
+	"version": "0.1.0",
+	"license": "MIT",
+	"description": "<my votebase ruleset description>",
+	"devDependencies": {
+		"votebase": "^0.1.0"
+	}
+}
