@@ -12,17 +12,26 @@ members = [
 ]
 
 [workspace.dependencies]
+argh = "0.1"
+
 deno_core = "0.367.0"
 deno_error = "0.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", default-features = false }
+# serde_jsonc2 = "0.1"
 uuid = { version = "*", features = ["serde", "v4"] }
 chrono = { version = "*", features = ["serde"] }
 tokio = { version = "1.48", features = ["full", "rt"] }
-log = "0.4"
 thiserror = "2"
 anyhow = "1"
 url = "2"
+walkdir = "2"
+log = "0.4"
+include_dir = "0.7"
 
 tokio-postgres = { version = "0.7" }
 deadpool-postgres = { version = "0.14" }
+
+predicates = "3"
+assert_fs = "1"
+# assert_cmd = "2"

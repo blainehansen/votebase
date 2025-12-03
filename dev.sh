@@ -1,3 +1,8 @@
+cargo test -p votebase_cli -- --nocapture
+
+
+
+
 # PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c '\l' | cat
 
 # cargo run -p votebase_cli -- \
@@ -6,7 +11,7 @@
 # 	dev
 
 
-podman run -it --rm -v "$(pwd)/rulesets/accept-any:/workspace/ruleset" --entrypoint="/bin/bash" votebase-tsc
+# podman run -it --rm -v "$(pwd)/rulesets/accept-any:/workspace/ruleset" --entrypoint="/bin/bash" votebase-tsc
 
 # podman build -t votebase-tsc -f Containerfile.votebase-tsc .
 

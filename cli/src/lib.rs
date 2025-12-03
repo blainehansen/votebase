@@ -1,37 +1,8 @@
+mod cmd_init;
+pub use cmd_init::cmd_init;
+
+
 use std::{collections::HashMap, path::Path};
-
-pub fn cmd_init(ruleset_dir: &Path) -> std::io::Result<()> {
-	// if !ruleset_dir.is_dir() {
-	// 	return Err(std::io::Error::other(format!("{ruleset_dir} must be a ")))
-	// }
-
-	// let package_name = ruleset_dir.file_name();
-	// https://crates.io/crates/handlebars
-
-	// inlining basically the include_dir::Dir::extract function so that if we need to do any templating we can
-	fn extract_dir(dir: &include_dir::Dir<'_>, base_path: impl AsRef<Path>) -> std::io::Result<()> {
-		use std::fs;
-		let base_path = base_path.as_ref();
-
-		for entry in dir.entries() {
-			let path = base_path.join(entry.path());
-			match entry {
-				include_dir::DirEntry::Dir(d) => {
-					fs::create_dir_all(&path)?;
-					extract_dir(d, base_path)?;
-				}
-				include_dir::DirEntry::File(f) => {
-					fs::write(path, f.contents())?;
-				}
-			}
-		}
-
-		Ok(())
-	}
-
-	static PROJECT_DIR: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/init_template");
-	extract_dir(&PROJECT_DIR, ruleset_dir)
-}
 
 // - in a temp podman postgres
 //   - execute `schema.sql` against it, including rendering placeholders for any abstract requires by choosing random "real" names for each
