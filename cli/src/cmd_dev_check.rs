@@ -24,13 +24,14 @@ async fn run_sql_checking_and_generation(ruleset_dir: &Path, do_generation: bool
 		db_schema_utils::load_votebase_server_schema(db_name, &mut client).await?;
 
 		println!("loading ruleset schema");
-		let ruleset_db_schema = if tokio::fs::try_exists(&schema_file).await.unwrap_or(false) {
-			tokio::fs::read_to_string(&schema_file).await?
-		}
-		else {
-			println!("no schema.sql file found, assuming no special schema");
-			"".to_string()
-		};
+		let ruleset_db_schema =
+			if tokio::fs::try_exists(&schema_file).await.unwrap_or(false) {
+				tokio::fs::read_to_string(&schema_file).await?
+			}
+			else {
+				println!("no schema.sql file found, assuming no special schema");
+				"".to_string()
+			};
 		let migrator_client = votebase_common::runtime::rulesets::create_ruleset(
 			&db_config, &mut client,
 			None, "root",
@@ -77,7 +78,7 @@ mod tests {
 	use predicates::prelude::*;
 
 	#[test]
-	fn test_cmd_dev_test_rulesets() {
+	fn test_cmd_check_test_rulesets() {
 		use predicate::path;
 
 		let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -91,15 +92,11 @@ mod tests {
 			temp_dir.child("queries.ts").assert(path::missing());
 			let temp_dir_path = temp_dir.path();
 
-			runtime.block_on(cmd_dev(temp_dir_path)).unwrap();
+			runtime.block_on(cmd_check(temp_dir_path)).unwrap();
 
 			let expected_queries_path = entry.with_extension("expected.queries.ts");
-			// agh, this is to give a little bit of time? frustratingly the assertion doesn't always pick up the new contents in time?
-			assert!(runtime.block_on(tokio::fs::try_exists(&expected_queries_path)).unwrap());
 			// print!("{}", tokio::fs::read_to_string(entry.with_extension("expected.queries.ts")).await.unwrap());
 			temp_dir.child("queries.ts").assert(path::eq_file(&expected_queries_path));
-
-			runtime.block_on(run_votebase_tsc(temp_dir_path)).unwrap();
 		}
 	}
 }

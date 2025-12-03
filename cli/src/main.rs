@@ -23,7 +23,8 @@ async fn main() -> anyhow::Result<()> {
 			votebase_cli::cmd_fetch_server_schema().await?;
 		},
 		SubCommand::GenerateMigration(_) => {
-			votebase_cli::cmd_generate_migration().await?;
+			unimplemented!();
+			// votebase_cli::cmd_generate_migration(&ruleset_dir, &TODO).await?;
 		},
 		SubCommand::Bundle(_) => {
 			votebase_cli::cmd_bundle().await?;

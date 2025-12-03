@@ -1,10 +1,21 @@
-cargo test -p votebase_cli -- --nocapture
+# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -c 'create table yo(id uuid primary key)' | cat
+# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -c '\dt' | cat
+
+PGPASSWORD='dev_admin_password' pg_dump dev_db -h localhost -U dev_admin_user \
+	--schema-only \
+	--format=custom --compress=none \
+	--file=db_archive.local -v
+
+
+
+
+
+# cargo test -p votebase_cli -- --nocapture
 # cargo run -p votebase_cli -- --ruleset-dir test-rulesets/yes-or-no/ dev
 
 
 
 
-# PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost postgres -c '\l' | cat
 
 # cargo run -p votebase_cli -- \
 # 	--db-url "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db" \

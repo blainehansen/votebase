@@ -4,6 +4,9 @@ pub use cmd_init::cmd_init;
 mod cmd_dev_check;
 pub use cmd_dev_check::{cmd_dev, cmd_check};
 
+mod cmd_generate_migration;
+pub use cmd_generate_migration::cmd_generate_migration;
+
 // TODO need to test situations where rulesets are incorrect, either for structural but especially permissions reasons
 
 // bad_ts the ruleset file itself is malformed. honestly this probably should be mostly done in a series of typescript tests etc
@@ -16,10 +19,6 @@ pub use cmd_dev_check::{cmd_dev, cmd_check};
 
 
 pub async fn cmd_fetch_server_schema() -> anyhow::Result<()> {
-	Ok(())
-	//
-}
-pub async fn cmd_generate_migration() -> anyhow::Result<()> {
 	Ok(())
 	//
 }

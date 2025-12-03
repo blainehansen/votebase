@@ -246,6 +246,8 @@ Both `dev` and `check` allow a `--vars` option that makes the operation act agai
 
 Create a first draft to go from the schema specified in the current server information, to the one you've specified. You might want to modify the migration.
 
+This overwrites any existing migration!
+
 ### `bundle`
 
 `bundle` type checks a Ruleset against a real intended server schema, using a `vars.json` file to specify any templated values if necessary, then places everything into a `ruleset.bundle.json` file ready to be given as a Candidate for that server.

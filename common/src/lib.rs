@@ -54,3 +54,105 @@ impl std::fmt::Display for ScheduledActionKind {
 		}
 	}
 }
+
+
+pub fn url_encoded_connection_string(config: &PgConfig) -> String {
+	use percent_encoding::{utf8_percent_encode, percent_encode, NON_ALPHANUMERIC};
+	let mut url = String::from("postgresql://");
+
+	if let Some(user) = config.get_user() {
+		url.push_str(&utf8_percent_encode(user, NON_ALPHANUMERIC).to_string());
+	}
+
+	if let Some(password_bytes) = config.get_password() {
+		url.push(':');
+		url.push_str(&percent_encode(password_bytes, NON_ALPHANUMERIC).to_string());
+	}
+
+	let hosts = config.get_hosts();
+	let ports = config.get_ports();
+	if !hosts.is_empty() {
+		url.push('@');
+		for (i, host) in hosts.iter().enumerate() {
+			if i > 0 {
+				url.push(',');
+			}
+			use postgres::config::Host;
+			match host {
+				Host::Tcp(hostname) => {
+					url.push_str(&utf8_percent_encode(hostname, NON_ALPHANUMERIC).to_string());
+				}
+				#[cfg(unix)]
+				Host::Unix(path) => {
+					use std::os::unix::ffi::OsStrExt;
+					let path_bytes = path.as_os_str().as_bytes();
+					url.push_str(&percent_encode(&path_bytes, NON_ALPHANUMERIC).to_string());
+				}
+			}
+
+			if let Some(&port) = ports.get(i) {
+				url.push(':');
+				url.push_str(&port.to_string());
+			}
+		}
+	}
+
+	if let Some(dbname) = config.get_dbname() {
+		url.push('/');
+		url.push_str(&utf8_percent_encode(dbname, NON_ALPHANUMERIC).to_string());
+	}
+
+	url
+}
+
+// #[derive(thiserror::Error, Debug)]
+// pub enum ConnectionStringError {
+// 	#[error("no user on config?")]
+// 	NoUser,
+// 	#[error("no host on config?")]
+// 	NoHost,
+// 	#[error("no port on config?")]
+// 	NoPort,
+// 	#[error("no dbname on config?")]
+// 	NoDbname,
+// }
+
+
+// fn url_encoded_connection_string(config: &Config) -> Result<String, ConnectionStringError> {
+// 	use percent_encoding::{utf8_percent_encode, percent_encode, NON_ALPHANUMERIC};
+
+// 	let mut url = String::from("postgresql://");
+
+// 	let user = config.get_user().ok_or(ConnectionStringError::NoUser)?;
+// 	url.push_str(&utf8_percent_encode(user, NON_ALPHANUMERIC).to_string());
+
+// 	if let Some(password_bytes) = config.get_password() {
+// 		url.push(':');
+// 		url.push_str(&percent_encode(password_bytes, NON_ALPHANUMERIC).to_string());
+// 	}
+
+// 	let host = config.get_hosts().get(0).ok_or(ConnectionStringError::NoHost)?;
+// 	url.push('@');
+// 	use votebase_common::postgres::config::Host;
+// 	match host {
+// 		Host::Tcp(hostname) => {
+// 			url.push_str(&utf8_percent_encode(hostname, NON_ALPHANUMERIC).to_string());
+// 		}
+// 		#[cfg(unix)]
+// 		Host::Unix(path) => {
+// 			use std::os::unix::ffi::OsStrExt;
+// 			let path_bytes = path.as_os_str().as_bytes();
+// 			url.push_str(&percent_encode(&path_bytes, NON_ALPHANUMERIC).to_string());
+// 		}
+// 	}
+
+// 	let port = config.get_ports().get(0).ok_or(ConnectionStringError::NoPort)?;
+// 	url.push(':');
+// 	url.push_str(&port.to_string());
+
+// 	let dbname = config.get_dbname().ok_or(ConnectionStringError::NoDbname)?;
+// 	url.push('/');
+// 	url.push_str(&utf8_percent_encode(dbname, NON_ALPHANUMERIC).to_string());
+
+// 	Ok(url)
+// }
