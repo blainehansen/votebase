@@ -1,8 +1,8 @@
 mod cmd_init;
 pub use cmd_init::cmd_init;
 
-mod cmd_dev;
-pub use cmd_dev::cmd_dev;
+mod cmd_dev_check;
+pub use cmd_dev_check::{cmd_dev, cmd_check};
 
 // TODO need to test situations where rulesets are incorrect, either for structural but especially permissions reasons
 
@@ -10,26 +10,11 @@ pub use cmd_dev::cmd_dev;
 
 // both of these are very important, they're the places where we'll do things like check that the permissions system is working correctly, and that the schema naming and relationships make sense
 // but, this should probably be tested at the level of run_sql_checking_and_generation rather than here
-// bad_queries, check:
+// check:
 // - we can't really tell the difference between an action and a query.... hmmm. the cli should probably have a "test" command that runs the real ruleset fns on randomly generated input, which we'll be able to do if they declare an input schema!
-
-// bad_schema, check:
 // - the schema isn't trying to "reach outside" of itself to modify other schemas or set its own search path etc. it isn't trying to modify the catalog, or create objects it isn't allowed to create
 
 
-
-
-
-use std::path::Path;
-
-// - in a temp podman postgres
-//   - execute `schema.sql` against it, including rendering placeholders for any abstract requires by choosing random "real" names for each
-//   - generate the queries and write them into the file
-// - using a temp podman typescript, runs a typecheck with the votebase tsconfig
-pub async fn cmd_check(ruleset_dir: &Path) -> anyhow::Result<()> {
-	run_sql_checking_and_generation(&ruleset_dir, true).await?;
-	run_votebase_tsc(&ruleset_dir).await
-}
 pub async fn cmd_fetch_server_schema() -> anyhow::Result<()> {
 	Ok(())
 	//
@@ -64,64 +49,6 @@ pub async fn cmd_bundle() -> anyhow::Result<()> {
 	// let mut file = tokio::fs::OpenOptions::new().write(true).create(true).truncate(true)
 	// 	.open(bundle_file).await?;
 	// file.write_all(bundled_ruleset.as_bytes()).await?;
-}
-
-
-
-async fn run_sql_checking_and_generation(ruleset_dir: &Path, do_generation: bool) -> anyhow::Result<()> {
-	let queries_dir = ruleset_dir.join("queries");
-	let schema_file = ruleset_dir.join("schema.sql");
-
-	let generated = temp_container_utils::with_temp_postgres_client(async |db_config, mut client| -> anyhow::Result<String> {
-		let db_name = db_config.get_dbname().unwrap().to_string();
-		println!("loading votebase schema");
-		db_schema_utils::load_votebase_server_schema(db_name, &mut client).await?;
-
-		println!("loading ruleset schema");
-		let ruleset_db_schema = if tokio::fs::try_exists(&schema_file).await.unwrap_or(false) {
-			tokio::fs::read_to_string(&schema_file).await?
-		}
-		else {
-			println!("no schema.sql file found, assuming no special schema");
-			"".to_string()
-		};
-		let migrator_client = votebase_common::runtime::rulesets::create_ruleset(
-			&db_config, &mut client,
-			None, "root",
-			&vec![], &vec![],
-			"", &ruleset_db_schema,
-		).await?;
-
-		println!("generating");
-		// TODO use the migrator role?
-		let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &migrator_client).await?;
-		Ok(format!("export default {{\n{generated_fields}\n}}\n"))
-	}).await??;
-
-	if do_generation {
-		println!("opening");
-		use tokio::io::AsyncWriteExt;
-		let mut file = tokio::fs::OpenOptions::new().write(true).create(true).truncate(true)
-			.open(format!("{}.ts", queries_dir.to_string_lossy())).await?;
-
-		println!("writing");
-		file.write_all(generated.as_bytes()).await?;
-	}
-
-	Ok(())
-}
-
-async fn run_votebase_tsc(ruleset_dir: &Path) -> anyhow::Result<()> {
-	let ruleset_dir = std::env::current_dir()?.join(ruleset_dir);
-	let workspace_arg = format!("{}:/workspace/ruleset", ruleset_dir.to_string_lossy());
-	let output = temp_container_utils::run_workspace_podman_cmd("votebase-tsc", workspace_arg, &["--noEmit"]).await?;
-
-	if !output.status.success() {
-		// let all_output = output.stdout.extend(output.stderr);
-		let err = String::from_utf8_lossy(&output.stdout);
-		Err(anyhow::anyhow!("typescript errors when checking with the votebase tsconfig:\n\n{err}"))
-	}
-	else { Ok(()) }
 }
 
 
