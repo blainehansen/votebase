@@ -21,3 +21,4 @@ argh = { workspace = true }
 predicates = { workspace = true }
 assert_fs = { workspace = true }
 walkdir = { workspace = true }
+futures = { workspace = true }

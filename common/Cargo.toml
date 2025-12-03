@@ -17,7 +17,7 @@ transpile_utils = { path = "../transpile_utils" }
 reqwest = "0.12"
 urlencoding = "2"
 
-futures = "0.3"
+futures = { workspace = true }
 walkdir = { workspace = true }
 sqlparser = { version = "0.59", features = ["visitor"] }
 postgres-from-row = "0.5"

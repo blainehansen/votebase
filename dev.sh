@@ -1,4 +1,5 @@
 cargo test -p votebase_cli -- --nocapture
+# cargo run -p votebase_cli -- --ruleset-dir test-rulesets/yes-or-no/ dev
 
 
 

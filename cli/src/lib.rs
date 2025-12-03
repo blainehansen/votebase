@@ -1,15 +1,26 @@
 mod cmd_init;
 pub use cmd_init::cmd_init;
 
+mod cmd_dev;
+pub use cmd_dev::cmd_dev;
 
-use std::{collections::HashMap, path::Path};
+// TODO need to test situations where rulesets are incorrect, either for structural but especially permissions reasons
 
-// - in a temp podman postgres
-//   - execute `schema.sql` against it, including rendering placeholders for any abstract requires by choosing random "real" names for each
-//   - generate the queries and write them into the file
-pub async fn cmd_dev(ruleset_dir: &Path) -> anyhow::Result<()> {
-	run_sql_checking_and_generation(&ruleset_dir, true).await
-}
+// bad_ts the ruleset file itself is malformed. honestly this probably should be mostly done in a series of typescript tests etc
+
+// both of these are very important, they're the places where we'll do things like check that the permissions system is working correctly, and that the schema naming and relationships make sense
+// but, this should probably be tested at the level of run_sql_checking_and_generation rather than here
+// bad_queries, check:
+// - we can't really tell the difference between an action and a query.... hmmm. the cli should probably have a "test" command that runs the real ruleset fns on randomly generated input, which we'll be able to do if they declare an input schema!
+
+// bad_schema, check:
+// - the schema isn't trying to "reach outside" of itself to modify other schemas or set its own search path etc. it isn't trying to modify the catalog, or create objects it isn't allowed to create
+
+
+
+
+
+use std::path::Path;
 
 // - in a temp podman postgres
 //   - execute `schema.sql` against it, including rendering placeholders for any abstract requires by choosing random "real" names for each
@@ -115,36 +126,36 @@ async fn run_votebase_tsc(ruleset_dir: &Path) -> anyhow::Result<()> {
 
 
 
-struct BundleInfo {
-	/// the path of the ruleset that this bundled ruleset is intended to replace, if it's a replacement
-	ruleset_path: Option<String>,
+// struct BundleInfo {
+// 	/// the path of the ruleset that this bundled ruleset is intended to replace, if it's a replacement
+// 	ruleset_path: Option<String>,
 
-	/// the url of the server the final bundled ruleset is intended for
-	server_url: url::Url,
+// 	/// the url of the server the final bundled ruleset is intended for
+// 	server_url: url::Url,
 
-	/// an optional mapping from the abstract "var" name in this Ruleset to the fully qualified name actually intended
-	db_uses: HashMap<String, String>,
+// 	/// an optional mapping from the abstract "var" name in this Ruleset to the fully qualified name actually intended
+// 	db_uses: std::collections::HashMap<String, String>,
 
-	/// the migration intended to actually be run to reach the state of db_schema. used in `generate_migration` to determine the destination to write to, overwriting the existing migration
-	db_migration_file: std::path::PathBuf,
+// 	/// the migration intended to actually be run to reach the state of db_schema. used in `generate_migration` to determine the destination to write to, overwriting the existing migration
+// 	db_migration_file: std::path::PathBuf,
 
-	// /// a list of fully qualified Views that this Ruleset relies on
-	// view_uses: Vec<String>
-	// /// a list of fully qualified Actions that this Ruleset relies on
-	// action_uses: Vec<String>
+// 	// /// a list of fully qualified Views that this Ruleset relies on
+// 	// view_uses: Vec<String>
+// 	// /// a list of fully qualified Actions that this Ruleset relies on
+// 	// action_uses: Vec<String>
 
-	// /// a mapping from names to KeepOrReplace of pairings of further ruleset directories and vars. all others not mentioned here are deleted
-	// static_children: HashMap<String, KeepOrReplace<(String, BundleInfo)>>,
-	// /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
-	// dynamic_children_keep_rule: String,
+// 	// /// a mapping from names to KeepOrReplace of pairings of further ruleset directories and vars. all others not mentioned here are deleted
+// 	// static_children: HashMap<String, KeepOrReplace<(String, BundleInfo)>>,
+// 	// /// a predicate that determines what dynamic children to keep, and all others will be recursively deleted
+// 	// dynamic_children_keep_rule: String,
 
-	// /// a list of static recurring actions of this Ruleset. all others not mentioned here are deleted
-	// static_recurring_events: Vec<StaticRecurringEvent>,
-	// /// a predicate that determines what dynamic recurring children to keep, and all others will be recursively deleted
-	// dynamic_recurring_event_keep_rule: String,
-	// /// a predicate that determines what dynamic standalone children to keep, and all others will be recursively deleted
-	// dynamic_standalone_event_keep_rule: String,
-}
+// 	// /// a list of static recurring actions of this Ruleset. all others not mentioned here are deleted
+// 	// static_recurring_events: Vec<StaticRecurringEvent>,
+// 	// /// a predicate that determines what dynamic recurring children to keep, and all others will be recursively deleted
+// 	// dynamic_recurring_event_keep_rule: String,
+// 	// /// a predicate that determines what dynamic standalone children to keep, and all others will be recursively deleted
+// 	// dynamic_standalone_event_keep_rule: String,
+// }
 
 // enum KeepOrReplace<R> {
 // 	Keep,

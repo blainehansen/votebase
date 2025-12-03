@@ -4667,6 +4667,7 @@ dependencies = [
  "argh",
  "assert_fs",
  "db_schema_utils",
+ "futures",
  "include_dir",
  "predicates",
  "serde",
