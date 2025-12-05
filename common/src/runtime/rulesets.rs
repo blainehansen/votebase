@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, cell::RefCell, rc::Rc};
+use deno_core::OpState;
 use crate::db_types::votebase_catalog::GranularityEnum;
 use crate::{queries, PgConfig, PgPool, PgClient, RoleType, format_ruleset_schema, format_ruleset_role, postgres};
 
-use super::{Runtime, RuntimeError};
+use super::{Runtime, RuntimeError, demand_external_allowed, run_err, ServerPgConfig};
 
 // the bootstrap process ensures there's always a ruleset at the root
 
@@ -144,7 +145,7 @@ async fn validate_candidate(
 
 	let inner_state = inner.js_runtime.op_state();
 	let inner_state = inner_state.as_ref().borrow();
-	let fn_map = inner_state.borrow::<crate::runtime::VotebaseFnMap>();
+	let fn_map = inner_state.borrow::<super::VotebaseFnMap>();
 	let mut actions = vec![];
 	let mut views = vec![];
 	for (fn_name, fn_type) in fn_map {
@@ -261,7 +262,7 @@ pub async fn compute_diff(
 #[string]
 pub async fn op_propose_self_replacement(
 	state: Rc<RefCell<OpState>>,
-	#[serde] candidate: rulesets::CandidateRuleset,
+	#[serde] candidate: CandidateRuleset,
 ) -> Result<String, deno_error::JsErrorBox> {
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
@@ -270,7 +271,7 @@ pub async fn op_propose_self_replacement(
 	let server_role_pool = state.borrow::<PgPool>();
 	let server_pg_client = server_role_pool.get().await.map_err(run_err)?;
 
-	let candidate_uuid = rulesets::propose_candidate_ruleset(
+	let candidate_uuid = propose_candidate_ruleset(
 		current_full_path, &server_pg_config.0, server_role_pool, &server_pg_client, &candidate,
 	).await.map_err(run_err)?;
 

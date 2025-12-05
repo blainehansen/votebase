@@ -1,3 +1,11 @@
+use std::{cell::RefCell, rc::Rc};
+use deno_core::OpState;
+use uuid::Uuid;
+use log::info;
+
+use super::{RuntimeError, run_err, run_action, demand_external_allowed, ServerPgConfig};
+use crate::{PgPool, PgConfig, queries, ScheduledActionKind};
+
 #[derive(Clone)]
 pub struct ScheduledActionQueue {
 	send: tokio::sync::mpsc::UnboundedSender<ScheduledAction>,
@@ -175,101 +183,101 @@ pub async fn execute_scheduled_action(
 
 
 
-// // op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
-#[deno_core::op2(async)]
-#[string]
-async fn op_create_recurring_action(
-	state: Rc<RefCell<OpState>>,
-	#[string] description: String,
-	#[serde] start: chrono::DateTime<chrono::Utc>,
-	#[serde] recurrence_granularity: crate::db_types::votebase_catalog::GranularityEnum,
-	recurrence_multiplier: i16,
-	#[string] action_name: String,
-	#[serde] action_arg: serde_json::Value,
-) -> Result<String, deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
-	let state = state.as_ref().borrow();
-	let server_pg_config = state.borrow::<ServerPgConfig>().0.clone();
-	let server_role_pool = state.borrow::<PgPool>();
-	let scheduled_action_queue = state.borrow::<ScheduledActionQueue>();
-	let current_full_path = state.borrow::<String>();
+// // // op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
+// #[deno_core::op2(async)]
+// #[string]
+// async fn op_create_recurring_action(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[string] description: String,
+// 	#[serde] start: chrono::DateTime<chrono::Utc>,
+// 	#[serde] recurrence_granularity: crate::db_types::votebase_catalog::GranularityEnum,
+// 	recurrence_multiplier: i16,
+// 	#[string] action_name: String,
+// 	#[serde] action_arg: serde_json::Value,
+// ) -> Result<String, deno_error::JsErrorBox> {
+// 	demand_external_allowed(state.as_ref())?;
+// 	let state = state.as_ref().borrow();
+// 	let server_pg_config = state.borrow::<ServerPgConfig>().0.clone();
+// 	let server_role_pool = state.borrow::<PgPool>();
+// 	let scheduled_action_queue = state.borrow::<ScheduledActionQueue>();
+// 	let current_full_path = state.borrow::<String>();
 
-	let client = server_role_pool.get().await.map_err(run_err)?;
-	let action = queries::scheduled::create_detached_recurring_action()
-		.bind(&client, &current_full_path, &description, &start.naive_utc(), &recurrence_granularity, &recurrence_multiplier, &action_name, &action_arg)
-		.one().await.map_err(run_err)?;
+// 	let client = server_role_pool.get().await.map_err(run_err)?;
+// 	let action = queries::scheduled::create_detached_recurring_action()
+// 		.bind(&client, &current_full_path, &description, &start.naive_utc(), &recurrence_granularity, &recurrence_multiplier, &action_name, &action_arg)
+// 		.one().await.map_err(run_err)?;
 
-	scheduled_action_queue.queue(
-		server_role_pool.clone(), server_pg_config,
-		ScheduledActionKind::DetachedRecurring, action.id, action.next_scheduled_time.and_utc(),
-	);
+// 	scheduled_action_queue.queue(
+// 		server_role_pool.clone(), server_pg_config,
+// 		ScheduledActionKind::DetachedRecurring, action.id, action.next_scheduled_time.and_utc(),
+// 	);
 
-	Ok(action.id.to_string())
-}
+// 	Ok(action.id.to_string())
+// }
 
-// op_remove_recurring_action: (uuid: string) => Promise<void>,
-#[deno_core::op2(async)]
-#[string]
-async fn op_remove_recurring_action(
-	state: Rc<RefCell<OpState>>,
-	#[serde] scheduled_action_uuid: Uuid,
-) -> Result<(), deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
-	let state = state.as_ref().borrow();
-	let server_role_pool = state.borrow::<PgPool>();
+// // op_remove_recurring_action: (uuid: string) => Promise<void>,
+// #[deno_core::op2(async)]
+// #[string]
+// async fn op_remove_recurring_action(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[serde] scheduled_action_uuid: Uuid,
+// ) -> Result<(), deno_error::JsErrorBox> {
+// 	demand_external_allowed(state.as_ref())?;
+// 	let state = state.as_ref().borrow();
+// 	let server_role_pool = state.borrow::<PgPool>();
 
-	let client = server_role_pool.get().await.map_err(run_err)?;
-	queries::scheduled::remove_detached_recurring_action()
-		.bind(&client, &scheduled_action_uuid).await.map_err(run_err)?;
+// 	let client = server_role_pool.get().await.map_err(run_err)?;
+// 	queries::scheduled::remove_detached_recurring_action()
+// 		.bind(&client, &scheduled_action_uuid).await.map_err(run_err)?;
 
-	Ok(())
-}
+// 	Ok(())
+// }
 
 
-// op_schedule_action: (description: string, scheduled_time: string, action_name: string, action_arg: JsonValue) => Promise<string>,
-#[deno_core::op2(async)]
-#[string]
-async fn op_schedule_action(
-	state: Rc<RefCell<OpState>>,
-	#[string] description: String,
-	#[serde] scheduled_time: chrono::DateTime<chrono::Utc>,
-	#[string] action_name: String,
-	#[serde] action_arg: serde_json::Value,
-) -> Result<String, deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
-	let state = state.as_ref().borrow();
-	let server_role_pool = state.borrow::<PgPool>();
-	let server_pg_config = state.borrow::<ServerPgConfig>().0.clone();
-	let scheduled_action_queue = state.borrow::<ScheduledActionQueue>();
-	let current_full_path = state.borrow::<String>();
+// // op_schedule_action: (description: string, scheduled_time: string, action_name: string, action_arg: JsonValue) => Promise<string>,
+// #[deno_core::op2(async)]
+// #[string]
+// async fn op_schedule_action(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[string] description: String,
+// 	#[serde] scheduled_time: chrono::DateTime<chrono::Utc>,
+// 	#[string] action_name: String,
+// 	#[serde] action_arg: serde_json::Value,
+// ) -> Result<String, deno_error::JsErrorBox> {
+// 	demand_external_allowed(state.as_ref())?;
+// 	let state = state.as_ref().borrow();
+// 	let server_role_pool = state.borrow::<PgPool>();
+// 	let server_pg_config = state.borrow::<ServerPgConfig>().0.clone();
+// 	let scheduled_action_queue = state.borrow::<ScheduledActionQueue>();
+// 	let current_full_path = state.borrow::<String>();
 
-	let client = server_role_pool.get().await.map_err(run_err)?;
-	let id = queries::scheduled::create_detached_scheduled_action()
-		.bind(&client, &current_full_path, &description, &scheduled_time.fixed_offset(), &action_name, &action_arg)
-		.one().await.map_err(run_err)?;
+// 	let client = server_role_pool.get().await.map_err(run_err)?;
+// 	let id = queries::scheduled::create_detached_scheduled_action()
+// 		.bind(&client, &current_full_path, &description, &scheduled_time.fixed_offset(), &action_name, &action_arg)
+// 		.one().await.map_err(run_err)?;
 
-	scheduled_action_queue.queue(
-		server_role_pool.clone(), server_pg_config,
-		ScheduledActionKind::DetachedScheduled, id, scheduled_time,
-	);
+// 	scheduled_action_queue.queue(
+// 		server_role_pool.clone(), server_pg_config,
+// 		ScheduledActionKind::DetachedScheduled, id, scheduled_time,
+// 	);
 
-	Ok(id.to_string())
-}
+// 	Ok(id.to_string())
+// }
 
-// op_unschedule_action: (uuid: string) => Promise<void>,
-#[deno_core::op2(async)]
-#[string]
-async fn op_unschedule_action(
-	state: Rc<RefCell<OpState>>,
-	#[serde] scheduled_action_uuid: Uuid,
-) -> Result<(), deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
-	let state = state.as_ref().borrow();
-	let server_role_pool = state.borrow::<PgPool>();
+// // op_unschedule_action: (uuid: string) => Promise<void>,
+// #[deno_core::op2(async)]
+// #[string]
+// async fn op_unschedule_action(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[serde] scheduled_action_uuid: Uuid,
+// ) -> Result<(), deno_error::JsErrorBox> {
+// 	demand_external_allowed(state.as_ref())?;
+// 	let state = state.as_ref().borrow();
+// 	let server_role_pool = state.borrow::<PgPool>();
 
-	let client = server_role_pool.get().await.map_err(run_err)?;
-	queries::scheduled::remove_detached_scheduled_action()
-		.bind(&client, &scheduled_action_uuid).await.map_err(run_err)?;
+// 	let client = server_role_pool.get().await.map_err(run_err)?;
+// 	queries::scheduled::remove_detached_scheduled_action()
+// 		.bind(&client, &scheduled_action_uuid).await.map_err(run_err)?;
 
-	Ok(())
-}
+// 	Ok(())
+// }

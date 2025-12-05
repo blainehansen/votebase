@@ -1,3 +1,8 @@
+use std::{cell::RefCell, rc::Rc};
+use deno_core::OpState;
+
+use super::{demand_external_allowed, js_err};
+
 // op_fetch: (url: string) => Promise<string>,
 #[deno_core::op2(async)]
 #[string]

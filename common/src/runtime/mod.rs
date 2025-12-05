@@ -2,6 +2,7 @@
 mod test;
 
 mod scheduling;
+use scheduling::ScheduledActionQueue;
 
 pub mod rulesets;
 use rulesets::{op_propose_self_replacement};
@@ -15,10 +16,10 @@ use sql::{op_sql_fetch_all, op_sql_fetch_one, op_sql_fetch_optional, op_sql_exec
 mod dom;
 use dom::{op_fetch};
 
-use std::{cell::RefCell, rc::Rc};
+use std::cell::RefCell;
 use deno_core::{v8, OpState};
-use uuid::Uuid;
-use crate::{queries, PgConfig, PgPool, /*PgClient,*/ ScheduledActionKind, /*format_ruleset_schema,*/ postgres};
+use log::info;
+use crate::{PgConfig, PgPool, /*PgClient,*/ /*format_ruleset_schema,*/ postgres, FnType, RoleType, format_ruleset_role};
 
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimeError {
@@ -174,12 +175,6 @@ fn op_register_view(
 	register_fn(state, fn_name, false, func)
 }
 
-
-use deno_core::{v8, OpState};
-use uuid::Uuid;
-use super::RuntimeError;
-use crate::{queries, PgConfig, PgPool, /*PgClient,*/ FnType, RoleType, ScheduledActionKind, /*format_ruleset_schema,*/ format_ruleset_role};
-
 pub struct Runtime {
 	js_runtime: deno_core::JsRuntime,
 }
@@ -241,7 +236,7 @@ impl Runtime {
 
 pub async fn run_action(
 	current_full_path: String,
-	ruleset_code: String,
+	ruleset_code: &str,
 	action_name: &str,
 	action_pass: &str,
 	migrator_pass: &str,
@@ -274,7 +269,7 @@ pub async fn run_action(
 
 pub async fn run_view(
 	current_full_path: String,
-	ruleset_code: String,
+	ruleset_code: &str,
 	view_name: &str,
 	view_pass: &str,
 	query: serde_json::Value,
@@ -294,7 +289,7 @@ pub async fn run_view(
 
 async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	current_full_path: String,
-	ruleset_code: String,
+	ruleset_code: &str,
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
@@ -303,7 +298,7 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	server_role_pool: PgPool,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<V, RuntimeError> {
-	let mut runtime = Runtime::new(&ruleset_code).await.map_err(|e| RuntimeError::OtherError(e.to_string()))?;
+	let mut runtime = Runtime::new(ruleset_code).await.map_err(|e| RuntimeError::OtherError(e.to_string()))?;
 
 	// fn_role_config encodes the user, and therefore the role and powers of the connection
 	let fn_map = runtime.take_fn_map();
