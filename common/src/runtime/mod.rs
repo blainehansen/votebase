@@ -124,7 +124,9 @@ deno_core::extension!(
 		op_sql_execute_statement,
 		op_sql_execute_statements,
 
-		op_register_fn,
+		// op_register_fn,
+		op_register_action,
+		op_register_view,
 		// op_register_recurring_action,
 
 		op_create_recurring_action,

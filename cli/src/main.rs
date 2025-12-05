@@ -19,6 +19,9 @@ async fn main() -> anyhow::Result<()> {
 		SubCommand::Check(_) => {
 			votebase_cli::cmd_check(&ruleset_dir).await?;
 		},
+		SubCommand::CreateBundleInfo(_) => {
+			votebase_cli::cmd_create_bundle_info()?;
+		},
 		SubCommand::FetchServerSchema(_) => {
 			votebase_cli::cmd_fetch_server_schema().await?;
 		},
@@ -52,6 +55,7 @@ enum SubCommand {
 	Init(Init),
 	Dev(Dev),
 	Check(Check),
+	CreateBundleInfo(CreateBundleInfo),
 	FetchServerSchema(FetchServerSchema),
 	GenerateMigration(GenerateMigration),
 	Bundle(Bundle),
@@ -71,6 +75,15 @@ struct Dev {}
 #[argh(subcommand, name = "check")]
 /// prepare all ruleset queries and place them in the dev typescript file next to the queries directory (e.g. for `./queries/` dir `./queries.ts`), and run the Typescript check
 struct Check {}
+
+#[derive(argh::FromArgs, Debug)]
+#[argh(subcommand, name = "create_bundle_info")]
+/// TODO
+struct CreateBundleInfo {
+	/// TODO
+	#[argh(option)]
+	db_migration_file: url::Url,
+}
 
 #[derive(argh::FromArgs, Debug)]
 #[argh(subcommand, name = "fetch_server_schema")]

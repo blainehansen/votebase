@@ -98,14 +98,13 @@ pub async fn create_ruleset(
 }
 
 pub async fn propose_candidate_ruleset(
-	current_full_path: &String,
+	current_full_path: &str,
 	server_pg_config: &PgConfig,
 	server_role_pool: &PgPool,
 	server_pg_client: &PgClient,
 	candidate: &CandidateRuleset,
-
 ) -> Result<uuid::Uuid, RuntimeError> {
-	let (actions, views) = validate_candidate(current_full_path, &server_pg_config, &server_pg_client, &candidate).await?;
+	let (actions, views) = validate_candidate(current_full_path, server_pg_config, server_pg_client, candidate).await?;
 
 	let client = server_role_pool.get().await?;
 	let candidate_uuid = queries::rulesets::insert_candidate_replacement()
@@ -223,67 +222,35 @@ async fn drop_tempdb(dbname: String, base_client: &PgClient) -> Result<(), postg
 	Ok(())
 }
 
-async fn compute_diff(
-	pgschema: &str,
-	current_config: &PgConfig,
-	intended_config: &PgConfig,
+pub async fn compute_diff(
+	pgschema: impl AsRef<str>,
+	from_config: &PgConfig,
+	to_config: &PgConfig,
 ) -> Result<String, RuntimeError> {
-	#[cfg(debug_assertions)]
-	let mut command = {
-		let mut command = tokio::process::Command::new("uv");
-		command.args("tool run -p 3.11 --with psycopg2-binary --with setuptools migra".split_whitespace());
-		command
-	};
-	#[cfg(not(debug_assertions))]
-	let mut command = tokio::process::Command::new("migra");
+	// #[cfg(debug_assertions)]
+	// let mut command = {
+	// 	let mut command = tokio::process::Command::new("uv");
+	// 	command.args("tool run -p 3.11 --with psycopg2-binary --with setuptools migra".split_whitespace());
+	// 	command
+	// };
+	// #[cfg(not(debug_assertions))]
+	// let mut command = tokio::process::Command::new("migra");
 
-	let output = command
-		.arg("--unsafe")
-		.arg("--with-privileges")
-		.arg("--schema").arg(pgschema)
-		.arg(convert_db_config(current_config))
-		.arg(convert_db_config(intended_config))
-		.output()
-		.await?;
+	let from_url = crate::url_encoded_connection_string(from_config);
+	let to_url = crate::url_encoded_connection_string(to_config);
 
-	if !output.stderr.is_empty() {
-		let e = format!("migra failed: {}\n\n{}", output.status, String::from_utf8_lossy(&output.stderr));
+	let output = temp_container_utils::run_podman_cmd(
+		"votebase-dbdiff",
+		&[],
+		// TODO
+		// &["--network", &format!("container:{}", db_container_name.as_ref())],
+		&["--with-privileges", "--schema", pgschema.as_ref(), &from_url, &to_url],
+	).await?;
+
+	// if !output.stderr.is_empty() {
+	if !output.status.success() {
+		let e = format!("dbdiff failed: {}\n\n{}", output.status, String::from_utf8_lossy(&output.stderr));
 		return Err(RuntimeError::OtherError(e));
 	}
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
-
-pub fn convert_db_config(url: &PgConfig) -> String {
-	let user = url.get_user().unwrap_or_default();
-	let password = urlencoding::encode_binary(url.get_password().unwrap_or_default());
-	// let host = url.get_hosts().get(0).map(|host| host.into()).unwrap_or_default();
-	let host = "localhost";
-	let port = url.get_ports().get(0).unwrap_or(&5432);
-	let db = url.get_dbname().unwrap_or_default();
-	format!("postgresql://{user}:{password}@{host}:{port}/{db}")
-	// let mut url = url.to_config_lossy();
-	// url.set_scheme("postgresql").unwrap();
-	// url.set_query(None);
-	// url.to_string()
-}
-
-// pub async fn clean_all_temp_dbs(base_config: &PgConfig) -> Result<(), postgres::Error> {
-// 	let (mut client, connection) = base_config.connect(postgres::NoTls).await?;
-//  tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
-// 	let temp_dbs = client.query(
-// 		r#"select datname from pg_database where obj_description(oid, 'pg_database') = $1;"#,
-// 		TEMP_DB_COMMENT,
-// 	)
-// 	.await?;
-
-// 	for row in temp_dbs {
-//    let datname: String = row.get(0);
-// 		if let Err(e) = client.batch_execute(&format!(r#"drop database if exists "{}";"#, datname))
-// 			.await
-// 		{
-// 			eprintln!("Failed to drop temporary database {}: {}", row.datname, e);
-// 		}
-// 	}
-
-// 	Ok(())
-// }

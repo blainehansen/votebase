@@ -15,6 +15,7 @@ url = { workspace = true }
 include_dir = { workspace = true }
 argh = { workspace = true }
 thiserror = { workspace = true }
+log = { workspace = true }
 # serde_jsonc2 = { workspace = true }
 
 [dev-dependencies]

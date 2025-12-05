@@ -1,0 +1,16 @@
+FROM ghcr.io/astral-sh/uv:python3.14-alpine
+
+ENV PATH=/root/.local/bin:$PATH
+RUN uv tool install --with "psycopg[binary]" results
+
+ENTRYPOINT ["results", "dbdiff"]
+CMD ["--help"]
+
+# FROM python:3.11-slim
+
+# RUN pip install uv
+# RUN uv tool install results
+
+# # VOLUME /root/.cache/uv
+
+# uv tool run -p 3.14 --with psycopg2-binary --with setuptools results dbdiff

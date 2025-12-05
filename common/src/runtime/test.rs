@@ -13,7 +13,7 @@ fn boil_string(s: &str) -> String {
 
 #[test]
 fn test_convert_db_url() {
-	assert_eq!(rulesets::convert_db_config(&conf()), "postgresql://dev_admin_user:dev_admin_password@localhost:5432/dev_db");
+	assert_eq!(crate::url_encoded_connection_string(&conf()), "postgresql://dev_admin_user:dev_admin_password@localhost:5432/dev_db");
 }
 
 #[tokio::test(start_paused = true)]

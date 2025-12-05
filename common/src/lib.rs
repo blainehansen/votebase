@@ -3,7 +3,6 @@
 pub mod runtime;
 pub mod gen_queries;
 pub mod gen_ts;
-pub mod rulesets;
 
 pub use db_generated::{queries, types as db_types, deadpool_postgres as deadpool, tokio_postgres as postgres};
 

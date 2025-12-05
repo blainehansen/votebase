@@ -18,7 +18,7 @@ async fn run_sql_checking_and_generation(ruleset_dir: &Path, do_generation: bool
 	let queries_dir = ruleset_dir.join("queries");
 	let schema_file = ruleset_dir.join("schema.sql");
 
-	let generated = temp_container_utils::with_temp_postgres_client(async |db_config, mut client| -> anyhow::Result<String> {
+	let generated = temp_container_utils::with_temp_postgres_client(async |_, db_config, mut client| -> anyhow::Result<String> {
 		let db_name = db_config.get_dbname().unwrap().to_string();
 		println!("loading votebase schema");
 		db_schema_utils::load_votebase_server_schema(db_name, &mut client).await?;
@@ -61,7 +61,7 @@ async fn run_sql_checking_and_generation(ruleset_dir: &Path, do_generation: bool
 async fn run_votebase_tsc(ruleset_dir: &Path) -> anyhow::Result<()> {
 	let ruleset_dir = std::env::current_dir()?.join(ruleset_dir);
 	let workspace_arg = format!("{}:/workspace/ruleset", ruleset_dir.to_string_lossy());
-	let output = temp_container_utils::run_workspace_podman_cmd("votebase-tsc", workspace_arg, &["--noEmit"]).await?;
+	let output = temp_container_utils::run_workspace_podman_cmd("votebase-tsc", &[], workspace_arg, &["--noEmit"]).await?;
 
 	if !output.status.success() {
 		// let all_output = output.stdout.extend(output.stderr);

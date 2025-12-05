@@ -45,9 +45,36 @@ fn random_port() -> u16 {
 // 	Ok(())
 // }
 
-pub async fn run_workspace_podman_cmd(image: &str, workspace_arg: impl AsRef<str>, args: &[&str]) -> io::Result<std::process::Output> {
+pub async fn run_workspace_podman_cmd(
+	image: &str,
+	podman_args: &[&str],
+	workspace_arg: impl AsRef<str>,
+	args: &[&str],
+) -> io::Result<std::process::Output> {
 	let args = [
-		["run", "--rm", "-v", workspace_arg.as_ref(), image].as_slice(),
+		["run", "--rm"].as_slice(),
+		podman_args,
+		["-v", workspace_arg.as_ref()].as_slice(),
+		[image].as_slice(),
+		args,
+	].concat();
+
+	tokio::process::Command::new("podman")
+		.args(args)
+		.stderr(std::process::Stdio::piped())
+		.stdout(std::process::Stdio::piped())
+		.spawn()?.wait_with_output().await
+}
+
+pub async fn run_podman_cmd(
+	image: &str,
+	podman_args: &[&str],
+	args: &[&str],
+) -> io::Result<std::process::Output> {
+	let args = [
+		["run", "--rm"].as_slice(),
+		podman_args,
+		[image].as_slice(),
 		args,
 	].concat();
 
@@ -77,12 +104,12 @@ async fn spawn_postgres(container_name: &str, pg_pass: &str, pg_user: &str, pg_d
 	podman_cmd(&[
 		"run",
 		"--name", &container_name,
-		"-e", &format!("POSTGRES_PASSWORD={pg_pass}"),
-		"-e", &format!("POSTGRES_USER={pg_user}"),
-		"-e", &format!("POSTGRES_DB={pg_db}"),
-		"-e", &format!("PGPORT={pg_port}"),
+		"--env", &format!("POSTGRES_PASSWORD={pg_pass}"),
+		"--env", &format!("POSTGRES_USER={pg_user}"),
+		"--env", &format!("POSTGRES_DB={pg_db}"),
+		"--env", &format!("PGPORT={pg_port}"),
 		"-p", &format!("{pg_port}:{pg_port}"),
-		"-d",
+		"--detach", "--rm",
 		"docker.io/library/postgres:latest",
 	], "start temp container").await
 }
@@ -131,7 +158,7 @@ async fn healthcheck_postgres(
 
 pub async fn with_temp_postgres<
 	Fut: Future,
-	F: FnOnce(Config) -> Fut,
+	F: FnOnce(String, Config) -> Fut,
 >(func: F) -> ContainerResult<Fut::Output> {
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
@@ -141,7 +168,7 @@ pub async fn with_temp_postgres<
 	healthcheck_postgres(&config, 50, 100).await?;
 
 	// call user function
-	let result = func(config).await;
+	let result = func(container_name.clone(), config).await;
 
 	kill_container(&container_name).await?;
 
@@ -150,7 +177,7 @@ pub async fn with_temp_postgres<
 
 pub async fn with_temp_postgres_client<
 	Fut: Future,
-	F: FnOnce(Config, tokio_postgres::Client) -> Fut,
+	F: FnOnce(String, Config, tokio_postgres::Client) -> Fut,
 >(func: F) -> ContainerResult<Fut::Output> {
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
@@ -159,14 +186,14 @@ pub async fn with_temp_postgres_client<
 	spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port).await?;
 	healthcheck_postgres(&config, 50, 100).await?;
 
-	// call user function
 	let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
 	tokio::spawn(async move {
 		if let Err(e) = connection.await {
 			eprintln!("connection error: {}", e);
 		}
 	});
-	let result = func(config, client).await;
+	// call user function
+	let result = func(container_name.clone(), config, client).await;
 
 	kill_container(&container_name).await?;
 
@@ -204,7 +231,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_postgres_with_process_setup() -> ContainerResult<()> {
-		with_temp_postgres(async |config| -> ContainerResult<()> {
+		with_temp_postgres(async |_, config| -> ContainerResult<()> {
 			let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
 
 			tokio::spawn(async move {
@@ -233,7 +260,7 @@ mod tests {
 			Ok(())
 		}).await??;
 
-		with_temp_postgres_client(async |_, client| -> ContainerResult<()> {
+		with_temp_postgres_client(async |_, _, client| -> ContainerResult<()> {
 			client.execute(
 				"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
 				&[]

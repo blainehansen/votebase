@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+transpile_utils = { path = "../transpile_utils" }
+db_generated = { path = "../db_generated" }
+temp_container_utils = { path = "../temp_container_utils" }
 deno_core = { workspace = true }
 deno_error = { workspace = true }
 serde = { workspace = true }
@@ -13,18 +16,15 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
-transpile_utils = { path = "../transpile_utils" }
-reqwest = "0.12"
-urlencoding = "2"
 
 futures = { workspace = true }
 walkdir = { workspace = true }
 sqlparser = { version = "0.59", features = ["visitor"] }
 postgres-from-row = "0.5"
 futures-util = "0.3"
+reqwest = "0.12"
 percent-encoding = { workspace = true }
 
-db_generated = { path = "../db_generated" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
