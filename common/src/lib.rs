@@ -104,6 +104,12 @@ pub fn url_encoded_connection_string(config: &PgConfig) -> String {
 	url
 }
 
+#[test]
+fn test_url_encoded_connection_string() {
+	let config = "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db".parse().unwrap();
+	assert_eq!(url_encoded_connection_string(&config), "postgresql://dev_admin_user:dev_admin_password@localhost:5432/dev_db");
+}
+
 // #[derive(thiserror::Error, Debug)]
 // pub enum ConnectionStringError {
 // 	#[error("no user on config?")]

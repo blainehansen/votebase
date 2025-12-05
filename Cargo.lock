@@ -4681,6 +4681,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "db_generated",
+ "db_schema_utils",
  "deno_core",
  "deno_error",
  "futures",

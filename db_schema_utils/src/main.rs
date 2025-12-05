@@ -8,7 +8,7 @@ async fn main() {
 		.build();
 
 	temp_container_utils::with_temp_postgres_client(async |_, db_config, mut client| {
-		let db_name = db_config.get_dbname().unwrap().to_string();
+		let db_name = db_config.get_dbname().unwrap();
 		db_schema_utils::load_votebase_server_schema(db_name, &mut client).await.unwrap();
 
 		clorinde::gen_live(&client, config).unwrap();

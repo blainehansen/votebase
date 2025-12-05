@@ -19,7 +19,7 @@ async fn run_sql_checking_and_generation(ruleset_dir: &Path, do_generation: bool
 	let schema_file = ruleset_dir.join("schema.sql");
 
 	let generated = temp_container_utils::with_temp_postgres_client(async |_, db_config, mut client| -> anyhow::Result<String> {
-		let db_name = db_config.get_dbname().unwrap().to_string();
+		let db_name = db_config.get_dbname().unwrap();
 		println!("loading votebase schema");
 		db_schema_utils::load_votebase_server_schema(db_name, &mut client).await?;
 

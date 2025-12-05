@@ -1,6 +1,56 @@
 // import z from 'zod'
 // import { zodToJsonSchema } from 'zod-to-json-schema'
 
+const { core } = (globalThis as any).Deno as { core: {
+	print: (message: string, is_error: boolean) => void,
+	ops: {
+		op_register_action: <T>(name: string, func: (arg: T, userId: string | null) => Promise<ReplaceSelfStruct | void>) => void;
+		op_register_view: <T>(name: string, func: (arg: T, userId: string | null) => Promise<string>) => void;
+
+		// TODO cutting dynamic scope for now
+		// op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
+		// op_remove_recurring_action: (uuid: string) => Promise<void>,
+
+		// op_schedule_action: (description: string, scheduled_time: string, action_name: string, action_arg: JsonValue) => Promise<string>,
+		// op_unschedule_action: (uuid: string) => Promise<void>,
+
+		op_enroll_member: (email: string) => Promise<string>,
+		op_remove_member_by_email: (email: string) => Promise<void>,
+		op_remove_member_by_uuid: (uuid: string) => Promise<void>,
+
+		op_propose_self_replacement: (candidate: BundledRuleset) => Promise<string>,
+		// replacing self is always done by returning the candidate uuid from an action
+
+		// // these two create and destroy rulesets entirely. they cannot create or destroy static children
+		// // this initial ruleset is expected to have db_schema == db_migration, because this ruleset didn't previously exist, there's nothing to migrate
+		// op_create_child_ruleset: (name: string, initial: BundledRuleset) => Promise<string>,
+		// // all of the children, static and dynamic, are deleted here as well
+		// op_delete_child_ruleset: (name: string) => Promise<void>,
+
+		// // this is just the child version of op_propose_self_replacement
+		// op_propose_child_replacement: (name: string, candidate: BundledRuleset) => Promise<string>,
+		// // the table with candidate_id already has the name and full_path etc to know where it's headed
+		// op_replace_child: (candidate_id: string) => Promise<void>,
+
+		op_sql_fetch_all: <P extends ParamHint[], R extends FullRetHint>
+			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
+		op_sql_fetch_one: <P extends ParamHint[], R extends FullRetHint>
+			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>>,
+		op_sql_fetch_optional: <P extends ParamHint[], R extends FullRetHint>
+			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R> | null>,
+		op_sql_execute_statement: <P extends ParamHint[]>
+			(sql: string, params: ActualParams<P>, hints: P) => Promise<number>,
+		op_sql_execute_statements: (sql: string) => Promise<void>,
+
+		// op_set_timeout: (delay: number | undefined) => Promise<void>,
+		// TODO pull all the types from the standard, or even better have perplexity do it?
+		// https://github.com/microsoft/TypeScript/blob/main/src/lib/dom.generated.d.ts
+		// fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+		op_fetch: (url: string) => Promise<string>,
+	},
+} }
+
+
 // export type Result<T, E = string> =
 // 	| { ok: true, value: T }
 // 	| { ok: false, error: E }
@@ -67,55 +117,6 @@ export type StaticRecurringEvent = Readonly<{
 
 export type KeepOrReplace<T> = 'keep' | T
 
-
-const { core } = (globalThis as any).Deno as { core: {
-	print: (message: string, is_error: boolean) => void,
-	ops: {
-		// op_set_timeout: (delay: number | undefined) => Promise<void>,
-		// TODO pull all the types from the standard, or even better have perplexity do it?
-		// https://github.com/microsoft/TypeScript/blob/main/src/lib/dom.generated.d.ts
-		// fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
-		op_fetch: (url: string) => Promise<string>,
-
-		op_register_action: <T>(name: string, func: (arg: T, userId: string | null) => Promise<ReplaceSelfStruct | void>) => void;
-		op_register_view: <T>(name: string, func: (arg: T, userId: string | null) => Promise<string>) => void;
-
-		// TODO cutting dynamic scope for now
-		// op_create_recurring_action: (description: string, start: string, recurrenceGranularity: RecurrenceGranularity, recurrenceMultiplier: number, action_name: string, action_arg: JsonValue) => Promise<string>,
-		// op_remove_recurring_action: (uuid: string) => Promise<void>,
-
-		// op_schedule_action: (description: string, scheduled_time: string, action_name: string, action_arg: JsonValue) => Promise<string>,
-		// op_unschedule_action: (uuid: string) => Promise<void>,
-
-		op_enroll_member: (email: string) => Promise<string>,
-		op_remove_member_by_email: (email: string) => Promise<void>,
-		op_remove_member_by_uuid: (uuid: string) => Promise<void>,
-
-		op_propose_self_replacement: (candidate: BundledRuleset) => Promise<string>,
-		// replacing self is always done by returning the candidate uuid from an action
-
-		// // these two create and destroy rulesets entirely. they cannot create or destroy static children
-		// // this initial ruleset is expected to have db_schema == db_migration, because this ruleset didn't previously exist, there's nothing to migrate
-		// op_create_child_ruleset: (name: string, initial: BundledRuleset) => Promise<string>,
-		// // all of the children, static and dynamic, are deleted here as well
-		// op_delete_child_ruleset: (name: string) => Promise<void>,
-
-		// // this is just the child version of op_propose_self_replacement
-		// op_propose_child_replacement: (name: string, candidate: BundledRuleset) => Promise<string>,
-		// // the table with candidate_id already has the name and full_path etc to know where it's headed
-		// op_replace_child: (candidate_id: string) => Promise<void>,
-
-		op_sql_fetch_all: <P extends ParamHint[], R extends FullRetHint>
-			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
-		op_sql_fetch_one: <P extends ParamHint[], R extends FullRetHint>
-			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>>,
-		op_sql_fetch_optional: <P extends ParamHint[], R extends FullRetHint>
-			(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R> | null>,
-		op_sql_execute_statement: <P extends ParamHint[]>
-			(sql: string, params: ActualParams<P>, hints: P) => Promise<number>,
-		op_sql_execute_statements: (sql: string) => Promise<void>,
-	},
-} }
 
 /**
  * This is the type you should return from an `Action` when you want to replace the current Ruleset with the one pointed to by `replace_self_with_uuid`.
@@ -291,46 +292,6 @@ globalThis.votebase = {
 	// },
 }
 
-declare global {
-	function fetch(url: string): Promise<string>
-}
-globalThis.fetch = function fetch(url) {
-	return core.ops.op_fetch(url)
-}
-
-
-// declare global {
-// 	function setTimeout(callback: () => unknown): Promise<string>
-// }
-// globalThis.setTimeout = (callback, delay) => {
-// 	core.ops.op_set_timeout(delay).then(callback)
-// 	return 0
-// }
-
-
-declare global {
-	// this is actually the correct interface... but should we stringify it better? or even better, make the `print` command do the stringification at the v8 level?
-	// https://github.com/microsoft/TypeScript/blob/main/src/lib/dom.generated.d.ts
-	namespace console {
-		function log(...args: unknown[]): void
-		function error(...args: unknown[]): void
-	}
-}
-globalThis.console = {
-	log: (...args) => {
-		core.print(`[out]: ${argsToMessage(...args)}\n`, false)
-	},
-	error: (...args) => {
-		core.print(`[err]: ${argsToMessage(...args)}\n`, true)
-	},
-}
-
-function argsToMessage(...args: unknown[]) {
-	return args.map(arg => JSON.stringify(arg)).join(" ")
-}
-
-
-
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 
@@ -474,3 +435,42 @@ type ActualRet<R extends FullRetHint> =
 
 // type PgType = 'Text' | 'Bool' | 'etc TODO'
 // type PgExpr = string
+
+
+declare global {
+	function fetch(url: string): Promise<string>
+}
+globalThis.fetch = function fetch(url) {
+	return core.ops.op_fetch(url)
+}
+
+
+// declare global {
+// 	function setTimeout(callback: () => unknown): Promise<string>
+// }
+// globalThis.setTimeout = (callback, delay) => {
+// 	core.ops.op_set_timeout(delay).then(callback)
+// 	return 0
+// }
+
+
+declare global {
+	// this is actually the correct interface... but should we stringify it better? or even better, make the `print` command do the stringification at the v8 level?
+	// https://github.com/microsoft/TypeScript/blob/main/src/lib/dom.generated.d.ts
+	namespace console {
+		function log(...args: unknown[]): void
+		function error(...args: unknown[]): void
+	}
+}
+globalThis.console = {
+	log: (...args) => {
+		core.print(`[out]: ${argsToMessage(...args)}\n`, false)
+	},
+	error: (...args) => {
+		core.print(`[err]: ${argsToMessage(...args)}\n`, true)
+	},
+}
+
+function argsToMessage(...args: unknown[]) {
+	return args.map(arg => JSON.stringify(arg)).join(" ")
+}

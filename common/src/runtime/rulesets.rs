@@ -254,3 +254,59 @@ pub async fn compute_diff(
 	}
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
+
+
+// op_propose_self_replacement: (candidate: CandidateRuleset) => Promise<string>,
+#[deno_core::op2(async, reentrant)]
+#[string]
+pub async fn op_propose_self_replacement(
+	state: Rc<RefCell<OpState>>,
+	#[serde] candidate: rulesets::CandidateRuleset,
+) -> Result<String, deno_error::JsErrorBox> {
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
+	let current_full_path = state.borrow::<String>();
+	let server_pg_config = state.borrow::<ServerPgConfig>();
+	let server_role_pool = state.borrow::<PgPool>();
+	let server_pg_client = server_role_pool.get().await.map_err(run_err)?;
+
+	let candidate_uuid = rulesets::propose_candidate_ruleset(
+		current_full_path, &server_pg_config.0, server_role_pool, &server_pg_client, &candidate,
+	).await.map_err(run_err)?;
+
+	Ok(candidate_uuid.to_string())
+}
+
+// // op_create_child_ruleset: (
+// // 	name: string, initial: ConcreteRuleset,
+// // 	// tables in the parent ruleset that the view role of the child ruleset are granted select and the migrator role is granted references to
+// // 	allowed_view_tables: string[],
+// // 	// functions in the parent ruleset that the action role of the child ruleset are granted execute
+// // 	allowed_action_functions: string[],
+// // ) => Promise<string>,
+// #[deno_core::op2(async, reentrant)]
+// #[string]
+// async fn op_create_child_ruleset(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[string] name: String,
+// 	#[serde] initial: rulesets::ConcreteRuleset,
+// 	#[serde] allowed_view_tables: Vec<String>,
+// 	#[serde] allowed_action_functions: Vec<String>,
+// ) -> String {
+// 	unimplemented!()
+// }
+
+// // op_delete_child_ruleset: (name: string) => Promise<void>,
+// #[deno_core::op2(async, reentrant)]
+// #[string]
+// async fn op_delete_child_ruleset(
+// 	state: Rc<RefCell<OpState>>,
+// 	#[string] name: String,
+// ) -> String {
+// 	unimplemented!()
+// }
+
+// // this is just the child version of op_propose_self_replacement
+// op_propose_child_replacement: (name: string, candidate: CandidateRuleset) => Promise<string>,
+// // the table with candidate_id already has the name and full_path etc to know where it's headed
+// op_replace_child: (candidate_id: string) => Promise<void>,

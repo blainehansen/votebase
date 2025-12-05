@@ -1,5 +1,14 @@
 set -euo pipefail
 
+cargo test -p votebase_common -- --nocapture
+# cargo test -p votebase_cli -- --nocapture
+# cargo run -p votebase_cli -- --ruleset-dir test-rulesets/yes-or-no/ dev
+
+# cargo run -p votebase_cli -- \
+# 	--db-url "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db" \
+# 	--ruleset-dir rulesets/three-yes-proposals \
+# 	dev
+
 # PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -c 'create table yo(id uuid primary key)' | cat
 # PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -c '\dt' | cat
 
@@ -12,13 +21,6 @@ set -euo pipefail
 
 
 
-# cargo test -p votebase_cli -- --nocapture
-# cargo run -p votebase_cli -- --ruleset-dir test-rulesets/yes-or-no/ dev
-
-# cargo run -p votebase_cli -- \
-# 	--db-url "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db" \
-# 	--ruleset-dir rulesets/three-yes-proposals \
-# 	dev
 
 
 # podman run --name test-postgres \

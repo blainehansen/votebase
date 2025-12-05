@@ -28,6 +28,7 @@ percent-encoding = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+db_schema_utils = { path = "../db_schema_utils" }
 
 [build-dependencies]
 deno_core = { workspace = true }

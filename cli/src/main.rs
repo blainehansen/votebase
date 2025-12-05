@@ -29,6 +29,9 @@ async fn main() -> anyhow::Result<()> {
 			unimplemented!();
 			// votebase_cli::cmd_generate_migration(&ruleset_dir, &TODO).await?;
 		},
+		SubCommand::CheckMigration(_) => {
+			unimplemented!();
+		},
 		SubCommand::Bundle(_) => {
 			votebase_cli::cmd_bundle().await?;
 		},
@@ -58,6 +61,7 @@ enum SubCommand {
 	CreateBundleInfo(CreateBundleInfo),
 	FetchServerSchema(FetchServerSchema),
 	GenerateMigration(GenerateMigration),
+	CheckMigration(CheckMigration),
 	Bundle(Bundle),
 }
 
@@ -80,18 +84,18 @@ struct Check {}
 #[argh(subcommand, name = "create_bundle_info")]
 /// TODO
 struct CreateBundleInfo {
-	/// TODO
-	#[argh(option)]
-	db_migration_file: url::Url,
+	// /// TODO
+	// #[argh(option)]
+	// db_migration_file: url::Url,
 }
 
 #[derive(argh::FromArgs, Debug)]
 #[argh(subcommand, name = "fetch_server_schema")]
 /// TODO
 struct FetchServerSchema {
-	/// TODO
-	#[argh(option)]
-	server_url: url::Url,
+	// /// TODO
+	// #[argh(option)]
+	// server_url: url::Url,
 }
 
 #[derive(argh::FromArgs, Debug)]
@@ -108,9 +112,7 @@ struct CheckMigration {}
 #[argh(subcommand, name = "bundle")]
 /// bundle the ruleset as a json object ready to be proposed in through the `op_propose_self_replacement` runtime function
 struct Bundle {
-	/// TODO
-	#[argh(option)]
-	vars_file: PathBuf,
-
-
+	// /// TODO
+	// #[argh(option)]
+	// vars_file: PathBuf,
 }
