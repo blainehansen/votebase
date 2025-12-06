@@ -1,10 +1,15 @@
 use std::io;
-use tokio_postgres::Config;
+use tokio_postgres::{self as postgres, Config};
+use deadpool_postgres as deadpool;
 
 #[derive(thiserror::Error, Debug)]
 pub enum ContainerError {
 	#[error(transparent)]
-	PostgresError(#[from] tokio_postgres::Error),
+	PostgresError(#[from] postgres::Error),
+	#[error(transparent)]
+	DeadpoolError(#[from] deadpool::PoolError),
+	#[error(transparent)]
+	DeadpoolBuildError(#[from] deadpool::BuildError),
 	#[error(transparent)]
 	StdIoError(#[from] std::io::Error),
 }
@@ -117,9 +122,9 @@ async fn spawn_postgres(container_name: &str, pg_pass: &str, pg_user: &str, pg_d
 async fn is_postgres_healthy(config: &Config) -> bool {
 	// let args = ["exec", container_name, "pg_isready"];
 	// Ok(podman_cmd(&args, "check container health").await.is_ok())
-	config.connect(tokio_postgres::NoTls).await.is_ok()
+	config.connect(postgres::NoTls).await.is_ok()
 
-	// let res = config.connect(tokio_postgres::NoTls).await;
+	// let res = config.connect(postgres::NoTls).await;
 	// match res {
 	// 	Ok(_) => true,
 	// 	Err(e) => {
@@ -177,7 +182,7 @@ pub async fn with_temp_postgres<
 
 pub async fn with_temp_postgres_client<
 	Fut: Future,
-	F: FnOnce(String, Config, tokio_postgres::Client) -> Fut,
+	F: FnOnce(String, Config, postgres::Client) -> Fut,
 >(func: F) -> ContainerResult<Fut::Output> {
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
@@ -186,7 +191,7 @@ pub async fn with_temp_postgres_client<
 	spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port).await?;
 	healthcheck_postgres(&config, 50, 100).await?;
 
-	let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
+	let (client, connection) = config.connect(postgres::NoTls).await?;
 	tokio::spawn(async move {
 		if let Err(e) = connection.await {
 			eprintln!("connection error: {}", e);
@@ -194,6 +199,26 @@ pub async fn with_temp_postgres_client<
 	});
 	// call user function
 	let result = func(container_name.clone(), config, client).await;
+
+	kill_container(&container_name).await?;
+
+	Ok(result)
+}
+
+pub async fn with_temp_postgres_pool<
+	Fut: Future,
+	F: FnOnce(String, Config, deadpool::Pool) -> Fut,
+>(func: F) -> ContainerResult<Fut::Output> {
+	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
+
+	kill_container(&container_name).await?;
+
+	spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port).await?;
+	healthcheck_postgres(&config, 50, 100).await?;
+
+	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(5).build()?;
+	// call user function
+	let result = func(container_name.clone(), config, pool).await;
 
 	kill_container(&container_name).await?;
 
@@ -230,9 +255,9 @@ mod tests {
 	use super::*;
 
 	#[tokio::test]
-	async fn test_postgres_with_process_setup() -> ContainerResult<()> {
-		with_temp_postgres(async |_, config| -> ContainerResult<()> {
-			let (client, connection) = config.connect(tokio_postgres::NoTls).await?;
+	async fn test_with_temp_postgres() -> ContainerResult<()> {
+		with_temp_postgres(async |_, config| {
+			let (client, connection) = config.connect(postgres::NoTls).await?;
 
 			tokio::spawn(async move {
 				if let Err(e) = connection.await {
@@ -258,9 +283,12 @@ mod tests {
 			assert_eq!(rows[1].get::<_, &str>(1), "Bob");
 
 			Ok(())
-		}).await??;
+		}).await?
+	}
 
-		with_temp_postgres_client(async |_, _, client| -> ContainerResult<()> {
+	#[tokio::test]
+	async fn test_with_temp_postgres_client() -> ContainerResult<()> {
+		with_temp_postgres_client(async |_, _, client| {
 			client.execute(
 				"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
 				&[]
@@ -279,9 +307,33 @@ mod tests {
 			assert_eq!(rows[1].get::<_, &str>(1), "Bob");
 
 			Ok(())
-		}).await??;
+		}).await?
+	}
 
-		Ok(())
+	#[tokio::test]
+	async fn test_with_temp_postgres_pool() -> ContainerResult<()> {
+		with_temp_postgres_pool(async |_, _, pool| {
+			let client = pool.get().await?;
+
+			client.execute(
+				"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
+				&[]
+			).await?;
+
+			client.execute(
+				"INSERT INTO test_users (name) VALUES ($1), ($2)",
+				&[&"Alice", &"Bob"]
+			).await?;
+
+			let rows = client.query("SELECT id, name FROM test_users ORDER BY id", &[]).await?;
+
+			assert_eq!(rows.len(), 2);
+			assert_eq!(rows[0].get::<_, i32>(0), 1);
+			assert_eq!(rows[0].get::<_, &str>(1), "Alice");
+			assert_eq!(rows[1].get::<_, &str>(1), "Bob");
+
+			Ok(())
+		}).await?
 	}
 }
 

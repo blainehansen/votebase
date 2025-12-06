@@ -1,14 +1,72 @@
-#[macro_use] extern crate log;
-
 pub mod runtime;
 pub mod gen_queries;
 pub mod gen_ts;
 
 pub use db_generated::{queries, types as db_types, deadpool_postgres as deadpool, tokio_postgres as postgres};
 
-pub type PgPool = deadpool::Pool;
-pub type PgClient = deadpool::Client;
 pub type PgConfig = postgres::Config;
+pub type PgClient = postgres::Client;
+
+pub(crate) struct FnServerPg {
+	server_role_config: PgConfig,
+	server_role_pool: deadpool::Pool,
+	client: Option<deadpool::Client>,
+}
+
+impl FnServerPg {
+	fn new(server_role_config: PgConfig, server_role_pool: deadpool::Pool) -> Self {
+		FnServerPg { server_role_config, server_role_pool, client: None }
+	}
+
+	async fn get_client(&mut self) -> Result<&postgres::Client, deadpool::PoolError> {
+		if let Some(ref client) = self.client { Ok(client) }
+		else {
+			Ok(self.client.insert(self.server_role_pool.get().await?))
+		}
+	}
+
+	// async fn get_mut_client(&mut self) -> Result<&mut postgres::Client, deadpool::PoolError> {
+	// 	let client = &mut self.client;
+	// 	// TODO would prefer mut ref https://github.com/rust-lang/rust/issues/123076
+	// 	if let Some(client) = client { Ok(client) }
+	// 	else {
+	// 		Ok(client.insert(self.server_role_pool.get().await?))
+	// 	}
+	// }
+}
+
+pub(crate) struct FnRolePg {
+	config: PgConfig,
+	client: Option<postgres::Client>,
+}
+
+impl FnRolePg {
+	fn new(config: &PgConfig, full_path: &str, role_type: RoleType, role_pass: &str) -> Self {
+		let role_config = make_role_config(full_path, config, role_type, role_pass);
+		FnRolePg { config: role_config, client: None }
+	}
+
+	async fn get_client(&mut self) -> Result<&postgres::Client, deadpool::PoolError> {
+		if let Some(ref client) = self.client { Ok(client) }
+		else {
+			let (new_client, connection) = self.config.connect(postgres::NoTls).await?;
+			tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+			Ok(self.client.insert(new_client))
+		}
+	}
+
+	// async fn get_mut_client(&mut self) -> Result<&mut postgres::Client, deadpool::PoolError> {
+	// 	let client = &mut self.client;
+	// 	// TODO would prefer mut ref https://github.com/rust-lang/rust/issues/123076
+	// 	if let Some(client) = client { Ok(client) }
+	// 	else {
+	// 		let (new_client, connection) = self.config.connect(postgres::NoTls).await?;
+	// 		tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+	// 		Ok(client.insert(new_client))
+	// 	}
+	// }
+}
+
 
 #[derive(Copy, Clone, Debug)]
 pub enum RoleType { Migrator, Action, View }
@@ -39,6 +97,13 @@ pub fn format_ruleset_schema(full_path: &str) -> String {
 
 pub fn format_ruleset_role(full_path: &str, role_type: RoleType) -> String {
 	format!("role:{full_path}|{role_type}")
+}
+
+fn make_role_config(full_path: &str, config: &PgConfig, role_type: RoleType, role_pass: &str) -> PgConfig {
+	let mut role_config = config.clone();
+	let formatted_ruleset_role = format_ruleset_role(full_path, role_type);
+	role_config.user(formatted_ruleset_role).password(role_pass);
+	role_config
 }
 
 

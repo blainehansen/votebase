@@ -1,9 +1,9 @@
 use std::{collections::HashMap, cell::RefCell, rc::Rc};
 use deno_core::OpState;
 use crate::db_types::votebase_catalog::GranularityEnum;
-use crate::{queries, PgConfig, PgPool, PgClient, RoleType, format_ruleset_schema, format_ruleset_role, postgres};
+use crate::{queries, postgres, PgClient, PgConfig, RoleType, format_ruleset_schema, format_ruleset_role};
 
-use super::{Runtime, RuntimeError, demand_external_allowed, run_err, ServerPgConfig};
+use super::{Runtime, RuntimeError, demand_external_allowed, run_err, ServerRoleConfig};
 
 // the bootstrap process ensures there's always a ruleset at the root
 
@@ -58,11 +58,11 @@ pub struct StaticRecurringAction {
 
 
 pub async fn create_ruleset(
-	base_config: &PgConfig, client: &mut (impl postgres::GenericClient + db_generated::client::GenericClient),
+	base_config: &PgConfig, client: &mut PgClient,
 	parent_full_path: Option<&str>, name: &str,
 	action_names: &Vec<String>, view_names: &Vec<String>,
 	ruleset_code: &str, db_schema: &str,
-) -> Result<postgres::Client, postgres::Error> {
+) -> Result<PgClient, postgres::Error> {
 	println!("inserting ruleset");
 	let ruleset_row = queries::rulesets::insert_ruleset()
 		.bind(client, &parent_full_path, &name, &action_names, &view_names, &ruleset_code, &db_schema).one().await?;
@@ -100,27 +100,26 @@ pub async fn create_ruleset(
 
 pub async fn propose_candidate_ruleset(
 	current_full_path: &str,
-	server_pg_config: &PgConfig,
-	server_role_pool: &PgPool,
-	server_pg_client: &PgClient,
+	server_role_config: &PgConfig,
+	server_role_client: &PgClient,
 	candidate: &CandidateRuleset,
 ) -> Result<uuid::Uuid, RuntimeError> {
-	let (actions, views) = validate_candidate(current_full_path, server_pg_config, server_pg_client, candidate).await?;
+	let (actions, views) = validate_candidate(current_full_path, server_role_config, server_role_client, candidate).await?;
 
-	let client = server_role_pool.get().await?;
+	// let client = server_role_pool.get().await?;
 	let candidate_uuid = queries::rulesets::insert_candidate_replacement()
-		.bind(&client, &current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration)
+		.bind(server_role_client, &current_full_path, &actions, &views, &candidate.code, &candidate.db_schema, &candidate.db_migration)
 		.one().await?;
 
 	Ok(candidate_uuid)
 }
 
 pub async fn replace_ruleset(
-	server_client: &PgClient,
-	migrator_role_config: PgConfig,
-	new_ruleset_id: uuid::Uuid,
+	server_role_client: &impl db_generated::client::GenericClient,
+	migrator_role_config: &PgConfig,
+	new_ruleset_id: &uuid::Uuid,
 ) -> Result<(), postgres::Error> {
-	let db_migration = queries::rulesets::apply_candidate().bind(server_client, &new_ruleset_id).one().await?;
+	let db_migration = queries::rulesets::apply_candidate().bind(server_role_client, new_ruleset_id).one().await?;
 
 	let (migrator_client, migrator_connection) = migrator_role_config.connect(postgres::NoTls).await?;
 	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
@@ -137,8 +136,8 @@ pub async fn delete_ruleset() -> () {
 // it would be nice to have a separate database server for this kind of analysis?
 async fn validate_candidate(
 	current_full_path: &str,
-	server_pg_config: &PgConfig,
-	server_pg_client: &PgClient,
+	server_role_config: &PgConfig,
+	server_role_client: &PgClient,
 	candidate: &CandidateRuleset,
 ) -> Result<(Vec<String>, Vec<String>), RuntimeError> {
 	let inner = Runtime::new(&candidate.code).await?;
@@ -157,10 +156,10 @@ async fn validate_candidate(
 
 	let pgschema = format_ruleset_schema(current_full_path);
 	let declared_full_path = &format!("{current_full_path}|declared");
-	let (declared_tempdb_config, declared_dbname) = new_tempdb(&pgschema, declared_full_path, server_pg_config, server_pg_client)
+	let (declared_tempdb_config, declared_dbname) = new_tempdb(&pgschema, declared_full_path, server_role_config, server_role_client)
 		.await?;
 	let intended_full_path = &format!("{current_full_path}|actual");
-	let (actual_tempdb_config, actual_dbname) = new_tempdb(&pgschema, intended_full_path, server_pg_config, server_pg_client)
+	let (actual_tempdb_config, actual_dbname) = new_tempdb(&pgschema, intended_full_path, server_role_config, server_role_client)
 		.await?;
 
 	let result = (|| async {
@@ -169,7 +168,7 @@ async fn validate_candidate(
 		declared_client.batch_execute(&format!(r#"create schema "{pgschema}";"#)).await?;
 		declared_client.batch_execute(&candidate.db_schema).await?;
 
-		let current_schema = compute_diff(&pgschema, &actual_tempdb_config, server_pg_config).await?;
+		let current_schema = compute_diff(&pgschema, &actual_tempdb_config, server_role_config).await?;
 		let (actual_client, actual_conn) = actual_tempdb_config.connect(postgres::NoTls).await?;
 		tokio::spawn(async move { if let Err(e) = actual_conn.await { log::error!("DB connection error: {}", e); } });
 		actual_client.batch_execute(&current_schema).await?;
@@ -184,8 +183,8 @@ async fn validate_candidate(
 	})().await;
 
 	let (drop_declared, drop_actual) = tokio::join!(
-		async { drop_tempdb(declared_dbname, server_pg_client).await },
-		async { drop_tempdb(actual_dbname, server_pg_client).await },
+		async { drop_tempdb(declared_dbname, server_role_client).await },
+		async { drop_tempdb(actual_dbname, server_role_client).await },
 	);
 	drop_declared?;
 	drop_actual?;
@@ -200,7 +199,7 @@ async fn new_tempdb(
 	pgschema: &str,
 	intended_full_path: &str,
 	base_config: &PgConfig,
-	base_client: &PgClient,
+	base_client: &impl postgres::GenericClient,
 ) -> Result<(PgConfig, String), postgres::Error> {
 	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
 	let intended_full_path = format_ruleset_schema(intended_full_path);
@@ -218,7 +217,7 @@ async fn new_tempdb(
 	Ok((config, dbname))
 }
 
-async fn drop_tempdb(dbname: String, base_client: &PgClient) -> Result<(), postgres::Error> {
+async fn drop_tempdb(dbname: String, base_client: &impl postgres::GenericClient) -> Result<(), postgres::Error> {
 	base_client.batch_execute(&format!(r#"drop database if exists "{dbname}";"#)).await?;
 	Ok(())
 }
@@ -267,12 +266,11 @@ pub async fn op_propose_self_replacement(
 	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
 	let current_full_path = state.borrow::<String>();
-	let server_pg_config = state.borrow::<ServerPgConfig>();
-	let server_role_pool = state.borrow::<PgPool>();
-	let server_pg_client = server_role_pool.get().await.map_err(run_err)?;
+	let server_role_config = state.borrow::<ServerRoleConfig>();
+	let server_role_client = state.borrow::<PgClient>();
 
 	let candidate_uuid = propose_candidate_ruleset(
-		current_full_path, &server_pg_config.0, server_role_pool, &server_pg_client, &candidate,
+		current_full_path, &server_role_config.0, server_role_client, &candidate,
 	).await.map_err(run_err)?;
 
 	Ok(candidate_uuid.to_string())

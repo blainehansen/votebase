@@ -2,7 +2,7 @@
 mod test;
 
 mod scheduling;
-use scheduling::ScheduledActionQueue;
+pub use scheduling::{ScheduledActionQueue};
 
 pub mod rulesets;
 use rulesets::{op_propose_self_replacement};
@@ -19,7 +19,7 @@ use dom::{op_fetch};
 use std::cell::RefCell;
 use deno_core::{v8, OpState};
 use log::info;
-use crate::{PgConfig, PgPool, /*PgClient,*/ /*format_ruleset_schema,*/ postgres, FnType, RoleType, format_ruleset_role};
+use crate::{FnRolePg, FnType, PgClient, PgConfig, RoleType, format_ruleset_role, postgres /*format_ruleset_schema*/};
 
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimeError {
@@ -28,6 +28,11 @@ pub enum RuntimeError {
 	#[error(transparent)]
 	DenoCoreError(#[from] deno_core::error::CoreError),
 	#[error(transparent)]
+	ModuleResolutionError(#[from] deno_core::ModuleResolutionError),
+	#[error(transparent)]
+	StdIoError(#[from] std::io::Error),
+
+	#[error(transparent)]
 	PostgresError(#[from] postgres::Error),
 	#[error(transparent)]
 	PoolError(#[from] crate::deadpool::PoolError),
@@ -35,10 +40,6 @@ pub enum RuntimeError {
 	UuidParseError(#[from] uuid::Error),
 	#[error(transparent)]
 	TranspileError(#[from] transpile_utils::TranspileError),
-	#[error(transparent)]
-	ModuleResolutionError(#[from] deno_core::ModuleResolutionError),
-	#[error(transparent)]
-	StdIoError(#[from] std::io::Error),
 
 	#[error("internal error: {0}")]
 	OtherError(String),
@@ -49,12 +50,14 @@ impl Into<deno_error::JsErrorBox> for RuntimeError {
 		match self {
 			RuntimeError::SerdeV8(e) => deno_error::JsErrorBox::from_err(e),
 			RuntimeError::DenoCoreError(e) => deno_error::JsErrorBox::from_err(e),
+			RuntimeError::ModuleResolutionError(e) => deno_error::JsErrorBox::from_err(e),
+			RuntimeError::StdIoError(e) => deno_error::JsErrorBox::from_err(e),
+
 			RuntimeError::PostgresError(e) => deno_error::JsErrorBox::generic(e.to_string()),
 			RuntimeError::PoolError(e) => deno_error::JsErrorBox::generic(e.to_string()),
 			RuntimeError::UuidParseError(e) => deno_error::JsErrorBox::generic(e.to_string()),
 			RuntimeError::TranspileError(e) => deno_error::JsErrorBox::generic(e.to_string()),
-			RuntimeError::ModuleResolutionError(e) => deno_error::JsErrorBox::from_err(e),
-			RuntimeError::StdIoError(e) => deno_error::JsErrorBox::from_err(e),
+
 			RuntimeError::OtherError(m) => deno_error::JsErrorBox::generic(m),
 		}
 	}
@@ -102,11 +105,9 @@ const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 
 
 #[derive(Debug)]
-struct ServerPgConfig(PgConfig);
+struct ServerRoleConfig(postgres::Config);
 
-fn demand_external_allowed(state: &RefCell<OpState>) -> Result<(), deno_error::JsErrorBox> {
-	let state = state.borrow();
-
+fn demand_external_allowed(state: &OpState) -> Result<(), deno_error::JsErrorBox> {
 	let external_allowed = state.borrow::<bool>();
 	if !external_allowed {
 		return Err(deno_error::JsErrorBox::generic(ERR_EXTERNAL_NOT_ALLOWED))
@@ -219,11 +220,11 @@ impl Runtime {
 	pub fn set_action_queue(&mut self, spawner: ScheduledActionQueue) {
 		self.js_runtime.op_state().borrow_mut().put(spawner);
 	}
-	pub fn set_server_pool(&mut self, pool: PgPool) {
-		self.js_runtime.op_state().borrow_mut().put(pool);
-	}
 	pub fn set_server_config(&mut self, opt: PgConfig) {
-		self.js_runtime.op_state().borrow_mut().put(ServerPgConfig(opt));
+		self.js_runtime.op_state().borrow_mut().put(ServerRoleConfig(opt));
+	}
+	pub fn set_server_client(&mut self, client: PgClient) {
+		self.js_runtime.op_state().borrow_mut().put(client);
 	}
 	pub fn set_fn_config(&mut self, config: PgConfig) {
 		self.js_runtime.op_state().borrow_mut().put(config);
@@ -241,27 +242,22 @@ pub async fn run_action(
 	action_pass: &str,
 	migrator_pass: &str,
 	arg: serde_json::Value,
-	server_pg_config: PgConfig,
-	server_role_pool: &PgPool,
+	server_role_config: PgConfig,
+	server_role_client: PgClient,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<(), RuntimeError> {
-	let mut migrator_role_config = server_pg_config.clone();
-	let migrator_role = format_ruleset_role(&current_full_path, RoleType::Migrator);
-	migrator_role_config.user(&migrator_role).password(migrator_pass);
-	let mut action_role_config = server_pg_config.clone();
-	let action_role = format_ruleset_role(&current_full_path, RoleType::Action);
-	action_role_config.user(&action_role).password(action_pass);
+	let migrator_pg = FnRolePg::new(&server_role_config, &current_full_path, RoleType::Migrator, migrator_pass);
+	let action_pg = FnRolePg::new(&server_role_config, &current_full_path, RoleType::Action, action_pass);
 
 	let new_ruleset_id = run_function::<Option<String>>(
 		current_full_path, ruleset_code, action_name, arg, FnType::Action,
-		action_role_config, server_pg_config, server_role_pool.clone(), scheduled_action_queue,
+		action_pg, server_role_config, server_role_client, scheduled_action_queue,
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
 		let new_ruleset_id = new_ruleset_id.parse::<uuid::Uuid>()?;
 		info!("apply_candidate {new_ruleset_id}");
-		let client = server_role_pool.get().await?;
-		rulesets::replace_ruleset(&client, migrator_role_config, new_ruleset_id).await?;
+		rulesets::replace_ruleset(&server_role_client, &migrator_pg, &new_ruleset_id).await?;
 	}
 
 	Ok(())
@@ -273,17 +269,17 @@ pub async fn run_view(
 	view_name: &str,
 	view_pass: &str,
 	query: serde_json::Value,
-	server_pg_config: PgConfig,
-	server_role_pool: &PgPool,
+	server_role_config: PgConfig,
+	server_role_client: PgClient,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<String, RuntimeError> {
 	let view_role = format_ruleset_role(&current_full_path, RoleType::View);
-	let mut view_role_config = server_pg_config.clone();
+	let mut view_role_config = server_role_config.clone();
 	view_role_config.user(view_role).password(view_pass);
 
 	run_function(
 		current_full_path, ruleset_code, view_name, query, FnType::View,
-		view_role_config, server_pg_config, server_role_pool.clone(), scheduled_action_queue,
+		view_role_config, server_role_config, server_role_client, scheduled_action_queue,
 	).await
 }
 
@@ -294,8 +290,8 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	function_arg: serde_json::Value,
 	function_type: FnType,
 	fn_role_config: PgConfig,
-	server_pg_config: PgConfig,
-	server_role_pool: PgPool,
+	server_role_config: PgConfig,
+	server_role_client: PgClient,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<V, RuntimeError> {
 	let mut runtime = Runtime::new(ruleset_code).await.map_err(|e| RuntimeError::OtherError(e.to_string()))?;
@@ -313,8 +309,8 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 
 	runtime.set_external_allowed(true);
 	runtime.set_action_queue(scheduled_action_queue);
-	runtime.set_server_pool(server_role_pool);
-	runtime.set_server_config(server_pg_config);
+	runtime.set_server_config(server_role_config);
+	runtime.set_server_client(server_role_client);
 	runtime.set_fn_config(fn_role_config);
 	runtime.set_current_full_path(current_full_path);
 

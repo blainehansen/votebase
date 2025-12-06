@@ -8,5 +8,6 @@ thiserror = { workspace = true }
 # anyhow = { workspace = true }
 tokio = { workspace = true }
 tokio-postgres = { workspace = true }
+deadpool-postgres = { workspace = true }
 rand = "0.9"
 rand_distr = "0.5"

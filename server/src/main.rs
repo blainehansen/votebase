@@ -1,4 +1,6 @@
-use votebase_common::{deadpool, postgres, queries, runtime, PgConfig, PgPool};
+use votebase_common::{deadpool, postgres, queries, runtime, PgConfig};
+
+type PgPool = deadpool::Pool;
 
 mod error;
 use error::VotebaseError;
@@ -33,8 +35,8 @@ async fn main() -> std::io::Result<()> {
 	#[cfg(not(debug_assertions))]
 	let db_votebase_server_password = std::env::var("VOTEBASE_SERVER_PASSWORD").expect("VOTEBASE_SERVER_PASSWORD must be set");
 
-	let mut server_pg_config = postgres::Config::new();
-	server_pg_config
+	let mut server_role_config = postgres::Config::new();
+	server_role_config
 		.port(db_port)
 		.host(&db_host)
 		.dbname(&db_name)
@@ -43,14 +45,14 @@ async fn main() -> std::io::Result<()> {
 
 	let max_connections = std::env::var("DATABASE_MAX_CONNECTIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
 
-	let pool = deadpool::Pool::builder(deadpool::Manager::new(server_pg_config.clone(), postgres::NoTls))
+	let pool = deadpool::Pool::builder(deadpool::Manager::new(server_role_config.clone(), postgres::NoTls))
 		.max_size(max_connections as usize)
 		.build().expect("Failed to create pool.");
 	let scheduled_action_queue = runtime::ScheduledActionQueue::new();
 
 	let queue_pool = pool.clone();
 	let queue_scheduled_action_queue = scheduled_action_queue.clone();
-	let queue_server_pg_config = server_pg_config.clone();
+	let queue_server_role_config = server_role_config.clone();
 	tokio::task::spawn(async move {
 		let client = match queue_pool.get().await {
 			Ok(client) => client,
@@ -66,7 +68,7 @@ async fn main() -> std::io::Result<()> {
 				log::info!("queuing {} detached_scheduled_actions", detached_scheduled_actions.len());
 				for action in detached_scheduled_actions {
 					queue_scheduled_action_queue.queue(
-						queue_pool.clone(), queue_server_pg_config.clone(), votebase_common::ScheduledActionKind::DetachedScheduled,
+						queue_pool.clone(), queue_server_role_config.clone(), votebase_common::ScheduledActionKind::DetachedScheduled,
 						action.id, action.scheduled_time.to_utc(),
 					);
 				}
@@ -79,7 +81,7 @@ async fn main() -> std::io::Result<()> {
 				log::info!("queuing {} detached_recurring_actions", detached_recurring_actions.len());
 				for action in detached_recurring_actions {
 					queue_scheduled_action_queue.queue(
-						queue_pool.clone(), queue_server_pg_config.clone(), votebase_common::ScheduledActionKind::DetachedRecurring,
+						queue_pool.clone(), queue_server_role_config.clone(), votebase_common::ScheduledActionKind::DetachedRecurring,
 						action.id, action.next_scheduled_time.and_utc(),
 					);
 				}
@@ -101,10 +103,10 @@ async fn main() -> std::io::Result<()> {
 	#[cfg(not(debug_assertions))]
 	let port = std::env::var("VOTEBASE_PORT").ok().and_then(|p| p.parse().ok()).expect("VOTEBASE_PORT must be set");
 
-	actix_web::HttpServer::new(move || {
+	actix_web::HttpServer::new(|| {
 		let app = actix_web::App::new()
 			.app_data(web::Data::new(pool.clone()))
-			.app_data(web::Data::new(server_pg_config.clone()))
+			.app_data(web::Data::new(server_role_config.clone()))
 			.app_data(web::Data::new(scheduled_action_queue.clone()))
 			.wrap(actix_web::middleware::Logger::default())
 			.service(get_rulesets)
@@ -201,11 +203,11 @@ async fn execute_action(
 	fn_path: FnPath,
 	arg: web::Json<serde_json::Value>,
 	pool: web::Data<PgPool>,
-	server_pg_config: web::Data<PgConfig>,
+	server_role_config: web::Data<PgConfig>,
 	scheduled_action_queue: web::Data<runtime::ScheduledActionQueue>,
 ) -> Result<HttpResponse<()>, VotebaseError> {
 	let client = pool.get().await?;
-	let server_pg_config = server_pg_config.get_ref().clone();
+	let server_role_config = server_role_config.get_ref().clone();
 	let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
 
 	let action_details = queries::rulesets::get_action_details()
@@ -214,9 +216,9 @@ async fn execute_action(
 		.ok_or_else(|| VotebaseError::FnNotFoundError(fn_path.clone()))?;
 
 	runtime::run_action(
-		fn_path.ruleset_full_path, action_details.code, &fn_path.fn_name,
+		fn_path.ruleset_full_path, &action_details.code, &fn_path.fn_name,
 		&action_details.action_pass, &action_details.migrator_pass, arg.into_inner(),
-		server_pg_config, &pool, scheduled_action_queue,
+		server_role_config, &pool, scheduled_action_queue,
 	).await?;
 
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
@@ -227,11 +229,11 @@ async fn execute_view(
 	fn_path: FnPath,
 	query: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
-	server_pg_config: web::Data<PgConfig>,
+	server_role_config: web::Data<PgConfig>,
 	scheduled_action_queue: web::Data<runtime::ScheduledActionQueue>,
 ) -> Result<web::Html, VotebaseError> {
 	let client = pool.get().await?;
-	let server_pg_config = server_pg_config.get_ref().clone();
+	let server_role_config = server_role_config.get_ref().clone();
 	let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
 
 	let view_details = queries::rulesets::get_view_details()
@@ -240,8 +242,8 @@ async fn execute_view(
 		.ok_or_else(|| VotebaseError::FnNotFoundError(fn_path.clone()))?;
 
 	let return_value = runtime::run_view(
-		fn_path.ruleset_full_path, view_details.code, &fn_path.fn_name, &view_details.pass, query.into_inner(),
-		server_pg_config, &pool, scheduled_action_queue,
+		fn_path.ruleset_full_path, &view_details.code, &fn_path.fn_name, &view_details.pass, query.into_inner(),
+		server_role_config, &pool, scheduled_action_queue,
 	).await?;
 	Ok(web::Html::new(return_value))
 }

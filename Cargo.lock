@@ -1089,9 +1089,9 @@ dependencies = [
 
 [[package]]
 name = "deno_core"
-version = "0.367.0"
+version = "0.372.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35bc5bd853f22f22954aff45968f059e5f727755f1818dafba6c19cf1c6a43c2"
+checksum = "e24cc349b258a9825f0dc29e986b33093fabb33f2e332991d35b0641c680b2fb"
 dependencies = [
  "anyhow",
  "az",
@@ -1170,18 +1170,18 @@ dependencies = [
 
 [[package]]
 name = "deno_ops"
-version = "0.243.0"
+version = "0.248.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70093389f10651aada28d3b535e115aca21888d357e0346ba67ee63600a48218"
+checksum = "9b1fd01b849fc60fb1206255877d7a183f2e7ee5329e75c389c8470a63437eab"
 dependencies = [
  "indexmap",
- "proc-macro-rules",
  "proc-macro2",
  "quote",
  "stringcase",
  "strum",
  "strum_macros",
  "syn",
+ "syn-match",
  "thiserror",
 ]
 
@@ -2879,29 +2879,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro-rules"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07c277e4e643ef00c1233393c673f655e3672cf7eb3ba08a00bdd0ea59139b5f"
-dependencies = [
- "proc-macro-rules-macros",
- "proc-macro2",
- "syn",
-]
-
-[[package]]
-name = "proc-macro-rules-macros"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "207fffb0fe655d1d47f6af98cc2793405e85929bdbc420d685554ff07be27ac7"
-dependencies = [
- "once_cell",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3361,9 +3338,9 @@ dependencies = [
 
 [[package]]
 name = "serde_v8"
-version = "0.276.0"
+version = "0.281.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d64a436af65a4fb070cd22d69d80bd97f5a9c67d31c2d0809a9fe0e84c59096"
+checksum = "55b7d3cf62efe5c68ec52873f3c737dfd76ded33474cf8b928e6a1fb2cd33158"
 dependencies = [
  "deno_error",
  "num-bigint",
@@ -4016,6 +3993,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "syn-match"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "783c4140d7ed89f37116e865b49e5a9fdd28608b9071a9dd1e158b50fc0a31fc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4086,6 +4074,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 name = "temp_container_utils"
 version = "0.1.0"
 dependencies = [
+ "deadpool-postgres",
  "rand 0.9.2",
  "rand_distr",
  "thiserror",
@@ -4614,9 +4603,9 @@ dependencies = [
 
 [[package]]
 name = "v8"
-version = "142.1.0"
+version = "142.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d62585610b34cc24eab5d2f789cd112f00874b9be5b12129100f9f4ae65e952d"
+checksum = "f566072bd76b2631d0dca1d90a766c943863b1fd6b01312281dc919816de976d"
 dependencies = [
  "bindgen",
  "bitflags",
@@ -4646,7 +4635,9 @@ name = "votebase_bootstrap_cli"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "db_schema_utils",
  "deadpool-postgres",
+ "log",
  "rand 0.9.2",
  "tokio",
  "tokio-postgres",

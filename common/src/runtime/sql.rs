@@ -151,13 +151,15 @@ fn convert_col(row: &postgres::Row, ret: &PgTypeHint, i: usize) -> Result<serde_
 pub async fn op_sql_fetch_all(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
+	// TODO the ambition here is to no longer have this no longer be a vec of serde, but one of v8::Object or Value or whatever
+	// and then directly decoding those values in the functions
+	// similar with the return value, going directly from the rust values given by tokio postgres to v8 ones
 	#[serde] raw_params: Vec<serde_json::Value>,
 	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<Vec<serde_json::Value>, deno_error::JsErrorBox> {
-	let state = state.as_ref();
-	demand_external_allowed(state)?;
-	let state = state.borrow();
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
 	let fn_config = state.borrow::<PgConfig>();
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
@@ -186,9 +188,8 @@ pub async fn op_sql_fetch_one(
 	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
-	let state = state.as_ref();
-	demand_external_allowed(state)?;
-	let state = state.borrow();
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
 	let fn_config = state.borrow::<PgConfig>();
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
@@ -222,9 +223,8 @@ pub async fn op_sql_fetch_optional(
 	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
-	let state = state.as_ref();
-	demand_external_allowed(state)?;
-	let state = state.borrow();
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
 	let fn_config = state.borrow::<PgConfig>();
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
@@ -256,9 +256,8 @@ pub async fn op_sql_execute_statement(
 	#[serde] raw_params: Vec<serde_json::Value>,
 	#[serde] hints: Vec<PgTypeHint>,
 ) -> Result<u32, deno_error::JsErrorBox> {
-	let state = state.as_ref();
-	demand_external_allowed(state)?;
-	let state = state.borrow();
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
 	let fn_config = state.borrow::<PgConfig>();
 	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
@@ -280,9 +279,8 @@ pub async fn op_sql_execute_statements(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
 ) -> Result<(), deno_error::JsErrorBox> {
-	let state = state.as_ref();
-	demand_external_allowed(state)?;
-	let state = state.borrow();
+	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
 	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
 	let fn_config = state.borrow::<PgConfig>();
 	let (mut client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
