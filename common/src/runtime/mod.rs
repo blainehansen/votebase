@@ -16,10 +16,9 @@ use sql::{op_sql_fetch_all, op_sql_fetch_one, op_sql_fetch_optional, op_sql_exec
 mod dom;
 use dom::{op_fetch};
 
-use std::cell::RefCell;
 use deno_core::{v8, OpState};
 use log::info;
-use crate::{FnRolePg, FnType, PgClient, PgConfig, RoleType, format_ruleset_role, postgres /*format_ruleset_schema*/};
+use crate::{FnRolePg, FnServerPg, FnType, PgClient, PgConfig, PgPool, RoleType, format_ruleset_role, postgres /*format_ruleset_schema*/};
 
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimeError {
@@ -104,8 +103,9 @@ static RUNTIME_SNAPSHOT: &[u8] =
 const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 
 
-#[derive(Debug)]
-struct ServerRoleConfig(postgres::Config);
+struct RunInfo {
+	current_ruleset_path: String,
+}
 
 fn demand_external_allowed(state: &OpState) -> Result<(), deno_error::JsErrorBox> {
 	let external_allowed = state.borrow::<bool>();
@@ -217,21 +217,17 @@ impl Runtime {
 		self.js_runtime.op_state().borrow_mut().put(allowed);
 	}
 
+	pub fn set_run_info(&mut self, run_info: RunInfo) {
+		self.js_runtime.op_state().borrow_mut().put(run_info);
+	}
 	pub fn set_action_queue(&mut self, spawner: ScheduledActionQueue) {
 		self.js_runtime.op_state().borrow_mut().put(spawner);
 	}
-	pub fn set_server_config(&mut self, opt: PgConfig) {
-		self.js_runtime.op_state().borrow_mut().put(ServerRoleConfig(opt));
+	pub fn set_fn_server_pg(&mut self, opt: FnServerPg) {
+		self.js_runtime.op_state().borrow_mut().put(opt);
 	}
-	pub fn set_server_client(&mut self, client: PgClient) {
+	pub fn set_fn_role_pg(&mut self, client: FnRolePg) {
 		self.js_runtime.op_state().borrow_mut().put(client);
-	}
-	pub fn set_fn_config(&mut self, config: PgConfig) {
-		self.js_runtime.op_state().borrow_mut().put(config);
-	}
-
-	pub fn set_current_full_path(&mut self, path: String) {
-		self.js_runtime.op_state().borrow_mut().put(path);
 	}
 }
 
@@ -242,12 +238,12 @@ pub async fn run_action(
 	action_pass: &str,
 	migrator_pass: &str,
 	arg: serde_json::Value,
-	server_role_config: PgConfig,
+	base_config: PgConfig,
 	server_role_client: PgClient,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<(), RuntimeError> {
-	let migrator_pg = FnRolePg::new(&server_role_config, &current_full_path, RoleType::Migrator, migrator_pass);
-	let action_pg = FnRolePg::new(&server_role_config, &current_full_path, RoleType::Action, action_pass);
+	let migrator_pg = FnRolePg::for_role(&current_full_path, &base_config, RoleType::Migrator, migrator_pass);
+	let action_pg = FnRolePg::for_role(&current_full_path, &base_config, RoleType::Action, action_pass);
 
 	let new_ruleset_id = run_function::<Option<String>>(
 		current_full_path, ruleset_code, action_name, arg, FnType::Action,
@@ -269,29 +265,29 @@ pub async fn run_view(
 	view_name: &str,
 	view_pass: &str,
 	query: serde_json::Value,
-	server_role_config: PgConfig,
-	server_role_client: PgClient,
+	base_config: PgConfig,
+	server_role_pool: PgPool,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<String, RuntimeError> {
+	FnRolePg::for_role(base_config, &current_full_path, RoleType::View, view_pass);
+
 	let view_role = format_ruleset_role(&current_full_path, RoleType::View);
 	let mut view_role_config = server_role_config.clone();
 	view_role_config.user(view_role).password(view_pass);
 
 	run_function(
-		current_full_path, ruleset_code, view_name, query, FnType::View,
-		view_role_config, server_role_config, server_role_client, scheduled_action_queue,
+		ruleset_code, view_name, query, FnType::View,
+		view_role_config, base_config, scheduled_action_queue,
 	).await
 }
 
 async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
-	current_full_path: String,
 	ruleset_code: &str,
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
-	fn_role_config: PgConfig,
-	server_role_config: PgConfig,
-	server_role_client: PgClient,
+	server_role_pool: PgPool,
+	fn_role_pg: FnRolePg,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<V, RuntimeError> {
 	let mut runtime = Runtime::new(ruleset_code).await.map_err(|e| RuntimeError::OtherError(e.to_string()))?;
@@ -308,11 +304,10 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	};
 
 	runtime.set_external_allowed(true);
+	runtime.set_run_info(RunInfo { current_ruleset_path });
 	runtime.set_action_queue(scheduled_action_queue);
-	runtime.set_server_config(server_role_config);
-	runtime.set_server_client(server_role_client);
-	runtime.set_fn_config(fn_role_config);
-	runtime.set_current_full_path(current_full_path);
+	runtime.set_fn_server_pg(server_role_pool.into());
+	runtime.set_fn_role_pg(fn_role_pg);
 
 	// https://questions.deno.com/m/1201661871959310346
 	// https://github.com/denoland/deno_core/issues/515

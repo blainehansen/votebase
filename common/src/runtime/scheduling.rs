@@ -1,3 +1,6 @@
+// TODO use something like this?
+// https://docs.rs/tokio/latest/tokio/sync/struct.Notify.html
+
 use std::{cell::RefCell, rc::Rc};
 use deno_core::OpState;
 use uuid::Uuid;

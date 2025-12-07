@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use deno_core::OpState;
 
 use super::{RuntimeError, demand_external_allowed, run_err, js_err};
-use crate::{PgConfig, postgres};
+use crate::{postgres, FnRolePg};
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(variant_identifier)]
@@ -158,12 +158,10 @@ pub async fn op_sql_fetch_all(
 	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<Vec<serde_json::Value>, deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = state.borrow::<PgConfig>();
-	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
-	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+	demand_external_allowed(&state)?;
+	let fn_role_pg = state.borrow::<FnRolePg>();
+	let client = fn_role_pg.get_client().await.map_err(run_err)?;
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
@@ -188,12 +186,10 @@ pub async fn op_sql_fetch_one(
 	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = state.borrow::<PgConfig>();
-	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
-	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+	demand_external_allowed(&state)?;
+	let fn_role_pg = state.borrow::<FnRolePg>();
+	let client = fn_role_pg.get_client().await.map_err(run_err)?;
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
@@ -223,12 +219,10 @@ pub async fn op_sql_fetch_optional(
 	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = state.borrow::<PgConfig>();
-	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
-	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+	demand_external_allowed(&state)?;
+	let fn_role_pg = state.borrow::<FnRolePg>();
+	let client = fn_role_pg.get_client().await.map_err(run_err)?;
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
@@ -256,12 +250,10 @@ pub async fn op_sql_execute_statement(
 	#[serde] raw_params: Vec<serde_json::Value>,
 	#[serde] hints: Vec<PgTypeHint>,
 ) -> Result<u32, deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = state.borrow::<PgConfig>();
-	let (client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
-	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+	demand_external_allowed(&state)?;
+	let fn_role_pg = state.borrow::<FnRolePg>();
+	let client = fn_role_pg.get_client().await.map_err(run_err)?;
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
@@ -279,12 +271,10 @@ pub async fn op_sql_execute_statements(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
 ) -> Result<(), deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
 	let state = state.as_ref().borrow();
-	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	let fn_config = state.borrow::<PgConfig>();
-	let (mut client, connection) = fn_config.connect(postgres::NoTls).await.map_err(run_err)?;
-	tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
+	demand_external_allowed(&state)?;
+	let fn_role_pg = state.borrow::<FnRolePg>();
+	let mut client = fn_role_pg.get_client().await.map_err(run_err)?;
 
 	let txn = client.transaction().await.map_err(run_err)?;
 	txn.batch_execute(&sql).await.map_err(run_err)?;
