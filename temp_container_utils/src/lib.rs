@@ -50,7 +50,7 @@ fn random_port() -> u16 {
 // 	Ok(())
 // }
 
-pub async fn run_workspace_podman_cmd(
+pub async fn workspace_podman_run(
 	image: &str,
 	podman_args: &[&str],
 	workspace_arg: impl AsRef<str>,
@@ -71,7 +71,7 @@ pub async fn run_workspace_podman_cmd(
 		.spawn()?.wait_with_output().await
 }
 
-pub async fn run_podman_cmd(
+pub async fn podman_run(
 	image: &str,
 	podman_args: &[&str],
 	args: &[&str],

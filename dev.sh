@@ -1,6 +1,6 @@
 set -euo pipefail
 
-cargo test -p votebase_common -- --nocapture
+# cargo test -p votebase_common -- --nocapture
 # cargo test -p votebase_cli -- --nocapture
 # cargo run -p votebase_cli -- --ruleset-dir test-rulesets/yes-or-no/ dev
 
@@ -23,14 +23,22 @@ cargo test -p votebase_common -- --nocapture
 
 
 
-# podman run --name test-postgres \
-# 	--env POSTGRES_PASSWORD=dev_admin_password \
-# 	--env POSTGRES_USER=dev_admin_user \
-# 	--env POSTGRES_DB=dev_db \
-# 	-p 5432:5432 \
-# 	--detach --rm \
-# 	docker.io/library/postgres:latest
-# # podman stop test-postgres
+podman run --name test-postgres \
+	--env POSTGRES_PASSWORD=dev_admin_password \
+	--env POSTGRES_USER=dev_admin_user \
+	--env POSTGRES_DB=dev_db \
+	-p 5432:5432 \
+	-it --rm \
+	-v "$(pwd):/my_archive_data" \
+	docker.io/library/postgres:latest
+	# --detach --rm \
+
+podman exec -it test-postgres pg_dump -d dev_db -U dev_admin_user -f /my_archive_data/db_archive.test.local
+
+
+podman exec -it test-postgres pg_restore --help
+
+# podman stop test-postgres
 
 # # --network container:test-postgres
 # podman run --rm votebase-dbdiff \

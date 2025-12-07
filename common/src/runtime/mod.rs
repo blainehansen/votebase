@@ -20,6 +20,8 @@ use deno_core::{v8, OpState};
 use log::info;
 use crate::{FnRolePg, FnServerPg, FnType, PgClient, PgConfig, PgPool, RoleType, format_ruleset_role, postgres /*format_ruleset_schema*/};
 
+// TODO RuntimeError should be narrowed to only the things that can go wrong during deno execution, and other broader errors should contain it
+
 #[derive(thiserror::Error, Debug)]
 pub enum RuntimeError {
 	#[error(transparent)]

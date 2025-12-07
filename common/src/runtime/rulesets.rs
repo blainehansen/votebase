@@ -16,11 +16,202 @@ use super::{Runtime, RuntimeError, demand_external_allowed, run_err};
 
 // when we want to replace a ruleset
 
+#[derive(thiserror::Error, Debug)]
+pub enum ValidationError {
+	#[error("the migration for `{0}` doesn't match the provided schema")]
+	InvalidMigration(String),
+	#[error("the typescript code has errors\n\n{0}")]
+	InvalidTs(String),
+	#[error(transparent)]
+	Container(#[from] temp_container_utils::ContainerError),
+	#[error(transparent)]
+	Io(#[from] std::io::Error),
+	#[error(transparent)]
+	Db(#[from] postgres::Error),
+}
+
+async fn validate_bundled_ruleset(
+	full_path: &str,
+	bundled_ruleset: &BundledRuleset,
+	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
+	server_db_archive_path: &std::path::Path,
+) -> Result<(), ValidationError> {
+	// place the typescript code in a temp directory and check it
+	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
+	let ts_file = temp_dir.as_ref().join("ruleset.ts");
+	tokio::fs::write(&ts_file, &bundled_ruleset.code).await?;
+	podman_votebase_tsc(temp_dir.as_ref()).await?;
+
+	// check that the migration is correct
+	// this is complex. we need to load *enough* of the existing server schema to be able to just create two databases:
+	// one with the current state (including the state of the ruleset this one is replacing, if that's the case), and execute the bundled_ruleset.db_migration on it
+	// and another where we also do the existing server schema *but without the schema of the target ruleset*, but then we also execute the bundled_ruleset.db_schema
+	// for now we're using the entire thing! except for the "declarative" version that needs to exclude the target schema
+	// pg_dump --exclude-schema=example -f output_file.sql,
+	// at the end of this process we should have two databases that should be identical
+	// we want the archive target file to have a known location (probably something named after the overall dbname), and whenever the schema changes (which only happens on ruleset changes!) we acquire a server wide mutex
+	let formatted_ruleset_schema = format_ruleset_schema(full_path);
+
+	let diff = temp_container_utils::with_temp_postgres_client(async |db_container_name, mut config, client| {
+		let db_user = config.get_user().unwrap().to_string();
+
+		let from_db_name = "tempdb|from";
+		let to_db_name = "tempdb|to";
+		client.batch_execute(&format!(r#"create database "{from_db_name}""#)).await?;
+		client.batch_execute(&format!(r#"create database "{to_db_name}""#)).await?;
+
+		let from_config = { let mut config = config.clone(); config.dbname(from_db_name); config };
+		let to_config = { config.dbname(to_db_name); config };
+		let (from_client, from_connection) = from_config.connect(postgres::NoTls).await?;
+		tokio::spawn(async move { if let Err(e) = from_connection.await { log::error!("DB connection error: {}", e); } });
+		let (to_client, to_connection) = to_config.connect(postgres::NoTls).await?;
+		tokio::spawn(async move { if let Err(e) = to_connection.await { log::error!("DB connection error: {}", e); } });
+
+
+		podman_pg_restore(&db_container_name, &from_db_name, &db_user, server_db_archive_path, Some(&formatted_ruleset_schema)).await?;
+		from_client.batch_execute(&bundled_ruleset.db_schema).await?;
+
+		podman_pg_restore(&db_container_name, &to_db_name, &db_user, server_db_archive_path, None).await?;
+		to_client.batch_execute(&bundled_ruleset.db_migration).await?;
+
+		let diff = podman_compute_diff(&db_container_name, &formatted_ruleset_schema, &from_config, &to_config).await?;
+		Ok::<_, ValidationError>(diff)
+	}).await??;
+
+	if !diff.is_empty() {
+		// log::error!("{}", diff);
+		return Err(ValidationError::InvalidMigration(full_path.to_string()))
+	}
+
+	// TODO also above this needs to actually *run* the ruleset code to gather it's fns and make sure they don't overlap, so Runtime considerations
+	// TODO and also run against the ruleset graph! so we need to see if this is a valid replacement for what existed before.
+	// what constitutes that? wherever a 'keep' is issued there actually has to be something there. and wherever we're replacing something we need to be able to recursively check that replacement is valid. and wherever we're deleting we need to check recursively that those deletions are okay
+	// TODO now do any checking for "uses" violations. and is that it?
+
+	Ok(())
+}
+
+pub async fn podman_compute_diff(
+	db_container_name: &str,
+	target_schema: &str,
+	from_config: &PgConfig,
+	to_config: &PgConfig,
+) -> std::io::Result<String> {
+	let from_url = crate::url_encoded_connection_string(from_config);
+	let to_url = crate::url_encoded_connection_string(to_config);
+
+	let output = temp_container_utils::podman_run(
+		"votebase-dbdiff",
+		&["--network", &format!("container:{}", db_container_name)],
+		&["--with-privileges", "--schema", target_schema, &from_url, &to_url],
+	).await?;
+
+	// if !output.stderr.is_empty() {
+	if !output.status.success() {
+		let e = format!("dbdiff failed: {}\n\n{}", output.status, String::from_utf8_lossy(&output.stderr));
+		return Err(std::io::Error::other(e));
+	}
+	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+// this full_ruleset_dir will probably be a temp directory in the server context
+pub async fn podman_votebase_tsc(full_ruleset_dir: &std::path::Path) -> Result<(), ValidationError> {
+	let workspace_arg = format!("{}:/workspace/ruleset", full_ruleset_dir.to_string_lossy());
+	let output = temp_container_utils::workspace_podman_run("votebase-tsc", &[], workspace_arg, &["--noEmit"]).await?;
+
+	if !output.status.success() {
+		// let all_output = output.stdout.extend(output.stderr);
+		let errors = String::from_utf8_lossy(&output.stdout);
+		Err(ValidationError::InvalidTs(errors.to_string()))
+	}
+	else { Ok(()) }
+}
+
+async fn podman_pg_restore(
+	db_container_name: &str,
+	db_name: &str,
+	db_user_name: &str,
+	server_db_archive_path: &std::path::Path,
+	exclude_schema: Option<&str>,
+) -> std::io::Result<()> {
+	// TODO okay to achieve this, we need to change it so the postgres container that's running has a volume to some directory we can read and write
+	// then we use podman *exec* to run pg_restore/pg_dump inside the container
+	// we actually might not need to bother with the volumes if instead we instead receive stdout into a file in tokio and input to stdin from a file
+
+	// pg_dump outputs to stdout if no --file argument is given, and pg_restore reads from stdin if no --file is given
+	// podman exec db_container_name pg_dump -d db_name -U db_user -f /whatever_volume_name/server_db_archive_path
+
+	let mut command = tokio::process::Command::new("podman");
+	command.arg("exec").arg(db_container_name)
+		.arg("pg_restore")
+		// --dbname=dbname
+		.arg("-d").arg(db_name)
+		// --username=username
+		.arg("-U").arg(db_user_name)
+		.arg("--format=custom")
+		.arg("--schema-only")
+		// --file=file
+		// .arg("-f").arg(server_db_archive_path)
+		.arg("--exit-on-error");
+
+	if let Some(exclude_schema) = exclude_schema {
+		// --exclude-schema=pattern
+		command.arg("-N").arg(exclude_schema);
+	}
+
+	let mut child = command
+		.stderr(std::process::Stdio::piped())
+		.stdout(std::process::Stdio::piped())
+		.spawn()?;
+
+	let mut server_db_archive = tokio::fs::File::open(server_db_archive_path).await?;
+	let mut child_stdin = child.stdin.as_mut().ok_or_else(|| std::io::Error::other("unable to capture pg_restore stdin"))?;
+	tokio::io::copy(&mut server_db_archive, &mut child_stdin).await?;
+
+	let status = child.wait().await?;
+	if status.success() { Ok(()) }
+	else { Err(std::io::Error::other("pg_restore process failed")) }
+}
+
+async fn podman_pg_dump(
+	db_container_name: &str,
+	db_name: &str,
+	db_user_name: &str,
+	server_db_archive_path: &std::path::Path,
+) -> std::io::Result<()> {
+	let mut command = tokio::process::Command::new("podman");
+	command.arg("exec").arg(db_container_name)
+		.arg("pg_dump")
+		// --dbname=dbname
+		.arg("-d").arg(db_name)
+		// --username=username
+		.arg("-U").arg(db_user_name)
+		.arg("--format=custom")
+		.arg("--schema-only")
+		// --file=file
+		// .arg("-f").arg(server_db_archive_path)
+		.arg("--exit-on-error");
+
+	let mut child = command
+		.stderr(std::process::Stdio::piped())
+		.stdout(std::process::Stdio::piped())
+		.spawn()?;
+
+	let mut server_db_archive = tokio::fs::File::open(server_db_archive_path).await?;
+	let mut child_stdout = child.stdout.as_mut().ok_or_else(|| std::io::Error::other("unable to capture pg_dump stdout"))?;
+	tokio::io::copy(&mut child_stdout, &mut server_db_archive).await?;
+
+	let status = child.wait().await?;
+	if status.success() { Ok(()) }
+	else { Err(std::io::Error::other("pg_dump process failed")) }
+}
 
 
 #[derive(Debug, serde::Deserialize)]
 struct BundledRuleset {
 	/// Typescript code containing all the Actions and Views of the `Ruleset`.
+	/// This must be fully bundled, meaning it's the entire codebase of the whole `Ruleset`, including the queries code etc.
+	/// It doesn't need to include the votebase runtime.
 	code: String,
 
 	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
@@ -268,7 +459,7 @@ pub async fn propose_candidate_ruleset(
 // 	let from_url = crate::url_encoded_connection_string(from_config);
 // 	let to_url = crate::url_encoded_connection_string(to_config);
 
-// 	let output = temp_container_utils::run_podman_cmd(
+// 	let output = temp_container_utils::podman_run(
 // 		"votebase-dbdiff",
 // 		&[],
 // 		// TODO

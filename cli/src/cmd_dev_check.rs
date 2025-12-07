@@ -10,7 +10,8 @@ pub async fn cmd_dev(ruleset_dir: &Path) -> anyhow::Result<()> {
 // - using a temp podman typescript, runs a typecheck with the votebase tsconfig
 pub async fn cmd_check(ruleset_dir: &Path) -> anyhow::Result<()> {
 	cmd_dev(ruleset_dir).await?;
-	run_votebase_tsc(&ruleset_dir).await
+	let full_ruleset_dir = std::env::current_dir()?.join(ruleset_dir);
+	votebase_common::runtime::rulesets::podman_votebase_tsc(full_ruleset_dir).await?;
 }
 
 
@@ -56,19 +57,6 @@ async fn run_sql_checking_and_generation(ruleset_dir: &Path, do_generation: bool
 	}
 
 	Ok(())
-}
-
-async fn run_votebase_tsc(ruleset_dir: &Path) -> anyhow::Result<()> {
-	let ruleset_dir = std::env::current_dir()?.join(ruleset_dir);
-	let workspace_arg = format!("{}:/workspace/ruleset", ruleset_dir.to_string_lossy());
-	let output = temp_container_utils::run_workspace_podman_cmd("votebase-tsc", &[], workspace_arg, &["--noEmit"]).await?;
-
-	if !output.status.success() {
-		// let all_output = output.stdout.extend(output.stderr);
-		let err = String::from_utf8_lossy(&output.stdout);
-		Err(anyhow::anyhow!("typescript errors when checking with the votebase tsconfig:\n\n{err}"))
-	}
-	else { Ok(()) }
 }
 
 #[cfg(test)]

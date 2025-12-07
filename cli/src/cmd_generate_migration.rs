@@ -23,12 +23,12 @@ pub async fn cmd_generate_migration(ruleset_dir: &Path, server_db_archive_path: 
 
 		let (from_client, from_connection) = from_config.connect(postgres::NoTls).await?;
 		tokio::spawn(async move { if let Err(e) = from_connection.await { log::error!("DB connection error: {}", e); } });
-		do_pg_restore(&from_config, &server_db_archive_path).await?;
+		do_podman_pg_restore(&from_config, &server_db_archive_path).await?;
 		from_client.batch_execute(&db_schema).await?;
 
 		let (to_client, to_connection) = to_config.connect(postgres::NoTls).await?;
 		tokio::spawn(async move { if let Err(e) = to_connection.await { log::error!("DB connection error: {}", e); } });
-		do_pg_restore(&to_config, &server_db_archive_path).await?;
+		do_podman_pg_restore(&to_config, &server_db_archive_path).await?;
 		to_client.batch_execute(&db_schema).await?;
 
 
@@ -48,7 +48,7 @@ pub async fn cmd_generate_migration(ruleset_dir: &Path, server_db_archive_path: 
 	Ok(())
 }
 
-async fn do_pg_restore(config: &PgConfig, server_db_archive_path: &str) -> anyhow::Result<std::process::Output> {
+async fn do_podman_pg_restore(db_container_name: &str, server_db_archive_path: &str) -> anyhow::Result<std::process::Output> {
 	let connection_string = votebase_common::url_encoded_connection_string(&config);
 
 	let output = tokio::process::Command::new("pg_restore")
@@ -84,7 +84,7 @@ pub async fn compute_diff(
 	let from_url = votebase_common::url_encoded_connection_string(from_config);
 	let to_url = votebase_common::url_encoded_connection_string(to_config);
 
-	let output = temp_container_utils::run_podman_cmd(
+	let output = temp_container_utils::podman_run(
 		"votebase-dbdiff",
 		&["--network", &format!("container:{}", db_container_name)],
 		&["--with-privileges", "--schema", pgschema, &from_url, &to_url],
