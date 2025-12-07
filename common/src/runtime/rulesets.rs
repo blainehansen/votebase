@@ -30,17 +30,22 @@ pub enum ValidationError {
 	Db(#[from] postgres::Error),
 }
 
+// it looks to make like this function should work correctly for both new creations and replacements
 async fn validate_bundled_ruleset(
 	full_path: &str,
 	bundled_ruleset: &BundledRuleset,
 	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
 	server_db_archive_path: &std::path::Path,
 ) -> Result<(), ValidationError> {
+
+	// ### bundled_ruleset.code
 	// place the typescript code in a temp directory and check it
 	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
 	let ts_file = temp_dir.as_ref().join("ruleset.ts");
 	tokio::fs::write(&ts_file, &bundled_ruleset.code).await?;
 	podman_votebase_tsc(temp_dir.as_ref()).await?;
+
+	// TODO also actually *run* the ruleset code to gather its fns and make sure they don't overlap, so Runtime considerations
 
 	// check that the migration is correct
 	// this is complex. we need to load *enough* of the existing server schema to be able to just create two databases:
@@ -52,7 +57,9 @@ async fn validate_bundled_ruleset(
 	// we want the archive target file to have a known location (probably something named after the overall dbname), and whenever the schema changes (which only happens on ruleset changes!) we acquire a server wide mutex
 	let formatted_ruleset_schema = format_ruleset_schema(full_path);
 
-	let diff = temp_container_utils::with_temp_postgres_client(async |db_container_name, mut config, client| {
+	temp_container_utils::with_temp_postgres_client(async |db_container_name, mut config, client| {
+		// ### bundled_ruleset.db_schema
+		// ### bundled_ruleset.db_migration
 		let db_user = config.get_user().unwrap().to_string();
 
 		let from_db_name = "tempdb|from";
@@ -69,26 +76,89 @@ async fn validate_bundled_ruleset(
 
 
 		podman_pg_restore(&db_container_name, &from_db_name, &db_user, server_db_archive_path, Some(&formatted_ruleset_schema)).await?;
+		// TODO create_ruleset?
 		from_client.batch_execute(&bundled_ruleset.db_schema).await?;
 
 		podman_pg_restore(&db_container_name, &to_db_name, &db_user, server_db_archive_path, None).await?;
 		to_client.batch_execute(&bundled_ruleset.db_migration).await?;
 
 		let diff = podman_compute_diff(&db_container_name, &formatted_ruleset_schema, &from_config, &to_config).await?;
-		Ok::<_, ValidationError>(diff)
+		if !diff.is_empty() {
+			// log::error!("{}", diff);
+			return Err(ValidationError::InvalidMigration(full_path.to_string()))
+		}
+
+		// here we go through all of these and actually *execute* all the implied changes to children!
+		// - we make sure all the "keep" actually exist
+		// - we make sure all the "replace" actually exist, and that they recursively make sense (have to be smart, we can't just call validate_bundled_ruleset again! we need to chop up this functionality so that we have a root call that starts the podman postgres and the others just perform actions)
+		// - we make sure that after our modifications and deletions everything still makes sense. this last one is something that probably happens only once at the top level, and includes checking our own db_uses
+		bundled_ruleset.static_children;
+		// these are easy, we just have to make sure they point to real actions that are in *this* ruleset (no references here), and that they're well-formed, which I'm pretty sure will have already happened at parse time
+		bundled_ruleset.static_recurring_events;
+
+		// TODO check that all the db_uses still make sense, along with validating that everything *else* in the system hasn't had uses orphaned
+		bundled_ruleset.db_uses;
+		Ok(())
 	}).await??;
 
-	if !diff.is_empty() {
-		// log::error!("{}", diff);
-		return Err(ValidationError::InvalidMigration(full_path.to_string()))
-	}
 
-	// TODO also above this needs to actually *run* the ruleset code to gather it's fns and make sure they don't overlap, so Runtime considerations
+	// we've established with experiments that you can indeed delete objects, it seems of any kind (certainly functions and tables) that are relied on by functions, and now those functions will throw errors when you call them
+	// this means I have no choice but to implement the `uses` system. right now to cut scope I think I shouldn't do the adjoining "allows" system, but instead just allow anything to reference anything (if it isn't in the catalog)
+	// this means I need a complete system to be able to point to objects to say you reference them
+	// the easy version of this is to just allow pointing to the object itself, you only need a ruleset_path and an object name, along with the "use kind", basically TableReference | TableQueryAndReference | Type | ViewFunction | ActionFunction, and since you aren't narrowing to specific columns
+	// you have to narrow to specific columns, because the uses section has to specify enough type information about these objects that you can create stand-ins from scratch!
+	// this means we need some micro-language, either parsed or declared fully as a serde-able ast, that describes these permissions
+	// in the context of a json file they'd look something like this:
+	// "~v1": "ReferenceTable ruleset_path.table_name(c1 t1, c2)" // https://docs.rs/sqlparser/latest/sqlparser/ast/struct.TableAlias.html
+	// "~v2": "QueryAndReferenceTable p.t(c1, c2)"
+	// "~v3": "UseType p.t"
+	// "~v3": "CallViewFunction p.t(p1 t1, p2 t2) -> tr"
+	// "~v3": "CallActionFunction p.t(p1 t1, p2 t2) -> tr"
+	// https://www.postgresql.org/docs/current/catalog-pg-proc.html
+
+	// in order to check whether a deletion or replacment is valid, we need to just perform the intended changes on the database, and then reflect the new schema (probably being smart to narrow to only the affected rulesets), and then go through the `uses` of *all* the other rulesets that mention the affected ones, and checking if they all still exist and we haven't severed anything
+	// oh importantly, the `uses` only needs the permission and the structure, and the var name is good enough (we obviously aren't "qualifying" a vague concept of a thing!)
+	// it's the actual "fulfilling" vars declarations that need to be fully qualified
+
+
 	// TODO and also run against the ruleset graph! so we need to see if this is a valid replacement for what existed before.
-	// what constitutes that? wherever a 'keep' is issued there actually has to be something there. and wherever we're replacing something we need to be able to recursively check that replacement is valid. and wherever we're deleting we need to check recursively that those deletions are okay
+	// what constitutes that? wherever a 'keep' is issued there actually has to be something that existed before. and wherever we're replacing something we need to be able to recursively check that replacement is valid. and wherever we're deleting we need to check recursively that those deletions are okay
 	// TODO now do any checking for "uses" violations. and is that it?
 
 	Ok(())
+}
+
+fn validate_schema_uses(
+	// a mapping of rulesets to the objects they use
+	possibly_effected_objects: HashMap<String, Vec<Usage>>,
+	// a list of all the possibly relevant (and allowed!) objects after all implied changes have been made
+	new_present_objects: Vec<UseableObject>,
+) -> Result<(), ValidationError> {
+	unimplemented!()
+}
+
+struct Usage {
+	ruleset_path: String,
+	object_name: String,
+	usage_kind: UsageKind,
+}
+
+enum UsageKind {
+	Type,
+	Table { can_query: bool, columns: Vec<(String, String)> },
+	Function { is_action: bool, params: Vec<String>, return_type: String },
+}
+
+struct UseableObject {
+	ruleset_path: String,
+	object_name: String,
+	db_object: UseableDbObject,
+}
+
+enum UseableDbObject {
+	Type,
+	Table { can_query: bool, columns: Vec<FullColumn> },
+	Function { is_action: bool, params: Vec<FullParam>, return_type: PgType },
 }
 
 pub async fn podman_compute_diff(
