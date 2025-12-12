@@ -30,12 +30,37 @@ pub enum ValidationError {
 	Db(#[from] postgres::Error),
 }
 
+// TODO entirely refactor this validation process, to have separate stages that each go through the items recursively
+// - check all the boring stuff that's easy
+// - check all the typescript?
+// - perform all the implied database operations
+// - check the migrations and uses
+
+async fn validate_bundled_ruleset_top(
+	full_path: &str,
+	bundled_ruleset: &BundledRuleset,
+	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
+	server_db_archive_path: &std::path::Path,
+) -> Result<(), ValidationError> {
+
+	temp_container_utils::with_temp_postgres_client(async |db_container_name, config, client| -> Result<(), ValidationError> {
+		validate_bundled_ruleset(full_path, bundled_ruleset, server_db_archive_path, &db_container_name, &config, &client).await?;
+		Ok(())
+	}).await?;
+
+	Ok(())
+}
+
+
 // it looks to make like this function should work correctly for both new creations and replacements
 async fn validate_bundled_ruleset(
 	full_path: &str,
 	bundled_ruleset: &BundledRuleset,
 	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
 	server_db_archive_path: &std::path::Path,
+	db_container_name: &str,
+	config: &postgres::Config,
+	client: &PgClient,
 ) -> Result<(), ValidationError> {
 
 	// ### bundled_ruleset.code
@@ -57,50 +82,57 @@ async fn validate_bundled_ruleset(
 	// we want the archive target file to have a known location (probably something named after the overall dbname), and whenever the schema changes (which only happens on ruleset changes!) we acquire a server wide mutex
 	let formatted_ruleset_schema = format_ruleset_schema(full_path);
 
-	temp_container_utils::with_temp_postgres_client(async |db_container_name, mut config, client| {
-		// ### bundled_ruleset.db_schema
-		// ### bundled_ruleset.db_migration
-		let db_user = config.get_user().unwrap().to_string();
+	// ### bundled_ruleset.db_schema
+	// ### bundled_ruleset.db_migration
+	let db_user = config.get_user().unwrap().to_string();
 
-		let from_db_name = "tempdb|from";
-		let to_db_name = "tempdb|to";
-		client.batch_execute(&format!(r#"create database "{from_db_name}""#)).await?;
-		client.batch_execute(&format!(r#"create database "{to_db_name}""#)).await?;
+	// TODO this needs a different name? or you need to create these top level things at the top?
+	// or maybe we can't avoid something like a "recursive schema update" process that recursively goes through the whole tree and applies all the database updates implied by the new ruleset, and then a separate "validation" pass that once again recursively goes through it and checks everything against the database, including all the diffs for each individual ruleset/schema. that probably makes much more sense.
+	let from_db_name = "tempdb|from";
+	let to_db_name = "tempdb|to";
+	client.batch_execute(&format!(r#"create database "{from_db_name}""#)).await?;
+	client.batch_execute(&format!(r#"create database "{to_db_name}""#)).await?;
 
-		let from_config = { let mut config = config.clone(); config.dbname(from_db_name); config };
-		let to_config = { config.dbname(to_db_name); config };
-		let (from_client, from_connection) = from_config.connect(postgres::NoTls).await?;
-		tokio::spawn(async move { if let Err(e) = from_connection.await { log::error!("DB connection error: {}", e); } });
-		let (to_client, to_connection) = to_config.connect(postgres::NoTls).await?;
-		tokio::spawn(async move { if let Err(e) = to_connection.await { log::error!("DB connection error: {}", e); } });
+	let from_config = { let mut config = config.clone(); config.dbname(from_db_name); config };
+	let to_config = { let mut config = config.clone(); config.dbname(to_db_name); config };
+	let (from_client, from_connection) = from_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = from_connection.await { log::error!("DB connection error: {}", e); } });
+	let (to_client, to_connection) = to_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = to_connection.await { log::error!("DB connection error: {}", e); } });
 
 
-		podman_pg_restore(&db_container_name, &from_db_name, &db_user, server_db_archive_path, Some(&formatted_ruleset_schema)).await?;
-		// TODO create_ruleset?
-		from_client.batch_execute(&bundled_ruleset.db_schema).await?;
+	podman_pg_restore(&db_container_name, &from_db_name, &db_user, server_db_archive_path, Some(&formatted_ruleset_schema)).await?;
+	// TODO create_ruleset?
+	from_client.batch_execute(&bundled_ruleset.db_schema).await?;
 
-		podman_pg_restore(&db_container_name, &to_db_name, &db_user, server_db_archive_path, None).await?;
-		to_client.batch_execute(&bundled_ruleset.db_migration).await?;
+	podman_pg_restore(&db_container_name, &to_db_name, &db_user, server_db_archive_path, None).await?;
+	to_client.batch_execute(&bundled_ruleset.db_migration).await?;
 
-		let diff = podman_compute_diff(&db_container_name, &formatted_ruleset_schema, &from_config, &to_config).await?;
-		if !diff.is_empty() {
-			// log::error!("{}", diff);
-			return Err(ValidationError::InvalidMigration(full_path.to_string()))
+	let diff = podman_compute_diff(&db_container_name, &formatted_ruleset_schema, &from_config, &to_config).await?;
+	if !diff.is_empty() {
+		// log::error!("{}", diff);
+		return Err(ValidationError::InvalidMigration(full_path.to_string()))
+	}
+
+	// here we go through all of these and actually *execute* all the implied changes to children!
+	for (static_child_name, static_child) in &bundled_ruleset.static_children {
+		match static_child {
+			// - we make sure all the "keep" actually exist
+			KeepOrReplace::Keep => { /* TODO make sure this static_child_name exists in the *current* paradigm */ },
+			// - we make sure all the "replace" actually exist, and that they recursively make sense (have to be smart, we can't just call validate_bundled_ruleset again! we need to chop up this functionality so that we have a root call that starts the podman postgres and the others just perform actions)
+			KeepOrReplace::Replace(static_child) => {
+				let child_full_path = format!("{full_path}|{static_child_name}");
+				validate_bundled_ruleset(&child_full_path, &static_child, server_db_archive_path, db_container_name, config, client).await?;
+			},
 		}
-
-		// here we go through all of these and actually *execute* all the implied changes to children!
-		// - we make sure all the "keep" actually exist
-		// - we make sure all the "replace" actually exist, and that they recursively make sense (have to be smart, we can't just call validate_bundled_ruleset again! we need to chop up this functionality so that we have a root call that starts the podman postgres and the others just perform actions)
 		// - we make sure that after our modifications and deletions everything still makes sense. this last one is something that probably happens only once at the top level, and includes checking our own db_uses
-		bundled_ruleset.static_children;
-		// these are easy, we just have to make sure they point to real actions that are in *this* ruleset (no references here), and that they're well-formed, which I'm pretty sure will have already happened at parse time
-		bundled_ruleset.static_recurring_events;
+	}
+	// these are easy, we just have to make sure they point to real actions that are in *this* ruleset (no references here), and that they're well-formed, which I'm pretty sure will have already happened at parse time
+	bundled_ruleset.static_recurring_events;
 
-		// TODO check that all the db_uses still make sense, along with validating that everything *else* in the system hasn't had uses orphaned
-		bundled_ruleset.db_uses;
-		Ok(())
-	}).await??;
-
+	// TODO check that all the db_uses still make sense, along with validating that everything *else* in the system hasn't had uses orphaned
+	bundled_ruleset.db_uses;
+	Ok(())
 
 	// we've established with experiments that you can indeed delete objects, it seems of any kind (certainly functions and tables) that are relied on by functions, and now those functions will throw errors when you call them
 	// this means I have no choice but to implement the `uses` system. right now to cut scope I think I shouldn't do the adjoining "allows" system, but instead just allow anything to reference anything (if it isn't in the catalog)
@@ -108,13 +140,23 @@ async fn validate_bundled_ruleset(
 	// the easy version of this is to just allow pointing to the object itself, you only need a ruleset_path and an object name, along with the "use kind", basically TableReference | TableQueryAndReference | Type | ViewFunction | ActionFunction, and since you aren't narrowing to specific columns
 	// you have to narrow to specific columns, because the uses section has to specify enough type information about these objects that you can create stand-ins from scratch!
 	// this means we need some micro-language, either parsed or declared fully as a serde-able ast, that describes these permissions
-	// in the context of a json file they'd look something like this:
-	// "~v1": "ReferenceTable ruleset_path.table_name(c1 t1, c2)" // https://docs.rs/sqlparser/latest/sqlparser/ast/struct.TableAlias.html
-	// "~v2": "QueryAndReferenceTable p.t(c1, c2)"
-	// "~v3": "UseType p.t"
-	// "~v3": "CallViewFunction p.t(p1 t1, p2 t2) -> tr"
-	// "~v3": "CallActionFunction p.t(p1 t1, p2 t2) -> tr"
+
+	// I don't actually think it's all that possible to have "blank placeholder types", especially when the structure of postgres types is so rigid in regards to how you actually construct them. if you want to do this, it needs to be similar to the table system in the sense that the actual *structure* of the type is what you have to declare you expect (composite, enumerated, range, base?)
+	// https://www.postgresql.org/docs/current/sql-createtype.html
+
+	// the *abstract* system will be structured roughly like this:
+	// "~v1": "ReferenceTable(c1 t1, c2 t2)" // https://docs.rs/sqlparser/latest/sqlparser/ast/struct.TableAlias.html
+	// "~v2": "QueryAndReferenceTable(c1 t1, c2 t2)"
+	// "~v3": "CallViewFunction(t1, t2) -> tr"
+	// "~v4": "CallActionFunction(t1, t2) -> tr"
+
+	// and the concrete fulfillments
+	// "~v1": "ruleset_path.table_name(c1, c2)"
+	// "~v2": "ruleset_path.table_name(c1, c2)"
+	// "~v3": "ruleset_path.function_name"
+	// "~v4": "ruleset_path.function_name"
 	// https://www.postgresql.org/docs/current/catalog-pg-proc.html
+
 
 	// in order to check whether a deletion or replacment is valid, we need to just perform the intended changes on the database, and then reflect the new schema (probably being smart to narrow to only the affected rulesets), and then go through the `uses` of *all* the other rulesets that mention the affected ones, and checking if they all still exist and we haven't severed anything
 	// oh importantly, the `uses` only needs the permission and the structure, and the var name is good enough (we obviously aren't "qualifying" a vague concept of a thing!)
@@ -124,27 +166,15 @@ async fn validate_bundled_ruleset(
 	// TODO and also run against the ruleset graph! so we need to see if this is a valid replacement for what existed before.
 	// what constitutes that? wherever a 'keep' is issued there actually has to be something that existed before. and wherever we're replacing something we need to be able to recursively check that replacement is valid. and wherever we're deleting we need to check recursively that those deletions are okay
 	// TODO now do any checking for "uses" violations. and is that it?
-
-	Ok(())
 }
 
-fn validate_schema_uses(
-	// a mapping of rulesets to the objects they use
-	possibly_effected_objects: HashMap<String, Vec<Usage>>,
-	// a list of all the possibly relevant (and allowed!) objects after all implied changes have been made
-	new_present_objects: Vec<UseableObject>,
-) -> Result<(), ValidationError> {
-	unimplemented!()
-}
-
-struct Usage {
+struct ConcreteUsage {
 	ruleset_path: String,
 	object_name: String,
 	usage_kind: UsageKind,
 }
 
 enum UsageKind {
-	Type,
 	Table { can_query: bool, columns: Vec<(String, String)> },
 	Function { is_action: bool, params: Vec<String>, return_type: String },
 }
@@ -155,10 +185,107 @@ struct UseableObject {
 	db_object: UseableDbObject,
 }
 
+struct RoughColumn {
+	name: String,
+	not_null: bool,
+	pg_type_name: String,
+}
+struct RoughParam {
+	name: String,
+	pg_type_name: String,
+}
+
 enum UseableDbObject {
-	Type,
-	Table { can_query: bool, columns: Vec<FullColumn> },
-	Function { is_action: bool, params: Vec<FullParam>, return_type: PgType },
+	Table { can_query: bool, columns: Vec<RoughColumn> },
+	Function { is_action: bool, params: Vec<RoughParam>, return_type: String },
+}
+
+fn construct_abstract_usage_standin(usage_kind: &UsageKind) -> String {
+	let dummy_name = "TODO".to_string();
+
+	match usage_kind {
+		UsageKind::Table { can_query, columns } => {},
+		UsageKind::Function { is_action, params, return_type } => {},
+	}
+}
+
+fn validate_schema_uses(
+	possibly_effected_objects: &Vec<(String, ConcreteUsage)>,
+	existent_objects_by_ruleset_path_and_name: &HashMap<(&str, &str), UseableObject>,
+) -> Result<(), Vec<String>> {
+	let mut errors = vec![];
+
+	for (using_ruleset_path, ConcreteUsage { ruleset_path, object_name, usage_kind }) in possibly_effected_objects {
+		if let Some(UseableObject { db_object, .. }) = existent_objects_by_ruleset_path_and_name.get(&(ruleset_path, object_name)) {
+			match (usage_kind, db_object) {
+				(
+					UsageKind::Table { can_query: usage_can_query, columns: usage_columns },
+					UseableDbObject::Table { can_query: usable_can_query, columns: usable_columns },
+				) => {
+					if *usage_can_query && !usable_can_query {
+						errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name} as queryable, but that isn't allowed"));
+						continue
+					}
+
+					for (usage_col_name, usage_col_pg_type_name) in usage_columns {
+						match usable_columns.iter().find(|c| &c.name == usage_col_name) {
+							Some(usable_col) => {
+								if &usable_col.pg_type_name != usage_col_pg_type_name {
+									errors.push(format!(
+										"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{usage_col_name} as type {usage_col_pg_type_name}, but available type is {}",
+										usable_col.pg_type_name
+									));
+								}
+							},
+							None => {
+								errors.push(format!(
+									"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{usage_col_name}, but that column is not available"
+								));
+							}
+						}
+					}
+				},
+
+				(
+					UsageKind::Function { is_action: usage_is_action, params: usage_params, return_type: usage_return_type },
+					UseableDbObject::Function { is_action: usable_is_action, params: usable_params, return_type: usable_return_type },
+				) => {
+					if *usage_is_action && !usable_is_action {
+						errors.push(format!("ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} as volatile, but that isn't allowed"));
+					}
+					if usage_return_type != usable_return_type {
+						errors.push(format!("ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} with return type {usage_return_type}, but it returns {usable_return_type}"));
+					}
+
+					if usage_params.len() != usable_params.len() {
+						errors.push(format!(
+							"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} with {} params, but it has {} params",
+							usage_params.len(),
+							usable_params.len(),
+						));
+						continue
+					}
+					for (i, (usage_param_type, usable_param)) in usage_params.iter().zip(usable_params.iter()).enumerate() {
+						if usage_param_type != &usable_param.pg_type_name {
+							errors.push(format!(
+								"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} param {} (position {}) as type {}, but available type is {}",
+								usable_param.name, i, usage_param_type, usable_param.pg_type_name,
+							));
+						}
+					}
+				},
+				_ => {
+					errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
+				}
+			}
+		}
+		else {
+			errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
+		}
+	}
+
+	if errors.len() > 0 { Err(errors) }
+	else { Ok(()) }
 }
 
 pub async fn podman_compute_diff(
