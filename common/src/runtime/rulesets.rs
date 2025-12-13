@@ -204,8 +204,15 @@ fn construct_abstract_usage_standin(usage_kind: &UsageKind) -> String {
 	let dummy_name = "TODO".to_string();
 
 	match usage_kind {
-		UsageKind::Table { can_query, columns } => {},
-		UsageKind::Function { is_action, params, return_type } => {},
+		UsageKind::Table { columns, .. } => {
+			let columns_str = columns.iter().map(|(col_name, col_type)| format!("{col_name} {col_type}")).collect::<Vec<_>>().join(", ");
+			// TODO there's probably a not null constraint to include here
+			format!("create table {dummy_name} ({columns_str});")
+		},
+		UsageKind::Function { is_action, params, return_type } => {
+			// TODO do this
+			format!("create function {dummy_name}() returns {return_type} as $$ $$ language sql;")
+		},
 	}
 }
 
