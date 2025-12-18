@@ -100,6 +100,27 @@ pub async fn generate_queries(queries_dir: std::path::PathBuf, client: &impl pos
 		.map(|info| ((info.table_oid, info.column_id), info))
 		.collect();
 
+	// select
+	// 	n.nspname as schema_name,
+	// 	p.proname as function_name,
+	// 	pg_catalog.pg_get_function_identity_arguments(p.oid) as arguments,
+	// 	pg_catalog.format_type(p.prorettype, null) as return_type,
+	// 	case p.provolatile
+	// 			when 'i' then 'immutable'
+	// 			when 's' then 'stable'
+	// 			when 'v' then 'volatile'
+	// 	end as volatility
+	// from
+	// 	pg_catalog.pg_proc p
+	// left join
+	// 	pg_catalog.pg_namespace n on n.oid = p.pronamespace
+	// where
+	// 	n.nspname not in ('pg_catalog', 'information_schema')
+	// 	and p.prokind in ('f', 'p', 'a', 'w') -- 'f' for function, 'p' for procedure, 'a' for aggregate, 'w' for window function
+	// order by
+	// 	schema_name,
+	// 	function_name;
+
 	let full_statements = futures::future::try_join_all(
 		sql_files.into_iter().map(async |path| {
 			let p = path.to_string_lossy();

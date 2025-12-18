@@ -1,11 +1,30 @@
-create function yep_fn() returns text as $$
-	select 'a'
-$$ language sql;
+create schema a
+	create table a(id integer primary key);
 
-create function yo() returns void as $$
-	select * from yep_fn();
-$$ language sql;
+create schema b
+	create table b(i integer references a.a(id));
 
-drop function yep_fn;
+SELECT
+	conrelid::regclass AS table_name,
+	conname AS foreign_key,
+	pg_get_constraintdef(oid) AS definition
+FROM
+	pg_constraint
+WHERE
+	contype = 'f' -- 'f' denotes a foreign key constraint
+;
 
-select * from yo();
+
+
+drop schema a cascade;
+
+
+SELECT
+	conrelid::regclass AS table_name,
+	conname AS foreign_key,
+	pg_get_constraintdef(oid) AS definition
+FROM
+	pg_constraint
+WHERE
+	contype = 'f' -- 'f' denotes a foreign key constraint
+;

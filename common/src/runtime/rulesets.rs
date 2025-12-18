@@ -30,11 +30,6 @@ pub enum ValidationError {
 	Db(#[from] postgres::Error),
 }
 
-// TODO entirely refactor this validation process, to have separate stages that each go through the items recursively
-// - check all the boring stuff that's easy
-// - check all the typescript?
-// - perform all the implied database operations
-// - check the migrations and uses
 
 async fn validate_bundled_ruleset_top(
 	full_path: &str,
@@ -42,6 +37,40 @@ async fn validate_bundled_ruleset_top(
 	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
 	server_db_archive_path: &std::path::Path,
 ) -> Result<(), ValidationError> {
+
+	// first check all the typescript. you might choose to truly check the queries and regenerate etc, or to allow an entire import process etc, but for now we're just going to check the basic code in the way we already said
+	// also load the code to make sure no errors related to the runtime or whatever occur, so all actions must be well formed
+	// do this recursively, so for all static children check their bundled code
+
+	// true or false, the only reason you want to check the typescript and the code in a separate recursive pass is to minimize the time the temp container is up? is it necessary to worry about that? I guess this is the sort of thing you can think about when you can do benchmarks, both in terms of memory usage and other os resources like sockets. since you aren't actually exposing the port of the temp database container but are just attaching diff jobs to the container network, you probably don't have to worry about os resource contention?
+	// certainly the easy thing, and therefore the thing you ought to do first before you've benchmarked, is just do all the code checking in the main recursive pass
+
+	// open the temp database
+		// create the "from" database
+		// create the "to" database
+		// restore the archive to both databases
+		// - "from" has the "idealized" versions of each ruleset schema, which can be achieved by dropping each ruleset entirely, including roles, creating the ruleset schema, and then using the migrator to execute the db_schema
+		// - "to" has the "real" versions of each ruleset schema with the db_migration applied
+		// after testing, it's clear that if you're going to drop the schema, you have to drop everything related to it, including all the roles, which means you need to recreate them using the create-ruleset once again!
+		// doing a "drop schema cascade" will cascade to all *references*, meaning any foreign key constraints from other schemas will be simply dropped! this isn't a real problem, since this is just a comparison database, and the diff won't show up for the schema being *recreated*. and if there are children that reference the parent that initially had their constraints removed, when we get to them to perform the same diff, we'll do the same operation and therefore end up in the final desired state. this seems fine, it will work and not allow drift or spurious errors, hopefully
+
+		// recursively *apply* all the migrations. for now we're doing this naively assuming all the rulesets haven't been changed to use any objects from any of their descendants, otherwise we'd have to do a dag ordering to apply all these migrations based on the uses
+		// if the ruleset didn't exist before, we have more work to create it to ensure the roles we need to create it exist
+		// then check the correctness of the migration for just this ruleset
+
+		// then for each ruleset, you have to compare the old static children against the new static children. the cleanest thing is probably the below "outer join", so as you iterate through "current, next" you have options for both sides, meaning you know if you're creating from nothing (only right), modifying it (both), or deleting it (only left)
+		// when deleting a child, you also have to recursively delete all its children!
+		// the question is how do you get the old static children? and in their full form! that has to be saved somewhere. for now I guess I just have to assume its existence as I write these standalone functions. later I'll figure out where it's stored and pulled from
+
+		// after applying all schema changes, load the entire body of usable objects, and recursively check that all the rulesets still have their uses satisfied
+
+
+
+
+
+	// do we really want to just replicate the same building and checking process the server as will happen on device when the person is preparing?
+	// if so the logic of the bundling completely changes. bundling is basically nothing but preparing everything in a blob and producing certain built values, but all the same checking will happen again on the server before it saves the thing
+	// in a way this is refreshingly safe and even flexible. by being given the actually interested code, we can package it however we want. this means they don't *necessarily* have to re-bundle and upload the same candidate again and again
 
 	temp_container_utils::with_temp_postgres_client(async |db_container_name, config, client| -> Result<(), ValidationError> {
 		validate_bundled_ruleset(full_path, bundled_ruleset, server_db_archive_path, &db_container_name, &config, &client).await?;
@@ -52,7 +81,7 @@ async fn validate_bundled_ruleset_top(
 }
 
 
-// it looks to make like this function should work correctly for both new creations and replacements
+// this function should already have had the "create ruleset" functionality called ahead of time, so the thing we actually have to pass down is a from_config and to_config that are set up for the migrator roles, since those are the ones
 async fn validate_bundled_ruleset(
 	full_path: &str,
 	bundled_ruleset: &BundledRuleset,
@@ -103,6 +132,7 @@ async fn validate_bundled_ruleset(
 
 	podman_pg_restore(&db_container_name, &from_db_name, &db_user, server_db_archive_path, Some(&formatted_ruleset_schema)).await?;
 	// TODO create_ruleset?
+	// TODO these have to use the migrator configs for this ruleset, that's part of the validation
 	from_client.batch_execute(&bundled_ruleset.db_schema).await?;
 
 	podman_pg_restore(&db_container_name, &to_db_name, &db_user, server_db_archive_path, None).await?;
@@ -145,8 +175,8 @@ async fn validate_bundled_ruleset(
 	// https://www.postgresql.org/docs/current/sql-createtype.html
 
 	// the *abstract* system will be structured roughly like this:
-	// "~v1": "ReferenceTable(c1 t1, c2 t2)" // https://docs.rs/sqlparser/latest/sqlparser/ast/struct.TableAlias.html
-	// "~v2": "QueryAndReferenceTable(c1 t1, c2 t2)"
+	// "~v1": "ReferenceTable(c1 t1, c2 t2?)" // https://docs.rs/sqlparser/latest/sqlparser/ast/struct.TableAlias.html
+	// "~v2": "QueryAndReferenceTable(c1 t1?, c2 t2)"
 	// "~v3": "CallViewFunction(t1, t2) -> tr"
 	// "~v4": "CallActionFunction(t1, t2) -> tr"
 
@@ -175,8 +205,13 @@ struct ConcreteUsage {
 }
 
 enum UsageKind {
-	Table { can_query: bool, columns: Vec<(String, String)> },
+	Table { can_query: bool, columns: Vec<UsageColumn> },
 	Function { is_action: bool, params: Vec<String>, return_type: String },
+}
+struct UsageColumn {
+	name: String,
+	pg_type: String,
+	can_null: bool,
 }
 
 struct UseableObject {
@@ -205,13 +240,19 @@ fn construct_abstract_usage_standin(usage_kind: &UsageKind) -> String {
 
 	match usage_kind {
 		UsageKind::Table { columns, .. } => {
-			let columns_str = columns.iter().map(|(col_name, col_type)| format!("{col_name} {col_type}")).collect::<Vec<_>>().join(", ");
-			// TODO there's probably a not null constraint to include here
+			let columns_str = columns.iter().map(|UsageColumn { name, pg_type, can_null }| {
+				let null_portion = if *can_null { " not null" } else { "" };
+				format!("{name} {pg_type}{null_portion}")
+			}).collect::<Vec<_>>().join(", ");
+
 			format!("create table {dummy_name} ({columns_str});")
 		},
 		UsageKind::Function { is_action, params, return_type } => {
-			// TODO do this
-			format!("create function {dummy_name}() returns {return_type} as $$ $$ language sql;")
+			let volatility = if *is_action { "volatile" } else { "stable" };
+			let params_str = params.into_iter().enumerate()
+				.map(|(idx, pg_type)| format!("_{idx} {pg_type}"))
+				.collect::<Vec<_>>().join(", ");
+			format!("create function {dummy_name}({params_str}) returns {return_type} as $$ begin raise exception ''; end; $$ language plpgsql {volatility};")
 		},
 	}
 }
@@ -318,7 +359,6 @@ pub async fn podman_compute_diff(
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-// this full_ruleset_dir will probably be a temp directory in the server context
 pub async fn podman_votebase_tsc(full_ruleset_dir: &std::path::Path) -> Result<(), ValidationError> {
 	let workspace_arg = format!("{}:/workspace/ruleset", full_ruleset_dir.to_string_lossy());
 	let output = temp_container_utils::workspace_podman_run("votebase-tsc", &[], workspace_arg, &["--noEmit"]).await?;
@@ -411,6 +451,7 @@ async fn podman_pg_dump(
 }
 
 
+// https://github.com/Aleph-Alpha/ts-rs
 #[derive(Debug, serde::Deserialize)]
 struct BundledRuleset {
 	/// Typescript code containing all the Actions and Views of the `Ruleset`.
@@ -482,46 +523,46 @@ pub enum KeepOrReplace<T> {
 
 
 
-// pub async fn create_ruleset(
-// 	base_config: &PgConfig, client: &mut PgClient,
-// 	parent_full_path: Option<&str>, name: &str,
-// 	action_names: &Vec<String>, view_names: &Vec<String>,
-// 	ruleset_code: &str, db_schema: &str,
-// ) -> Result<PgClient, postgres::Error> {
-// 	println!("inserting ruleset");
-// 	let ruleset_row = queries::rulesets::insert_ruleset()
-// 		.bind(client, &parent_full_path, &name, &action_names, &view_names, &ruleset_code, &db_schema).one().await?;
+pub async fn create_ruleset(
+	base_config: &PgConfig, client: &mut PgClient,
+	parent_full_path: Option<&str>, name: &str,
+	action_names: &Vec<String>, view_names: &Vec<String>,
+	ruleset_code: &str, db_schema: &str,
+) -> Result<PgClient, postgres::Error> {
+	println!("inserting ruleset");
+	let ruleset_row = queries::rulesets::insert_ruleset()
+		.bind(client, &parent_full_path, &name, &action_names, &view_names, &ruleset_code, &db_schema).one().await?;
 
-// 	let full_path = ruleset_row.full_path;
-// 	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
-// 	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
-// 	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
+	let full_path = ruleset_row.full_path;
+	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
+	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
+	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
 
-// 	println!("creating ruleset schema");
-// 	let transaction = client.transaction().await?;
-// 	let create_sql = format!(include_str!("./create-ruleset.sql"),
-// 		formatted_ruleset_schema=format_ruleset_schema(&full_path),
-// 		formatted_ruleset_role_migrator=formatted_ruleset_role_migrator,
-// 		formatted_ruleset_role_action=formatted_ruleset_role_action,
-// 		formatted_ruleset_role_view=formatted_ruleset_role_view,
-// 		migrator_pass=ruleset_row.migrator_pass,
-// 		action_pass=ruleset_row.action_pass,
-// 		view_pass=ruleset_row.view_pass,
-// 	);
-// 	transaction.batch_execute(&create_sql).await?;
-// 	transaction.commit().await?;
+	println!("creating ruleset schema");
+	let transaction = client.transaction().await?;
+	let create_sql = format!(include_str!("./create-ruleset.sql"),
+		formatted_ruleset_schema=format_ruleset_schema(&full_path),
+		formatted_ruleset_role_migrator=formatted_ruleset_role_migrator,
+		formatted_ruleset_role_action=formatted_ruleset_role_action,
+		formatted_ruleset_role_view=formatted_ruleset_role_view,
+		migrator_pass=ruleset_row.migrator_pass,
+		action_pass=ruleset_row.action_pass,
+		view_pass=ruleset_row.view_pass,
+	);
+	transaction.batch_execute(&create_sql).await?;
+	transaction.commit().await?;
 
-// 	let mut migrator_config = base_config.clone();
-// 	migrator_config.user(formatted_ruleset_role_migrator);
-// 	migrator_config.password(ruleset_row.migrator_pass);
+	let mut migrator_config = base_config.clone();
+	migrator_config.user(formatted_ruleset_role_migrator);
+	migrator_config.password(ruleset_row.migrator_pass);
 
-// 	println!("applying ruleset schema");
-// 	let (migrator_client, migrator_connection) = migrator_config.connect(postgres::NoTls).await?;
-// 	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
-// 	migrator_client.batch_execute(db_schema).await?;
+	println!("applying ruleset schema");
+	let (migrator_client, migrator_connection) = migrator_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
+	migrator_client.batch_execute(db_schema).await?;
 
-// 	Ok(migrator_client)
-// }
+	Ok(migrator_client)
+}
 
 pub async fn propose_candidate_ruleset(
 	current_full_path: &str,
@@ -733,3 +774,33 @@ pub async fn op_propose_self_replacement(
 // op_propose_child_replacement: (name: string, candidate: BundledRuleset) => Promise<string>,
 // // the table with candidate_id already has the name and full_path etc to know where it's headed
 // op_replace_child: (candidate_id: string) => Promise<void>,
+
+
+// enum JoinOption<T1, T2> {
+// 	Left(T1),
+// 	Right(T2),
+// 	Both(T1, T2),
+// }
+
+fn outer_join<V1, V2>(
+	map1: HashMap<String, V1>,
+	map2: HashMap<String, V2>
+) -> HashMap<String, (Option<V1>, Option<V2>)> {
+	let mut result = HashMap::new();
+
+	for (k, v) in map1 {
+		result.insert(k, (Some(v), None));
+	}
+	for (k, v) in map2 {
+		match result.entry(k) {
+			std::collections::hash_map::Entry::Occupied(mut entry) => {
+				entry.get_mut().1 = Some(v);
+			},
+			std::collections::hash_map::Entry::Vacant(entry) => {
+				entry.insert((None, Some(v)));
+			},
+		}
+	}
+
+	result
+}
