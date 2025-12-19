@@ -20,6 +20,8 @@ use super::{Runtime, RuntimeError, demand_external_allowed, run_err};
 pub enum ValidationError {
 	#[error("the migration for `{0}` doesn't match the provided schema")]
 	InvalidMigration(String),
+	#[error("a static child was indicated for a slot that doesn't already have one `{0}`")]
+	UnspecifiedStaticChild(String),
 	#[error("the typescript code has errors\n\n{0}")]
 	InvalidTs(String),
 	#[error(transparent)]
@@ -46,50 +48,145 @@ async fn validate_bundled_ruleset_top(
 	// certainly the easy thing, and therefore the thing you ought to do first before you've benchmarked, is just do all the code checking in the main recursive pass
 
 	// open the temp database
-		// create the "from" database
-		// create the "to" database
-		// restore the archive to both databases
-		// - "from" has the "idealized" versions of each ruleset schema, which can be achieved by dropping each ruleset entirely, including roles, creating the ruleset schema, and then using the migrator to execute the db_schema
-		// - "to" has the "real" versions of each ruleset schema with the db_migration applied
-		// after testing, it's clear that if you're going to drop the schema, you have to drop everything related to it, including all the roles, which means you need to recreate them using the create-ruleset once again!
-		// doing a "drop schema cascade" will cascade to all *references*, meaning any foreign key constraints from other schemas will be simply dropped! this isn't a real problem, since this is just a comparison database, and the diff won't show up for the schema being *recreated*. and if there are children that reference the parent that initially had their constraints removed, when we get to them to perform the same diff, we'll do the same operation and therefore end up in the final desired state. this seems fine, it will work and not allow drift or spurious errors, hopefully
-
-		// recursively *apply* all the migrations. for now we're doing this naively assuming all the rulesets haven't been changed to use any objects from any of their descendants, otherwise we'd have to do a dag ordering to apply all these migrations based on the uses
-		// if the ruleset didn't exist before, we have more work to create it to ensure the roles we need to create it exist
-		// then check the correctness of the migration for just this ruleset
-
-		// then for each ruleset, you have to compare the old static children against the new static children. the cleanest thing is probably the below "outer join", so as you iterate through "current, next" you have options for both sides, meaning you know if you're creating from nothing (only right), modifying it (both), or deleting it (only left)
-		// when deleting a child, you also have to recursively delete all its children!
-		// the question is how do you get the old static children? and in their full form! that has to be saved somewhere. for now I guess I just have to assume its existence as I write these standalone functions. later I'll figure out where it's stored and pulled from
-
-		// after applying all schema changes, load the entire body of usable objects, and recursively check that all the rulesets still have their uses satisfied
-
-
-
-
-
-	// do we really want to just replicate the same building and checking process the server as will happen on device when the person is preparing?
-	// if so the logic of the bundling completely changes. bundling is basically nothing but preparing everything in a blob and producing certain built values, but all the same checking will happen again on the server before it saves the thing
-	// in a way this is refreshingly safe and even flexible. by being given the actually interested code, we can package it however we want. this means they don't *necessarily* have to re-bundle and upload the same candidate again and again
-
 	temp_container_utils::with_temp_postgres_client(async |db_container_name, config, client| -> Result<(), ValidationError> {
-		validate_bundled_ruleset(full_path, bundled_ruleset, server_db_archive_path, &db_container_name, &config, &client).await?;
+		// create the "reset" database
+		// create the "to" database
+		let reset_db_name = "tempdb|reset";
+		let migrate_db_name = "tempdb|migrate";
+		client.batch_execute(&format!(r#"create database "{reset_db_name}""#)).await?;
+		client.batch_execute(&format!(r#"create database "{migrate_db_name}""#)).await?;
+		// restore the archive to both databases
+		let db_user = config.get_user().unwrap();
+		podman_pg_restore(&db_container_name, &reset_db_name, &db_user, server_db_archive_path).await?;
+		podman_pg_restore(&db_container_name, &migrate_db_name, &db_user, server_db_archive_path).await?;
+
+		let reset_config = { let mut config = config.clone(); config.dbname(reset_db_name); config };
+		let migrate_config = { let mut config = config.clone(); config.dbname(migrate_db_name); config };
+
+		validate_bundled_ruleset(full_path, bundled_ruleset, &db_container_name, &client, &reset_config, &migrate_config).await?;
+
 		Ok(())
 	}).await?;
+
 
 	Ok(())
 }
 
 
-// this function should already have had the "create ruleset" functionality called ahead of time, so the thing we actually have to pass down is a from_config and to_config that are set up for the migrator roles, since those are the ones
-async fn validate_bundled_ruleset(
+async fn validate_bundled_ruleset_new(
 	full_path: &str,
 	bundled_ruleset: &BundledRuleset,
-	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
-	server_db_archive_path: &std::path::Path,
 	db_container_name: &str,
-	config: &postgres::Config,
-	client: &PgClient,
+	server_client: &PgClient,
+	reset_config: &PgConfig,
+	migrate_config: &PgConfig,
+) -> Result<(), ValidationError> {
+	// ### bundled_ruleset.code
+	// place the typescript code in a temp directory and check it
+	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
+	let ts_file = temp_dir.as_ref().join("ruleset.ts");
+	tokio::fs::write(&ts_file, &bundled_ruleset.code).await?;
+	podman_votebase_tsc(temp_dir.as_ref()).await?;
+
+	// basically the db_schema and db_migration should be the same!
+	let (_, formatted_ruleset_schema) = create_ruleset_fake(&reset_config, server_client, full_path, &bundled_ruleset.db_schema).await?;
+	let (_, _) = create_ruleset_fake(&migrate_config, server_client, full_path, &bundled_ruleset.db_migration).await?;
+
+	let diff = podman_compute_diff(db_container_name, &formatted_ruleset_schema, &reset_config, &migrate_config).await?;
+	if !diff.is_empty() {
+		// log::error!("{}", diff);
+		return Err(ValidationError::InvalidMigration(full_path.to_string()))
+	}
+
+	validate_bundled_ruleset_children(
+		full_path, None, &bundled_ruleset.static_children,
+		db_container_name, server_client, reset_config, migrate_config,
+	).await?;
+
+
+	Ok(())
+}
+
+async fn validate_bundled_ruleset_children(
+	parent_full_path: &str,
+	prev_ruleset_children: Option<&HashMap<String, BundledRuleset>>,
+	next_ruleset_children: &HashMap<String, KeepOrReplace<BundledRuleset>>,
+	db_container_name: &str,
+	server_client: &PgClient,
+	reset_config: &PgConfig,
+	migrate_config: &PgConfig,
+) -> Result<(), ValidationError> {
+	match prev_ruleset_children {
+		None => {
+			for (child_ruleset_name, child_ruleset) in next_ruleset_children {
+				if let KeepOrReplace::Replace(child_ruleset) = child_ruleset {
+					let full_path = crate::format_full_path(Some(parent_full_path), child_ruleset_name);
+					validate_bundled_ruleset_new(&full_path, child_ruleset, db_container_name, server_client, &reset_config, &migrate_config).await?;
+				}
+				else {
+					return Err(ValidationError::UnspecifiedStaticChild(child_ruleset_name.to_owned()))
+				}
+			}
+
+			Ok(())
+		},
+		Some(prev_ruleset_children) => {
+			let joined_children = outer_join(prev_ruleset_children, next_ruleset_children);
+			for (child_ruleset_name, (prev_ruleset, next_ruleset)) in joined_children {
+				match (prev_ruleset, next_ruleset) {
+					(None, Some(next_ruleset)) => {},
+
+					_ => {},
+				}
+			}
+
+			Ok(())
+		},
+	}
+}
+
+pub async fn create_ruleset_fake(
+	base_config: &PgConfig, client: &PgClient,
+	full_path: &str,
+	db_schema: &str,
+) -> Result<(PgClient, String), postgres::Error> {
+	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
+	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
+	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
+
+	let formatted_ruleset_schema = format_ruleset_schema(&full_path);
+	let create_sql = format!(include_str!("./create-ruleset.sql"),
+		formatted_ruleset_schema=&formatted_ruleset_schema,
+		formatted_ruleset_role_migrator=formatted_ruleset_role_migrator,
+		formatted_ruleset_role_action=formatted_ruleset_role_action,
+		formatted_ruleset_role_view=formatted_ruleset_role_view,
+		migrator_pass="migrator_pass",
+		action_pass="action_pass",
+		view_pass="view_pass",
+	);
+	client.batch_execute(&create_sql).await?;
+
+	let mut migrator_config = base_config.clone();
+	migrator_config.user(formatted_ruleset_role_migrator);
+	migrator_config.password("migrator_pass");
+
+	let (migrator_client, migrator_connection) = migrator_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
+	migrator_client.batch_execute(db_schema).await?;
+
+	Ok((migrator_client, formatted_ruleset_schema))
+}
+
+
+// this function should already have had the "create ruleset" functionality called ahead of time, so the thing we actually have to pass down is a from_config and to_config that are set up for the migrator roles, since those are the ones
+async fn validate_bundled_ruleset(
+	full_path: &str, ruleeset_is_new: bool,
+	bundled_ruleset: &BundledRuleset,
+	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
+	db_container_name: &str,
+	server_client: &PgClient,
+	reset_config: &PgConfig,
+	migrate_config: &PgConfig,
 ) -> Result<(), ValidationError> {
 
 	// ### bundled_ruleset.code
@@ -101,15 +198,33 @@ async fn validate_bundled_ruleset(
 
 	// TODO also actually *run* the ruleset code to gather its fns and make sure they don't overlap, so Runtime considerations
 
-	// check that the migration is correct
-	// this is complex. we need to load *enough* of the existing server schema to be able to just create two databases:
-	// one with the current state (including the state of the ruleset this one is replacing, if that's the case), and execute the bundled_ruleset.db_migration on it
-	// and another where we also do the existing server schema *but without the schema of the target ruleset*, but then we also execute the bundled_ruleset.db_schema
-	// for now we're using the entire thing! except for the "declarative" version that needs to exclude the target schema
-	// pg_dump --exclude-schema=example -f output_file.sql,
-	// at the end of this process we should have two databases that should be identical
-	// we want the archive target file to have a known location (probably something named after the overall dbname), and whenever the schema changes (which only happens on ruleset changes!) we acquire a server wide mutex
 	let formatted_ruleset_schema = format_ruleset_schema(full_path);
+
+	// - "reset" has the "idealized" versions of each ruleset schema, which can be achieved by dropping each ruleset entirely, including roles, creating the ruleset schema, and then using the migrator to execute the db_schema
+	// drop the ruleset schema entirely from the reset db
+	// this only can be done if this ruleset already existed before
+	server_client.batch_execute(&format!(r#"
+		'drop schema "ruleset:{full_path}" cascade';
+		'drop role "role:{full_path}|migrator"';
+		'drop role "role:{full_path}|action"';
+		'drop role "role:{full_path}|view"';
+	"#)).await?;
+
+	// - "migrate" has the "real" versions of each ruleset schema with the db_migration applied
+	// after testing, it's clear that if you're going to drop the schema, you have to drop everything related to it, including all the roles, which means you need to recreate them using the create-ruleset once again!
+	// doing a "drop schema cascade" will cascade to all *references*, meaning any foreign key constraints from other schemas will be simply dropped! this isn't a real problem, since this is just a comparison database, and the diff won't show up for the schema being *recreated*. and if there are children that reference the parent that initially had their constraints removed, when we get to them to perform the same diff, we'll do the same operation and therefore end up in the final desired state. this seems fine, it will work and not allow drift or spurious errors, hopefully
+	// recursively *apply* all the migrations. for now we're doing this naively assuming all the rulesets haven't been changed to use any objects from any of their descendants, otherwise we'd have to do a dag ordering to apply all these migrations based on the uses
+	// if the ruleset didn't exist before, we have more work to create it to ensure the roles we need to create it exist
+	// then check the correctness of the migration for just this ruleset
+
+	// then for each ruleset, you have to compare the old static children against the new static children. the cleanest thing is probably the below "outer join", so as you iterate through "current, next" you have options for both sides, meaning you know if you're creating from nothing (only right), modifying it (both), or deleting it (only left)
+	// when deleting a child, you also have to recursively delete all its children!
+	// the question is how do you get the old static children? and in their full form! that has to be saved somewhere. for now I guess I just have to assume its existence as I write these standalone functions. later I'll figure out where it's stored and pulled from
+
+	// after applying all schema changes, load the entire body of usable objects, and recursively check that all the rulesets still have their uses satisfied
+
+
+
 
 	// ### bundled_ruleset.db_schema
 	// ### bundled_ruleset.db_migration
@@ -130,12 +245,12 @@ async fn validate_bundled_ruleset(
 	tokio::spawn(async move { if let Err(e) = to_connection.await { log::error!("DB connection error: {}", e); } });
 
 
-	podman_pg_restore(&db_container_name, &from_db_name, &db_user, server_db_archive_path, Some(&formatted_ruleset_schema)).await?;
+	podman_pg_restore(&db_container_name, &from_db_name, &db_user, server_db_archive_path).await?;
 	// TODO create_ruleset?
 	// TODO these have to use the migrator configs for this ruleset, that's part of the validation
 	from_client.batch_execute(&bundled_ruleset.db_schema).await?;
 
-	podman_pg_restore(&db_container_name, &to_db_name, &db_user, server_db_archive_path, None).await?;
+	podman_pg_restore(&db_container_name, &to_db_name, &db_user, server_db_archive_path).await?;
 	to_client.batch_execute(&bundled_ruleset.db_migration).await?;
 
 	let diff = podman_compute_diff(&db_container_name, &formatted_ruleset_schema, &from_config, &to_config).await?;
@@ -376,7 +491,7 @@ async fn podman_pg_restore(
 	db_name: &str,
 	db_user_name: &str,
 	server_db_archive_path: &std::path::Path,
-	exclude_schema: Option<&str>,
+	// exclude_schema: Option<&str>,
 ) -> std::io::Result<()> {
 	// TODO okay to achieve this, we need to change it so the postgres container that's running has a volume to some directory we can read and write
 	// then we use podman *exec* to run pg_restore/pg_dump inside the container
@@ -398,10 +513,10 @@ async fn podman_pg_restore(
 		// .arg("-f").arg(server_db_archive_path)
 		.arg("--exit-on-error");
 
-	if let Some(exclude_schema) = exclude_schema {
-		// --exclude-schema=pattern
-		command.arg("-N").arg(exclude_schema);
-	}
+	// if let Some(exclude_schema) = exclude_schema {
+	// 	// --exclude-schema=pattern
+	// 	command.arg("-N").arg(exclude_schema);
+	// }
 
 	let mut child = command
 		.stderr(std::process::Stdio::piped())
@@ -782,10 +897,10 @@ pub async fn op_propose_self_replacement(
 // 	Both(T1, T2),
 // }
 
-fn outer_join<V1, V2>(
-	map1: HashMap<String, V1>,
-	map2: HashMap<String, V2>
-) -> HashMap<String, (Option<V1>, Option<V2>)> {
+fn outer_join<'a, V1, V2>(
+	map1: &'a HashMap<String, V1>,
+	map2: &'a HashMap<String, V2>
+) -> HashMap<&'a String, (Option<&'a V1>, Option<&'a V2>)> {
 	let mut result = HashMap::new();
 
 	for (k, v) in map1 {

@@ -104,6 +104,13 @@ impl std::fmt::Display for FnType {
 	}
 }
 
+pub fn format_full_path(parent_full_path: Option<&str>, child_name: &str) -> String {
+	match parent_full_path {
+		Some(parent_full_path) => format!("{parent_full_path}|{child_name}"),
+		None => format!("{child_name}"),
+	}
+}
+
 /// `ruleset:{full_path}`
 pub fn format_ruleset_schema(full_path: &str) -> String {
 	format!("ruleset:{full_path}")
