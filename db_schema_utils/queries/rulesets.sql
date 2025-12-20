@@ -29,6 +29,10 @@ insert into votebase_catalog.ruleset (
 	:parent_full_path, :name, :actions, :views, :code, :db_schema
 ) returning full_path, migrator_pass, action_pass, view_pass;
 
+--! delete_ruleset (full_path)
+delete from votebase_catalog.ruleset
+where full_path = :full_path;
+
 --! insert_candidate_replacement
 select u as candidate_uuid
 from votebase_catalog.insert_candidate_replacement(

@@ -6,15 +6,12 @@ use crate::{PgClient, PgConfig, RoleType, format_ruleset_role, format_ruleset_sc
 
 use super::{Runtime, RuntimeError, demand_external_allowed, run_err};
 
+async fn pg_con(config: &PgConfig) -> Result<PgClient, postgres::Error> {
+	let (client, conn) = config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = conn.await { log::error!("DB connection error: {}", e); } });
+	Ok(client)
+}
 
-// when we want to propose a new ruleset, we need to:
-// - validate it, which is the hard part:
-// 	- make sure the typescript is well typed (it already needs to be bundled?)
-// 	- make sure the migration is correct
-// 	- check the way the `uses` and static children would impact the actual thing. we need to check that no uses from any *other* rulesets would be severed (:sad:)
-// - insert it, which is easy, and basically is entirely delegated to the database function that actually does so
-
-// when we want to replace a ruleset
 
 #[derive(thiserror::Error, Debug)]
 pub enum ValidationError {
@@ -25,6 +22,8 @@ pub enum ValidationError {
 	#[error("the typescript code has errors\n\n{0}")]
 	InvalidTs(String),
 	#[error(transparent)]
+	RuntimeRejected(#[from] RuntimeError),
+	#[error(transparent)]
 	Container(#[from] temp_container_utils::ContainerError),
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
@@ -33,37 +32,43 @@ pub enum ValidationError {
 }
 
 
+struct ValidateCtx {
+	db_container_name: String,
+	reset_server_client: PgClient,
+	reset_config: PgConfig,
+	migrate_server_client: PgClient,
+	migrate_config: PgConfig,
+}
+
 async fn validate_bundled_ruleset_top(
 	full_path: &str,
-	bundled_ruleset: &BundledRuleset,
-	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
+	prev_bundled_ruleset: Option<&StoredRuleset>,
+	next_bundled_ruleset: &BundledRuleset,
 	server_db_archive_path: &std::path::Path,
 ) -> Result<(), ValidationError> {
-
-	// first check all the typescript. you might choose to truly check the queries and regenerate etc, or to allow an entire import process etc, but for now we're just going to check the basic code in the way we already said
-	// also load the code to make sure no errors related to the runtime or whatever occur, so all actions must be well formed
-	// do this recursively, so for all static children check their bundled code
-
-	// true or false, the only reason you want to check the typescript and the code in a separate recursive pass is to minimize the time the temp container is up? is it necessary to worry about that? I guess this is the sort of thing you can think about when you can do benchmarks, both in terms of memory usage and other os resources like sockets. since you aren't actually exposing the port of the temp database container but are just attaching diff jobs to the container network, you probably don't have to worry about os resource contention?
-	// certainly the easy thing, and therefore the thing you ought to do first before you've benchmarked, is just do all the code checking in the main recursive pass
-
-	// open the temp database
-	temp_container_utils::with_temp_postgres_client(async |db_container_name, config, client| -> Result<(), ValidationError> {
-		// create the "reset" database
-		// create the "to" database
+	temp_container_utils::with_temp_postgres_client(async |db_container_name, config, server_client| -> Result<(), ValidationError> {
 		let reset_db_name = "tempdb|reset";
 		let migrate_db_name = "tempdb|migrate";
-		client.batch_execute(&format!(r#"create database "{reset_db_name}""#)).await?;
-		client.batch_execute(&format!(r#"create database "{migrate_db_name}""#)).await?;
-		// restore the archive to both databases
+		server_client.batch_execute(&format!(r#"create database "{reset_db_name}""#)).await?;
+		server_client.batch_execute(&format!(r#"create database "{migrate_db_name}""#)).await?;
+		drop(server_client);
+
+		let reset_config = { let mut config = config.clone(); config.dbname(reset_db_name); config };
+		let reset_server_client = pg_con(&reset_config).await?;
+		let migrate_config = { let mut config = config.clone(); config.dbname(migrate_db_name); config };
+		let migrate_server_client = pg_con(&migrate_config).await?;
+
 		let db_user = config.get_user().unwrap();
 		podman_pg_restore(&db_container_name, &reset_db_name, &db_user, server_db_archive_path).await?;
 		podman_pg_restore(&db_container_name, &migrate_db_name, &db_user, server_db_archive_path).await?;
 
-		let reset_config = { let mut config = config.clone(); config.dbname(reset_db_name); config };
-		let migrate_config = { let mut config = config.clone(); config.dbname(migrate_db_name); config };
+		let ctx = ValidateCtx {
+			db_container_name, reset_server_client, reset_config, migrate_server_client, migrate_config,
+		};
 
-		validate_bundled_ruleset(full_path, bundled_ruleset, &db_container_name, &client, &reset_config, &migrate_config).await?;
+		validate_bundled_ruleset(&full_path, &ctx, prev_bundled_ruleset, next_bundled_ruleset).await?;
+
+		let uses_result = validate_schema_uses(possibly_effected_objects, existent_objects_by_ruleset_path_and_name);
 
 		Ok(())
 	}).await?;
@@ -73,55 +78,75 @@ async fn validate_bundled_ruleset_top(
 }
 
 
-async fn validate_bundled_ruleset_new(
+async fn validate_bundled_ruleset(
 	full_path: &str,
-	bundled_ruleset: &BundledRuleset,
-	db_container_name: &str,
-	server_client: &PgClient,
-	reset_config: &PgConfig,
-	migrate_config: &PgConfig,
+	ctx: &ValidateCtx,
+	prev_bundled_ruleset: Option<&StoredRuleset>,
+	next_bundled_ruleset: &BundledRuleset,
 ) -> Result<(), ValidationError> {
-	// ### bundled_ruleset.code
 	// place the typescript code in a temp directory and check it
 	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
 	let ts_file = temp_dir.as_ref().join("ruleset.ts");
-	tokio::fs::write(&ts_file, &bundled_ruleset.code).await?;
+	tokio::fs::write(&ts_file, &next_bundled_ruleset.code).await?;
 	podman_votebase_tsc(temp_dir.as_ref()).await?;
 
-	// basically the db_schema and db_migration should be the same!
-	let (_, formatted_ruleset_schema) = create_ruleset_fake(&reset_config, server_client, full_path, &bundled_ruleset.db_schema).await?;
-	let (_, _) = create_ruleset_fake(&migrate_config, server_client, full_path, &bundled_ruleset.db_migration).await?;
+	// ensure the runtime is okay with it
+	Runtime::new(&next_bundled_ruleset.code).await?;
 
-	let diff = podman_compute_diff(db_container_name, &formatted_ruleset_schema, &reset_config, &migrate_config).await?;
+	let formatted_ruleset_schema =
+		if prev_bundled_ruleset.is_some() {
+			// for reset delete and recreate the ruleset
+			ctx.reset_server_client.batch_execute(&format!(r#"
+				'drop schema "ruleset:{full_path}" cascade';
+				'drop role "role:{full_path}|migrator"';
+				'drop role "role:{full_path}|action"';
+				'drop role "role:{full_path}|view"';
+			"#)).await?;
+			let (_, formatted_ruleset_schema) = create_ruleset_fake(&ctx.reset_config, &ctx.reset_server_client, full_path, &next_bundled_ruleset.db_schema).await?;
+
+			// for migrate just apply the migration!
+			// TODO the tricky part is you need the migrator password...
+			let (migrator_client, migrator_connection) = migrator_config.connect(postgres::NoTls).await?;
+			tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
+			migrator_client.batch_execute(next_bundled_ruleset.db_schema).await?;
+
+			formatted_ruleset_schema
+		}
+		else {
+			// for entirely new rulesets the db_schema and db_migration should be the same!
+			let (_, formatted_ruleset_schema) = create_ruleset_fake(&ctx.reset_config, &ctx.reset_server_client, full_path, &next_bundled_ruleset.db_schema).await?;
+			let (_, _) = create_ruleset_fake(&ctx.migrate_config, &ctx.migrate_server_client, full_path, &next_bundled_ruleset.db_migration).await?;
+
+			formatted_ruleset_schema
+		};
+
+	let diff = podman_compute_diff(&ctx.db_container_name, &formatted_ruleset_schema, &ctx.reset_config, &ctx.migrate_config).await?;
 	if !diff.is_empty() {
-		// log::error!("{}", diff);
 		return Err(ValidationError::InvalidMigration(full_path.to_string()))
 	}
 
-	validate_bundled_ruleset_children(
-		full_path, None, &bundled_ruleset.static_children,
-		db_container_name, server_client, reset_config, migrate_config,
+	Box::pin(
+		validate_bundled_ruleset_children(
+			full_path, &ctx,
+			prev_bundled_ruleset.map(|r| &r.static_children), &next_bundled_ruleset.static_children,
+		)
 	).await?;
-
 
 	Ok(())
 }
 
 async fn validate_bundled_ruleset_children(
 	parent_full_path: &str,
-	prev_ruleset_children: Option<&HashMap<String, BundledRuleset>>,
+	ctx: &ValidateCtx,
+	prev_ruleset_children: Option<&HashMap<String, StoredRuleset>>,
 	next_ruleset_children: &HashMap<String, KeepOrReplace<BundledRuleset>>,
-	db_container_name: &str,
-	server_client: &PgClient,
-	reset_config: &PgConfig,
-	migrate_config: &PgConfig,
 ) -> Result<(), ValidationError> {
 	match prev_ruleset_children {
 		None => {
 			for (child_ruleset_name, child_ruleset) in next_ruleset_children {
 				if let KeepOrReplace::Replace(child_ruleset) = child_ruleset {
 					let full_path = crate::format_full_path(Some(parent_full_path), child_ruleset_name);
-					validate_bundled_ruleset_new(&full_path, child_ruleset, db_container_name, server_client, &reset_config, &migrate_config).await?;
+					validate_bundled_ruleset(&full_path, ctx, None, child_ruleset).await?;
 				}
 				else {
 					return Err(ValidationError::UnspecifiedStaticChild(child_ruleset_name.to_owned()))
@@ -132,17 +157,52 @@ async fn validate_bundled_ruleset_children(
 		},
 		Some(prev_ruleset_children) => {
 			let joined_children = outer_join(prev_ruleset_children, next_ruleset_children);
-			for (child_ruleset_name, (prev_ruleset, next_ruleset)) in joined_children {
-				match (prev_ruleset, next_ruleset) {
-					(None, Some(next_ruleset)) => {},
+			for (child_ruleset_name, join_option) in joined_children {
+				let full_path = crate::format_full_path(Some(parent_full_path), child_ruleset_name);
 
-					_ => {},
+				match join_option {
+					JoinOption::Left(prev_ruleset) => {
+						delete_ruleset(&full_path, prev_ruleset, &ctx.reset_server_client).await?;
+						delete_ruleset(&full_path, prev_ruleset, &ctx.migrate_server_client).await?;
+					},
+
+					JoinOption::Right(KeepOrReplace::Replace(next_ruleset)) => {
+						validate_bundled_ruleset(&full_path, ctx, None, next_ruleset).await?;
+					},
+					JoinOption::Right(KeepOrReplace::Keep) => {
+						return Err(ValidationError::UnspecifiedStaticChild(child_ruleset_name.to_owned()))
+					},
+
+					JoinOption::Both(prev_ruleset, KeepOrReplace::Replace(next_ruleset)) => {
+						validate_bundled_ruleset(&full_path, ctx, Some(prev_ruleset), next_ruleset).await?;
+					},
+					JoinOption::Both(_prev_ruleset, KeepOrReplace::Keep) => {
+						// do nothing! this branch of the tree remains
+					},
 				}
 			}
 
 			Ok(())
 		},
 	}
+}
+
+pub async fn delete_ruleset(
+	full_path: &str,
+	ruleset: &StoredRuleset,
+	server_client: &PgClient,
+) -> Result<(), postgres::Error> {
+	queries::rulesets::delete_ruleset().bind(server_client, &full_path).await?;
+
+	for (child_name, child_ruleset) in &ruleset.static_children {
+		let child_full_path = crate::format_full_path(Some(full_path), &child_name);
+
+		Box::pin(
+			delete_ruleset(&child_full_path, &child_ruleset, server_client)
+		).await?;
+	}
+
+	Ok(())
 }
 
 pub async fn create_ruleset_fake(
@@ -178,140 +238,108 @@ pub async fn create_ruleset_fake(
 }
 
 
-// this function should already have had the "create ruleset" functionality called ahead of time, so the thing we actually have to pass down is a from_config and to_config that are set up for the migrator roles, since those are the ones
-async fn validate_bundled_ruleset(
-	full_path: &str, ruleeset_is_new: bool,
-	bundled_ruleset: &BundledRuleset,
-	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
-	db_container_name: &str,
-	server_client: &PgClient,
-	reset_config: &PgConfig,
-	migrate_config: &PgConfig,
-) -> Result<(), ValidationError> {
+// // this function should already have had the "create ruleset" functionality called ahead of time, so the thing we actually have to pass down is a from_config and to_config that are set up for the migrator roles, since those are the ones
+// async fn validate_bundled_ruleset(
+// 	full_path: &str,
+// 	prev_bundled_ruleset: Option<&BundledRuleset>,
+// 	next_bundled_ruleset: &BundledRuleset,
+// 	// this server_db_archive should be in a server wide mutex, since we're checking against it and don't want anyone to change it while we're operating
+// 	db_container_name: &str,
+// 	server_client: &PgClient,
+// 	reset_config: &PgConfig,
+// 	migrate_config: &PgConfig,
+// ) -> Result<(), ValidationError> {
 
-	// ### bundled_ruleset.code
-	// place the typescript code in a temp directory and check it
-	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
-	let ts_file = temp_dir.as_ref().join("ruleset.ts");
-	tokio::fs::write(&ts_file, &bundled_ruleset.code).await?;
-	podman_votebase_tsc(temp_dir.as_ref()).await?;
+// 	// ### bundled_ruleset.code
+// 	// place the typescript code in a temp directory and check it
+// 	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
+// 	let ts_file = temp_dir.as_ref().join("ruleset.ts");
+// 	tokio::fs::write(&ts_file, &next_bundled_ruleset.code).await?;
+// 	podman_votebase_tsc(temp_dir.as_ref()).await?;
 
-	// TODO also actually *run* the ruleset code to gather its fns and make sure they don't overlap, so Runtime considerations
+// 	// TODO also actually *run* the ruleset code to gather its fns and make sure they don't overlap, so Runtime considerations
 
-	let formatted_ruleset_schema = format_ruleset_schema(full_path);
+// 	let formatted_ruleset_schema = format_ruleset_schema(full_path);
 
-	// - "reset" has the "idealized" versions of each ruleset schema, which can be achieved by dropping each ruleset entirely, including roles, creating the ruleset schema, and then using the migrator to execute the db_schema
-	// drop the ruleset schema entirely from the reset db
-	// this only can be done if this ruleset already existed before
-	server_client.batch_execute(&format!(r#"
-		'drop schema "ruleset:{full_path}" cascade';
-		'drop role "role:{full_path}|migrator"';
-		'drop role "role:{full_path}|action"';
-		'drop role "role:{full_path}|view"';
-	"#)).await?;
+// 	// - "reset" has the "idealized" versions of each ruleset schema, which can be achieved by dropping each ruleset entirely, including roles, creating the ruleset schema, and then using the migrator to execute the db_schema
+// 	// drop the ruleset schema entirely from the reset db
+// 	// this only can be done if this ruleset already existed before
+// 	server_client.batch_execute(&format!(r#"
+// 		'drop schema "ruleset:{full_path}" cascade';
+// 		'drop role "role:{full_path}|migrator"';
+// 		'drop role "role:{full_path}|action"';
+// 		'drop role "role:{full_path}|view"';
+// 	"#)).await?;
 
-	// - "migrate" has the "real" versions of each ruleset schema with the db_migration applied
-	// after testing, it's clear that if you're going to drop the schema, you have to drop everything related to it, including all the roles, which means you need to recreate them using the create-ruleset once again!
-	// doing a "drop schema cascade" will cascade to all *references*, meaning any foreign key constraints from other schemas will be simply dropped! this isn't a real problem, since this is just a comparison database, and the diff won't show up for the schema being *recreated*. and if there are children that reference the parent that initially had their constraints removed, when we get to them to perform the same diff, we'll do the same operation and therefore end up in the final desired state. this seems fine, it will work and not allow drift or spurious errors, hopefully
-	// recursively *apply* all the migrations. for now we're doing this naively assuming all the rulesets haven't been changed to use any objects from any of their descendants, otherwise we'd have to do a dag ordering to apply all these migrations based on the uses
-	// if the ruleset didn't exist before, we have more work to create it to ensure the roles we need to create it exist
-	// then check the correctness of the migration for just this ruleset
+// 	// - "migrate" has the "real" versions of each ruleset schema with the db_migration applied
+// 	// after testing, it's clear that if you're going to drop the schema, you have to drop everything related to it, including all the roles, which means you need to recreate them using the create-ruleset once again!
+// 	// doing a "drop schema cascade" will cascade to all *references*, meaning any foreign key constraints from other schemas will be simply dropped! this isn't a real problem, since this is just a comparison database, and the diff won't show up for the schema being *recreated*. and if there are children that reference the parent that initially had their constraints removed, when we get to them to perform the same diff, we'll do the same operation and therefore end up in the final desired state. this seems fine, it will work and not allow drift or spurious errors, hopefully
+// 	// recursively *apply* all the migrations. for now we're doing this naively assuming all the rulesets haven't been changed to use any objects from any of their descendants, otherwise we'd have to do a dag ordering to apply all these migrations based on the uses
+// 	// if the ruleset didn't exist before, we have more work to create it to ensure the roles we need to create it exist
+// 	// then check the correctness of the migration for just this ruleset
 
-	// then for each ruleset, you have to compare the old static children against the new static children. the cleanest thing is probably the below "outer join", so as you iterate through "current, next" you have options for both sides, meaning you know if you're creating from nothing (only right), modifying it (both), or deleting it (only left)
-	// when deleting a child, you also have to recursively delete all its children!
-	// the question is how do you get the old static children? and in their full form! that has to be saved somewhere. for now I guess I just have to assume its existence as I write these standalone functions. later I'll figure out where it's stored and pulled from
+// 	// then for each ruleset, you have to compare the old static children against the new static children. the cleanest thing is probably the below "outer join", so as you iterate through "current, next" you have options for both sides, meaning you know if you're creating from nothing (only right), modifying it (both), or deleting it (only left)
+// 	// when deleting a child, you also have to recursively delete all its children!
+// 	// the question is how do you get the old static children? and in their full form! that has to be saved somewhere. for now I guess I just have to assume its existence as I write these standalone functions. later I'll figure out where it's stored and pulled from
 
-	// after applying all schema changes, load the entire body of usable objects, and recursively check that all the rulesets still have their uses satisfied
-
-
-
-
-	// ### bundled_ruleset.db_schema
-	// ### bundled_ruleset.db_migration
-	let db_user = config.get_user().unwrap().to_string();
-
-	// TODO this needs a different name? or you need to create these top level things at the top?
-	// or maybe we can't avoid something like a "recursive schema update" process that recursively goes through the whole tree and applies all the database updates implied by the new ruleset, and then a separate "validation" pass that once again recursively goes through it and checks everything against the database, including all the diffs for each individual ruleset/schema. that probably makes much more sense.
-	let from_db_name = "tempdb|from";
-	let to_db_name = "tempdb|to";
-	client.batch_execute(&format!(r#"create database "{from_db_name}""#)).await?;
-	client.batch_execute(&format!(r#"create database "{to_db_name}""#)).await?;
-
-	let from_config = { let mut config = config.clone(); config.dbname(from_db_name); config };
-	let to_config = { let mut config = config.clone(); config.dbname(to_db_name); config };
-	let (from_client, from_connection) = from_config.connect(postgres::NoTls).await?;
-	tokio::spawn(async move { if let Err(e) = from_connection.await { log::error!("DB connection error: {}", e); } });
-	let (to_client, to_connection) = to_config.connect(postgres::NoTls).await?;
-	tokio::spawn(async move { if let Err(e) = to_connection.await { log::error!("DB connection error: {}", e); } });
+// 	// after applying all schema changes, load the entire body of usable objects, and recursively check that all the rulesets still have their uses satisfied
 
 
-	podman_pg_restore(&db_container_name, &from_db_name, &db_user, server_db_archive_path).await?;
-	// TODO create_ruleset?
-	// TODO these have to use the migrator configs for this ruleset, that's part of the validation
-	from_client.batch_execute(&bundled_ruleset.db_schema).await?;
-
-	podman_pg_restore(&db_container_name, &to_db_name, &db_user, server_db_archive_path).await?;
-	to_client.batch_execute(&bundled_ruleset.db_migration).await?;
-
-	let diff = podman_compute_diff(&db_container_name, &formatted_ruleset_schema, &from_config, &to_config).await?;
-	if !diff.is_empty() {
-		// log::error!("{}", diff);
-		return Err(ValidationError::InvalidMigration(full_path.to_string()))
-	}
-
-	// here we go through all of these and actually *execute* all the implied changes to children!
-	for (static_child_name, static_child) in &bundled_ruleset.static_children {
-		match static_child {
-			// - we make sure all the "keep" actually exist
-			KeepOrReplace::Keep => { /* TODO make sure this static_child_name exists in the *current* paradigm */ },
-			// - we make sure all the "replace" actually exist, and that they recursively make sense (have to be smart, we can't just call validate_bundled_ruleset again! we need to chop up this functionality so that we have a root call that starts the podman postgres and the others just perform actions)
-			KeepOrReplace::Replace(static_child) => {
-				let child_full_path = format!("{full_path}|{static_child_name}");
-				validate_bundled_ruleset(&child_full_path, &static_child, server_db_archive_path, db_container_name, config, client).await?;
-			},
-		}
-		// - we make sure that after our modifications and deletions everything still makes sense. this last one is something that probably happens only once at the top level, and includes checking our own db_uses
-	}
-	// these are easy, we just have to make sure they point to real actions that are in *this* ruleset (no references here), and that they're well-formed, which I'm pretty sure will have already happened at parse time
-	bundled_ruleset.static_recurring_events;
-
-	// TODO check that all the db_uses still make sense, along with validating that everything *else* in the system hasn't had uses orphaned
-	bundled_ruleset.db_uses;
-	Ok(())
-
-	// we've established with experiments that you can indeed delete objects, it seems of any kind (certainly functions and tables) that are relied on by functions, and now those functions will throw errors when you call them
-	// this means I have no choice but to implement the `uses` system. right now to cut scope I think I shouldn't do the adjoining "allows" system, but instead just allow anything to reference anything (if it isn't in the catalog)
-	// this means I need a complete system to be able to point to objects to say you reference them
-	// the easy version of this is to just allow pointing to the object itself, you only need a ruleset_path and an object name, along with the "use kind", basically TableReference | TableQueryAndReference | Type | ViewFunction | ActionFunction, and since you aren't narrowing to specific columns
-	// you have to narrow to specific columns, because the uses section has to specify enough type information about these objects that you can create stand-ins from scratch!
-	// this means we need some micro-language, either parsed or declared fully as a serde-able ast, that describes these permissions
-
-	// I don't actually think it's all that possible to have "blank placeholder types", especially when the structure of postgres types is so rigid in regards to how you actually construct them. if you want to do this, it needs to be similar to the table system in the sense that the actual *structure* of the type is what you have to declare you expect (composite, enumerated, range, base?)
-	// https://www.postgresql.org/docs/current/sql-createtype.html
-
-	// the *abstract* system will be structured roughly like this:
-	// "~v1": "ReferenceTable(c1 t1, c2 t2?)" // https://docs.rs/sqlparser/latest/sqlparser/ast/struct.TableAlias.html
-	// "~v2": "QueryAndReferenceTable(c1 t1?, c2 t2)"
-	// "~v3": "CallViewFunction(t1, t2) -> tr"
-	// "~v4": "CallActionFunction(t1, t2) -> tr"
-
-	// and the concrete fulfillments
-	// "~v1": "ruleset_path.table_name(c1, c2)"
-	// "~v2": "ruleset_path.table_name(c1, c2)"
-	// "~v3": "ruleset_path.function_name"
-	// "~v4": "ruleset_path.function_name"
-	// https://www.postgresql.org/docs/current/catalog-pg-proc.html
 
 
-	// in order to check whether a deletion or replacment is valid, we need to just perform the intended changes on the database, and then reflect the new schema (probably being smart to narrow to only the affected rulesets), and then go through the `uses` of *all* the other rulesets that mention the affected ones, and checking if they all still exist and we haven't severed anything
-	// oh importantly, the `uses` only needs the permission and the structure, and the var name is good enough (we obviously aren't "qualifying" a vague concept of a thing!)
-	// it's the actual "fulfilling" vars declarations that need to be fully qualified
+// 	// ### bundled_ruleset.db_schema
+// 	// ### bundled_ruleset.db_migration
+// 	let db_user = config.get_user().unwrap().to_string();
+
+// 	// TODO this needs a different name? or you need to create these top level things at the top?
+// 	// or maybe we can't avoid something like a "recursive schema update" process that recursively goes through the whole tree and applies all the database updates implied by the new ruleset, and then a separate "validation" pass that once again recursively goes through it and checks everything against the database, including all the diffs for each individual ruleset/schema. that probably makes much more sense.
+// 	let from_db_name = "tempdb|from";
+// 	let to_db_name = "tempdb|to";
+// 	client.batch_execute(&format!(r#"create database "{from_db_name}""#)).await?;
+// 	client.batch_execute(&format!(r#"create database "{to_db_name}""#)).await?;
+
+// 	let from_config = { let mut config = config.clone(); config.dbname(from_db_name); config };
+// 	let to_config = { let mut config = config.clone(); config.dbname(to_db_name); config };
+// 	let (from_client, from_connection) = from_config.connect(postgres::NoTls).await?;
+// 	tokio::spawn(async move { if let Err(e) = from_connection.await { log::error!("DB connection error: {}", e); } });
+// 	let (to_client, to_connection) = to_config.connect(postgres::NoTls).await?;
+// 	tokio::spawn(async move { if let Err(e) = to_connection.await { log::error!("DB connection error: {}", e); } });
 
 
-	// TODO and also run against the ruleset graph! so we need to see if this is a valid replacement for what existed before.
-	// what constitutes that? wherever a 'keep' is issued there actually has to be something that existed before. and wherever we're replacing something we need to be able to recursively check that replacement is valid. and wherever we're deleting we need to check recursively that those deletions are okay
-	// TODO now do any checking for "uses" violations. and is that it?
-}
+// 	podman_pg_restore(&db_container_name, &from_db_name, &db_user, server_db_archive_path).await?;
+// 	// TODO create_ruleset?
+// 	// TODO these have to use the migrator configs for this ruleset, that's part of the validation
+// 	from_client.batch_execute(&bundled_ruleset.db_schema).await?;
+
+// 	podman_pg_restore(&db_container_name, &to_db_name, &db_user, server_db_archive_path).await?;
+// 	to_client.batch_execute(&bundled_ruleset.db_migration).await?;
+
+// 	let diff = podman_compute_diff(&db_container_name, &formatted_ruleset_schema, &from_config, &to_config).await?;
+// 	if !diff.is_empty() {
+// 		// log::error!("{}", diff);
+// 		return Err(ValidationError::InvalidMigration(full_path.to_string()))
+// 	}
+
+// 	// here we go through all of these and actually *execute* all the implied changes to children!
+// 	for (static_child_name, static_child) in &bundled_ruleset.static_children {
+// 		match static_child {
+// 			// - we make sure all the "keep" actually exist
+// 			KeepOrReplace::Keep => { /* TODO make sure this static_child_name exists in the *current* paradigm */ },
+// 			// - we make sure all the "replace" actually exist, and that they recursively make sense (have to be smart, we can't just call validate_bundled_ruleset again! we need to chop up this functionality so that we have a root call that starts the podman postgres and the others just perform actions)
+// 			KeepOrReplace::Replace(static_child) => {
+// 				let child_full_path = format!("{full_path}|{static_child_name}");
+// 				validate_bundled_ruleset(&child_full_path, &static_child, server_db_archive_path, db_container_name, config, client).await?;
+// 			},
+// 		}
+// 		// - we make sure that after our modifications and deletions everything still makes sense. this last one is something that probably happens only once at the top level, and includes checking our own db_uses
+// 	}
+// 	// these are easy, we just have to make sure they point to real actions that are in *this* ruleset (no references here), and that they're well-formed, which I'm pretty sure will have already happened at parse time
+// 	bundled_ruleset.static_recurring_events;
+
+// 	// TODO check that all the db_uses still make sense, along with validating that everything *else* in the system hasn't had uses orphaned
+// 	bundled_ruleset.db_uses;
+// 	Ok(())
+// }
 
 struct ConcreteUsage {
 	ruleset_path: String,
@@ -390,13 +418,18 @@ fn validate_schema_uses(
 						continue
 					}
 
-					for (usage_col_name, usage_col_pg_type_name) in usage_columns {
+					for UsageColumn { name: usage_col_name, pg_type: usage_col_pg_type_name, can_null } in usage_columns {
 						match usable_columns.iter().find(|c| &c.name == usage_col_name) {
 							Some(usable_col) => {
 								if &usable_col.pg_type_name != usage_col_pg_type_name {
 									errors.push(format!(
 										"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{usage_col_name} as type {usage_col_pg_type_name}, but available type is {}",
 										usable_col.pg_type_name
+									));
+								}
+								if usable_col.not_null && *can_null {
+									errors.push(format!(
+										"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{usage_col_name} expecting not null, but available type is nullable",
 									));
 								}
 							},
@@ -566,6 +599,15 @@ async fn podman_pg_dump(
 }
 
 
+#[derive(Debug)]
+struct StoredRuleset {
+	code: String,
+	db_schema: String,
+	db_uses: Vec<String>,
+	static_children: HashMap<String, StoredRuleset>,
+	static_recurring_events: HashMap<String, StaticRecurringEvent>,
+}
+
 // https://github.com/Aleph-Alpha/ts-rs
 #[derive(Debug, serde::Deserialize)]
 struct BundledRuleset {
@@ -610,6 +652,22 @@ struct BundledRuleset {
 	// */
 	// dynamic_standalone_event_keep_rule: String,
 }
+// I don't actually think it's all that possible to have "blank placeholder types", especially when the structure of postgres types is so rigid in regards to how you actually construct them. if you want to do this, it needs to be similar to the table system in the sense that the actual *structure* of the type is what you have to declare you expect (composite, enumerated, range, base?)
+// https://www.postgresql.org/docs/current/sql-createtype.html
+
+// the *abstract* system will be structured roughly like this:
+// "~v1": "ReferenceTable(c1 t1, c2 t2?)" // https://docs.rs/sqlparser/latest/sqlparser/ast/struct.TableAlias.html
+// "~v2": "QueryAndReferenceTable(c1 t1?, c2 t2)"
+// "~v3": "CallViewFunction(t1, t2) -> tr"
+// "~v4": "CallActionFunction(t1, t2) -> tr"
+
+// and the concrete fulfillments
+// "~v1": "ruleset_path.table_name(c1, c2)"
+// "~v2": "ruleset_path.table_name(c1, c2)"
+// "~v3": "ruleset_path.function_name"
+// "~v4": "ruleset_path.function_name"
+// https://www.postgresql.org/docs/current/catalog-pg-proc.html
+
 
 #[derive(Debug, serde::Deserialize)]
 pub struct StaticRecurringEvent {
@@ -622,20 +680,6 @@ pub enum KeepOrReplace<T> {
 	Keep,
 	Replace(T),
 }
-
-
-
-
-// // the bootstrap process ensures there's always a ruleset at the root
-
-// // rulesets can be created or otherwise instantiated in two ways:
-// // - they can be fully created/inserted out of nowhere, such as when the bootstrap cli creates one
-// // - they can be fully created/inserted out of nowhere, but with an actual parent present, such as is done with either a static or dynamic child
-// // - they can be replaced, as in a ruleset can go from one thing to another thing
-
-// // the fully created/inserted cases are all fully the same, it's just whether a parent ruleset is present (and therefore whether the ruleset we're creating relies on the granted visibility/executability of tables/functions from the parent)
-// // the replacement cases are all the same. the ruleset itself is migrated (which might be tricky if objects the children depend on are being changed! the migrations simply have to account for and handle this, there's not much we can do about it, since going bottom up doesn't improve the situation) and then recursively all *static* children are either migrated or kept or deleted according to the mappings given in the candidate object
-
 
 
 pub async fn create_ruleset(
@@ -695,146 +739,20 @@ pub async fn propose_candidate_ruleset(
 	Ok(candidate_uuid)
 }
 
-// pub async fn replace_ruleset(
-// 	server_role_client: &impl db_generated::client::GenericClient,
-// 	migrator_role_config: &PgConfig,
-// 	new_ruleset_id: &uuid::Uuid,
-// ) -> Result<(), postgres::Error> {
-// 	let db_migration = queries::rulesets::apply_candidate().bind(server_role_client, new_ruleset_id).one().await?;
+pub async fn replace_ruleset(
+	server_role_client: &PgClient,
+	migrator_role_config: &PgConfig,
+	new_ruleset_id: &uuid::Uuid,
+) -> Result<(), postgres::Error> {
+	let db_migration = queries::rulesets::apply_candidate().bind(server_role_client, new_ruleset_id).one().await?;
 
-// 	let (migrator_client, migrator_connection) = migrator_role_config.connect(postgres::NoTls).await?;
-// 	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
-// 	migrator_client.batch_execute(&db_migration).await?;
-// 	Ok(())
-// }
+	// TODO perform replacments for all the children as well
 
-// pub async fn delete_ruleset() -> () {
-// 	unimplemented!()
-// }
-
-
-// // TODO use temp container dbs for these, which means you don't even need all this connection info!
-// async fn validate_candidate(
-// 	current_full_path: &str,
-// 	server_role_config: &PgConfig,
-// 	server_role_client: &PgClient,
-// 	candidate: &BundledRuleset,
-// ) -> Result<(Vec<String>, Vec<String>), RuntimeError> {
-// 	let inner = Runtime::new(&candidate.code).await?;
-
-// 	let inner_state = inner.js_runtime.op_state();
-// 	let inner_state = inner_state.as_ref().borrow();
-// 	let fn_map = inner_state.borrow::<super::VotebaseFnMap>();
-// 	let mut actions = vec![];
-// 	let mut views = vec![];
-// 	for (fn_name, fn_type) in fn_map {
-// 		match fn_type {
-// 			super::VotebaseFn::Action(_) => { actions.push(fn_name.to_owned()) },
-// 			super::VotebaseFn::View(_) => { views.push(fn_name.to_owned()) },
-// 		}
-// 	}
-
-// 	let pgschema = format_ruleset_schema(current_full_path);
-// 	let declared_full_path = &format!("{current_full_path}|declared");
-// 	let (declared_tempdb_config, declared_dbname) = new_tempdb(&pgschema, declared_full_path, server_role_config, server_role_client)
-// 		.await?;
-// 	let intended_full_path = &format!("{current_full_path}|actual");
-// 	let (actual_tempdb_config, actual_dbname) = new_tempdb(&pgschema, intended_full_path, server_role_config, server_role_client)
-// 		.await?;
-
-// 	let result = (|| async {
-// 		let (declared_client, declared_conn) = declared_tempdb_config.connect(postgres::NoTls).await?;
-// 		tokio::spawn(async move { if let Err(e) = declared_conn.await { log::error!("DB connection error: {}", e); } });
-// 		declared_client.batch_execute(&format!(r#"create schema "{pgschema}";"#)).await?;
-// 		declared_client.batch_execute(&candidate.db_schema).await?;
-
-// 		let current_schema = compute_diff(&pgschema, &actual_tempdb_config, server_role_config).await?;
-// 		let (actual_client, actual_conn) = actual_tempdb_config.connect(postgres::NoTls).await?;
-// 		tokio::spawn(async move { if let Err(e) = actual_conn.await { log::error!("DB connection error: {}", e); } });
-// 		actual_client.batch_execute(&current_schema).await?;
-// 		actual_client.batch_execute(&candidate.db_migration).await?;
-
-// 		let diff = compute_diff(&pgschema, &declared_tempdb_config, &actual_tempdb_config).await?;
-// 		if !diff.is_empty() {
-// 			log::error!("{}", diff);
-// 			Err(RuntimeError::OtherError(format!("candidate for {current_full_path} has misdeclared schema")))
-// 		}
-// 		else { Ok(()) }
-// 	})().await;
-
-// 	let (drop_declared, drop_actual) = tokio::join!(
-// 		async { drop_tempdb(declared_dbname, server_role_client).await },
-// 		async { drop_tempdb(actual_dbname, server_role_client).await },
-// 	);
-// 	drop_declared?;
-// 	drop_actual?;
-// 	result?;
-
-// 	Ok((actions, views))
-// }
-
-// const TEMP_DB_COMMENT: &'static str = "'TEMP DB CREATED BY votebase'";
-
-// async fn new_tempdb(
-// 	pgschema: &str,
-// 	intended_full_path: &str,
-// 	base_config: &PgConfig,
-// 	base_client: &impl postgres::GenericClient,
-// ) -> Result<(PgConfig, String), postgres::Error> {
-// 	let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-// 	let intended_full_path = format_ruleset_schema(intended_full_path);
-// 	let dbname = format!("temp_db:{intended_full_path}|{now}");
-
-// 	// TODO is it possible to do this create database in the same query?
-// 	base_client.batch_execute(&format!(r#"create database "{dbname}";"#)).await?;
-// 	base_client.batch_execute(&format!(r#"
-// 		alter database "{dbname}" set search_path = '{pgschema}';
-// 		comment on database "{dbname}" is {TEMP_DB_COMMENT};
-// 	"#)).await?;
-
-// 	let mut config = base_config.clone();
-// 	config.dbname(&dbname);
-// 	Ok((config, dbname))
-// }
-
-// async fn drop_tempdb(dbname: String, base_client: &impl postgres::GenericClient) -> Result<(), postgres::Error> {
-// 	base_client.batch_execute(&format!(r#"drop database if exists "{dbname}";"#)).await?;
-// 	Ok(())
-// }
-
-// pub async fn compute_diff(
-// 	pgschema: impl AsRef<str>,
-// 	from_config: &PgConfig,
-// 	to_config: &PgConfig,
-// ) -> Result<String, RuntimeError> {
-// 	// #[cfg(debug_assertions)]
-// 	// let mut command = {
-// 	// 	let mut command = tokio::process::Command::new("uv");
-// 	// 	command.args("tool run -p 3.11 --with psycopg2-binary --with setuptools migra".split_whitespace());
-// 	// 	command
-// 	// };
-// 	// #[cfg(not(debug_assertions))]
-// 	// let mut command = tokio::process::Command::new("migra");
-
-// 	let from_url = crate::url_encoded_connection_string(from_config);
-// 	let to_url = crate::url_encoded_connection_string(to_config);
-
-// 	let output = temp_container_utils::podman_run(
-// 		"votebase-dbdiff",
-// 		&[],
-// 		// TODO
-// 		// &["--network", &format!("container:{}", db_container_name.as_ref())],
-// 		&["--with-privileges", "--schema", pgschema.as_ref(), &from_url, &to_url],
-// 	).await?;
-
-// 	// if !output.stderr.is_empty() {
-// 	if !output.status.success() {
-// 		let e = format!("dbdiff failed: {}\n\n{}", output.status, String::from_utf8_lossy(&output.stderr));
-// 		return Err(RuntimeError::OtherError(e));
-// 	}
-// 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-// }
-
+	let (migrator_client, migrator_connection) = migrator_role_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
+	migrator_client.batch_execute(&db_migration).await?;
+	Ok(())
+}
 
 // op_propose_self_replacement: (candidate: BundledRuleset) => Promise<string>,
 #[deno_core::op2(async, reentrant)]
@@ -891,28 +809,32 @@ pub async fn op_propose_self_replacement(
 // op_replace_child: (candidate_id: string) => Promise<void>,
 
 
-// enum JoinOption<T1, T2> {
-// 	Left(T1),
-// 	Right(T2),
-// 	Both(T1, T2),
-// }
+enum JoinOption<T1, T2> {
+	Left(T1),
+	Right(T2),
+	Both(T1, T2),
+}
 
 fn outer_join<'a, V1, V2>(
 	map1: &'a HashMap<String, V1>,
 	map2: &'a HashMap<String, V2>
-) -> HashMap<&'a String, (Option<&'a V1>, Option<&'a V2>)> {
+) -> HashMap<&'a String, JoinOption<&'a V1, &'a V2>> {
 	let mut result = HashMap::new();
+	use JoinOption::*;
 
 	for (k, v) in map1 {
-		result.insert(k, (Some(v), None));
+		result.insert(k, Left(v));
 	}
 	for (k, v) in map2 {
 		match result.entry(k) {
 			std::collections::hash_map::Entry::Occupied(mut entry) => {
-				entry.get_mut().1 = Some(v);
+				if let Left(l) = entry.get() {
+					entry.insert(Both(l, v));
+				}
+				else { unreachable!() };
 			},
 			std::collections::hash_map::Entry::Vacant(entry) => {
-				entry.insert((None, Some(v)));
+				entry.insert(Right(v));
 			},
 		}
 	}
