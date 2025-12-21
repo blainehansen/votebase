@@ -51,7 +51,8 @@ create table votebase_catalog.ruleset (
 	view_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
 
 	code text not null,
-	db_schema text not null
+	db_schema text not null,
+	db_uses jsonb not null
 );
 
 create function votebase_catalog.drop_ruleset_schema_on_delete() returns trigger as $$

@@ -21,6 +21,10 @@ pub enum ValidationError {
 	UnspecifiedStaticChild(String),
 	#[error("the typescript code has errors\n\n{0}")]
 	InvalidTs(String),
+	#[error("the uses of the rulesets have been violated\n\n{0:?}")]
+	InvalidUses(Vec<String>),
+	#[error("the database contains `uses` items that are corrupted!\n\n{0}")]
+	CorruptedUses(serde_json::Error),
 	#[error(transparent)]
 	RuntimeRejected(#[from] RuntimeError),
 	#[error(transparent)]
@@ -68,7 +72,20 @@ async fn validate_bundled_ruleset_top(
 
 		validate_bundled_ruleset(&full_path, &ctx, prev_bundled_ruleset, next_bundled_ruleset).await?;
 
-		let uses_result = validate_schema_uses(possibly_effected_objects, existent_objects_by_ruleset_path_and_name);
+		// both possibly_effected_uses and existent_objects_by_ruleset_path_and_name come from the now updated state of the database
+		// TODO but that's a problem, because the way we just constructed the migrate database isn't real! we need to put all the right information in the database so it can be fetched out at the end
+		let possibly_effected_uses = queries::rulesets::get_possibly_effected_uses().bind(&ctx.migrate_server_client)
+			.map(|u| {
+				let uses = serde_json::from_str::<Vec<ConcreteUse>>(u.db_uses.0.get())?;
+				// this to_string() is probably not necessary in some arrangement, it seems possible to get possibly_effected_uses to be borrowing from the raw result or whatever's underneath this thing, but for now it's fine
+				Ok((u.using_full_path.to_string(), uses))
+			})
+			.all().await?.into_iter().collect::<Result<_, _>>()
+			.map_err(ValidationError::CorruptedUses)?;
+
+		let existent_objects_by_ruleset_path_and_name = HashMap::new();
+		validate_schema_uses(&possibly_effected_uses, &existent_objects_by_ruleset_path_and_name)
+			.map_err(ValidationError::InvalidUses)?;
 
 		Ok(())
 	}).await?;
@@ -96,19 +113,14 @@ async fn validate_bundled_ruleset(
 	let formatted_ruleset_schema =
 		if prev_bundled_ruleset.is_some() {
 			// for reset delete and recreate the ruleset
-			ctx.reset_server_client.batch_execute(&format!(r#"
-				'drop schema "ruleset:{full_path}" cascade';
-				'drop role "role:{full_path}|migrator"';
-				'drop role "role:{full_path}|action"';
-				'drop role "role:{full_path}|view"';
-			"#)).await?;
+			queries::rulesets::delete_ruleset().bind(&ctx.reset_server_client, &full_path).await?;
 			let (_, formatted_ruleset_schema) = create_ruleset_fake(&ctx.reset_config, &ctx.reset_server_client, full_path, &next_bundled_ruleset.db_schema).await?;
 
 			// for migrate just apply the migration!
-			// TODO the tricky part is you need the migrator password...
-			let (migrator_client, migrator_connection) = migrator_config.connect(postgres::NoTls).await?;
-			tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
-			migrator_client.batch_execute(next_bundled_ruleset.db_schema).await?;
+			let migrator_pass = queries::rulesets::get_ruleset_migrator().bind(&ctx.migrate_server_client, &full_path).one().await?;
+			let migrator_config = { let mut c = ctx.migrate_config.clone(); c.password(migrator_pass); c };
+			let migrator_client = pg_con(&migrator_config).await?;
+			migrator_client.batch_execute(&next_bundled_ruleset.db_migration).await?;
 
 			formatted_ruleset_schema
 		}
@@ -162,8 +174,8 @@ async fn validate_bundled_ruleset_children(
 
 				match join_option {
 					JoinOption::Left(prev_ruleset) => {
-						delete_ruleset(&full_path, prev_ruleset, &ctx.reset_server_client).await?;
-						delete_ruleset(&full_path, prev_ruleset, &ctx.migrate_server_client).await?;
+						recursively_delete_ruleset(&full_path, prev_ruleset, &ctx.reset_server_client).await?;
+						recursively_delete_ruleset(&full_path, prev_ruleset, &ctx.migrate_server_client).await?;
 					},
 
 					JoinOption::Right(KeepOrReplace::Replace(next_ruleset)) => {
@@ -177,7 +189,7 @@ async fn validate_bundled_ruleset_children(
 						validate_bundled_ruleset(&full_path, ctx, Some(prev_ruleset), next_ruleset).await?;
 					},
 					JoinOption::Both(_prev_ruleset, KeepOrReplace::Keep) => {
-						// do nothing! this branch of the tree remains
+						// do nothing! this branch of the tree remains as is
 					},
 				}
 			}
@@ -187,7 +199,7 @@ async fn validate_bundled_ruleset_children(
 	}
 }
 
-pub async fn delete_ruleset(
+pub async fn recursively_delete_ruleset(
 	full_path: &str,
 	ruleset: &StoredRuleset,
 	server_client: &PgClient,
@@ -198,7 +210,7 @@ pub async fn delete_ruleset(
 		let child_full_path = crate::format_full_path(Some(full_path), &child_name);
 
 		Box::pin(
-			delete_ruleset(&child_full_path, &child_ruleset, server_client)
+			recursively_delete_ruleset(&child_full_path, &child_ruleset, server_client)
 		).await?;
 	}
 
@@ -230,8 +242,7 @@ pub async fn create_ruleset_fake(
 	migrator_config.user(formatted_ruleset_role_migrator);
 	migrator_config.password("migrator_pass");
 
-	let (migrator_client, migrator_connection) = migrator_config.connect(postgres::NoTls).await?;
-	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
+	let migrator_client = pg_con(&migrator_config).await?;
 	migrator_client.batch_execute(db_schema).await?;
 
 	Ok((migrator_client, formatted_ruleset_schema))
@@ -341,17 +352,20 @@ pub async fn create_ruleset_fake(
 // 	Ok(())
 // }
 
-struct ConcreteUsage {
+#[derive(Debug, serde::Deserialize)]
+struct ConcreteUse {
 	ruleset_path: String,
 	object_name: String,
-	usage_kind: UsageKind,
+	use_kind: UseKind,
 }
 
-enum UsageKind {
-	Table { can_query: bool, columns: Vec<UsageColumn> },
+#[derive(Debug, serde::Deserialize)]
+enum UseKind {
+	Table { can_query: bool, columns: Vec<UseColumn> },
 	Function { is_action: bool, params: Vec<String>, return_type: String },
 }
-struct UsageColumn {
+#[derive(Debug, serde::Deserialize)]
+struct UseColumn {
 	name: String,
 	pg_type: String,
 	can_null: bool,
@@ -378,19 +392,19 @@ enum UseableDbObject {
 	Function { is_action: bool, params: Vec<RoughParam>, return_type: String },
 }
 
-fn construct_abstract_usage_standin(usage_kind: &UsageKind) -> String {
+fn construct_abstract_use_standin(use_kind: &UseKind) -> String {
 	let dummy_name = "TODO".to_string();
 
-	match usage_kind {
-		UsageKind::Table { columns, .. } => {
-			let columns_str = columns.iter().map(|UsageColumn { name, pg_type, can_null }| {
+	match use_kind {
+		UseKind::Table { columns, .. } => {
+			let columns_str = columns.iter().map(|UseColumn { name, pg_type, can_null }| {
 				let null_portion = if *can_null { " not null" } else { "" };
 				format!("{name} {pg_type}{null_portion}")
 			}).collect::<Vec<_>>().join(", ");
 
 			format!("create table {dummy_name} ({columns_str});")
 		},
-		UsageKind::Function { is_action, params, return_type } => {
+		UseKind::Function { is_action, params, return_type } => {
 			let volatility = if *is_action { "volatile" } else { "stable" };
 			let params_str = params.into_iter().enumerate()
 				.map(|(idx, pg_type)| format!("_{idx} {pg_type}"))
@@ -401,82 +415,84 @@ fn construct_abstract_usage_standin(usage_kind: &UsageKind) -> String {
 }
 
 fn validate_schema_uses(
-	possibly_effected_objects: &Vec<(String, ConcreteUsage)>,
+	possibly_effected_uses: &Vec<(String, Vec<ConcreteUse>)>,
 	existent_objects_by_ruleset_path_and_name: &HashMap<(&str, &str), UseableObject>,
 ) -> Result<(), Vec<String>> {
 	let mut errors = vec![];
 
-	for (using_ruleset_path, ConcreteUsage { ruleset_path, object_name, usage_kind }) in possibly_effected_objects {
-		if let Some(UseableObject { db_object, .. }) = existent_objects_by_ruleset_path_and_name.get(&(ruleset_path, object_name)) {
-			match (usage_kind, db_object) {
-				(
-					UsageKind::Table { can_query: usage_can_query, columns: usage_columns },
-					UseableDbObject::Table { can_query: usable_can_query, columns: usable_columns },
-				) => {
-					if *usage_can_query && !usable_can_query {
-						errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name} as queryable, but that isn't allowed"));
-						continue
-					}
+	for (using_ruleset_path, concrete_uses) in possibly_effected_uses {
+		for ConcreteUse { ruleset_path, object_name, use_kind } in concrete_uses {
+			if let Some(UseableObject { db_object, .. }) = existent_objects_by_ruleset_path_and_name.get(&(ruleset_path, object_name)) {
+				match (use_kind, db_object) {
+					(
+						UseKind::Table { can_query: use_can_query, columns: use_columns },
+						UseableDbObject::Table { can_query: usable_can_query, columns: usable_columns },
+					) => {
+						if *use_can_query && !usable_can_query {
+							errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name} as queryable, but that isn't allowed"));
+							continue
+						}
 
-					for UsageColumn { name: usage_col_name, pg_type: usage_col_pg_type_name, can_null } in usage_columns {
-						match usable_columns.iter().find(|c| &c.name == usage_col_name) {
-							Some(usable_col) => {
-								if &usable_col.pg_type_name != usage_col_pg_type_name {
+						for UseColumn { name: use_col_name, pg_type: use_col_pg_type_name, can_null } in use_columns {
+							match usable_columns.iter().find(|c| &c.name == use_col_name) {
+								Some(usable_col) => {
+									if &usable_col.pg_type_name != use_col_pg_type_name {
+										errors.push(format!(
+											"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{use_col_name} as type {use_col_pg_type_name}, but available type is {}",
+											usable_col.pg_type_name
+										));
+									}
+									if usable_col.not_null && *can_null {
+										errors.push(format!(
+											"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{use_col_name} expecting not null, but available type is nullable",
+										));
+									}
+								},
+								None => {
 									errors.push(format!(
-										"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{usage_col_name} as type {usage_col_pg_type_name}, but available type is {}",
-										usable_col.pg_type_name
+										"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{use_col_name}, but that column is not available"
 									));
 								}
-								if usable_col.not_null && *can_null {
-									errors.push(format!(
-										"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{usage_col_name} expecting not null, but available type is nullable",
-									));
-								}
-							},
-							None => {
+							}
+						}
+					},
+
+					(
+						UseKind::Function { is_action: use_is_action, params: use_params, return_type: use_return_type },
+						UseableDbObject::Function { is_action: usable_is_action, params: usable_params, return_type: usable_return_type },
+					) => {
+						if *use_is_action && !usable_is_action {
+							errors.push(format!("ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} as volatile, but that isn't allowed"));
+						}
+						if use_return_type != usable_return_type {
+							errors.push(format!("ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} with return type {use_return_type}, but it returns {usable_return_type}"));
+						}
+
+						if use_params.len() != usable_params.len() {
+							errors.push(format!(
+								"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} with {} params, but it has {} params",
+								use_params.len(),
+								usable_params.len(),
+							));
+							continue
+						}
+						for (i, (use_param_type, usable_param)) in use_params.iter().zip(usable_params.iter()).enumerate() {
+							if use_param_type != &usable_param.pg_type_name {
 								errors.push(format!(
-									"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{usage_col_name}, but that column is not available"
+									"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} param {} (position {}) as type {}, but available type is {}",
+									usable_param.name, i, use_param_type, usable_param.pg_type_name,
 								));
 							}
 						}
+					},
+					_ => {
+						errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
 					}
-				},
-
-				(
-					UsageKind::Function { is_action: usage_is_action, params: usage_params, return_type: usage_return_type },
-					UseableDbObject::Function { is_action: usable_is_action, params: usable_params, return_type: usable_return_type },
-				) => {
-					if *usage_is_action && !usable_is_action {
-						errors.push(format!("ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} as volatile, but that isn't allowed"));
-					}
-					if usage_return_type != usable_return_type {
-						errors.push(format!("ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} with return type {usage_return_type}, but it returns {usable_return_type}"));
-					}
-
-					if usage_params.len() != usable_params.len() {
-						errors.push(format!(
-							"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} with {} params, but it has {} params",
-							usage_params.len(),
-							usable_params.len(),
-						));
-						continue
-					}
-					for (i, (usage_param_type, usable_param)) in usage_params.iter().zip(usable_params.iter()).enumerate() {
-						if usage_param_type != &usable_param.pg_type_name {
-							errors.push(format!(
-								"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} param {} (position {}) as type {}, but available type is {}",
-								usable_param.name, i, usage_param_type, usable_param.pg_type_name,
-							));
-						}
-					}
-				},
-				_ => {
-					errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
 				}
 			}
-		}
-		else {
-			errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
+			else {
+				errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
+			}
 		}
 	}
 
@@ -627,7 +643,7 @@ struct BundledRuleset {
 	/// This will be checked to ensure it actually goes from the *current* state of the `Ruleset` database to the one declared in `db_schema`.
 	db_migration: String,
 	/// The fully qualified names of all the database objects this `Ruleset` uses as its `requires`.
-	db_uses: Vec<String>,
+	db_uses: Vec<ConcreteUse>,
 	/// A mapping of the static children of this `Ruleset`, with some being simply `"keep"`, meaning to leave it as is.
 	/// If this `Ruleset` replaces the existing one, this will be the absolute state of the static children, with any existing ones changed to match their new description and extra ones recursively deleted.
 	static_children: HashMap<String, KeepOrReplace<BundledRuleset>>,
