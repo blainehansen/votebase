@@ -163,35 +163,6 @@ async fn validate_bundled_ruleset(
 	// ensure the runtime is okay with it
 	Runtime::new(&next_bundled_ruleset.code).await?;
 
-	let db_uses_functions = next_bundled_ruleset.db_uses.iter().filter_map(|u| {
-		match &u.use_kind {
-			UseKind::Function { is_action, params, return_type } => Some(DbUsesFunctionStructParams {
-				ruleset_path: &u.ruleset_path,
-				object_name: &u.object_name,
-				is_action: *is_action,
-				params: params.iter().map(AsRef::as_ref).collect::<Vec<_>>().as_slice(),
-				return_type: &return_type,
-			}),
-			_ => None,
-		}
-	}).collect::<Vec<_>>();
-
-	let db_uses_tables = next_bundled_ruleset.db_uses.iter().filter_map(|u| {
-		match &u.use_kind {
-			UseKind::Table { can_query, columns } => Some(DbUsesTableStructParams {
-				ruleset_path: &u.ruleset_path,
-				object_name: &u.object_name,
-				can_query: *can_query,
-				columns: columns.iter().map(|c| DbUsesColumnStructBorrowed {
-					name: &c.name,
-					typ: &c.pg_type,
-					can_null: c.can_null,
-				}).collect::<Vec<_>>().as_slice(),
-			}),
-			_ => None,
-		}
-	}).collect::<Vec<_>>();
-
 	let formatted_ruleset_schema =
 		if prev_bundled_ruleset.is_some() {
 			// for reset delete and recreate the ruleset
@@ -199,7 +170,7 @@ async fn validate_bundled_ruleset(
 			let (_, formatted_ruleset_schema) = create_ruleset_validation(
 				&ctx.reset_config, &ctx.reset_server_client, parent_full_path, ruleset_name,
 				&next_bundled_ruleset.code, &next_bundled_ruleset.db_schema,
-				&db_uses_functions, &db_uses_tables,
+				&next_bundled_ruleset.db_uses,
 			).await?;
 
 			// for migrate just apply the migration!
@@ -215,12 +186,12 @@ async fn validate_bundled_ruleset(
 			let (_, formatted_ruleset_schema) = create_ruleset_validation(
 				&ctx.reset_config, &ctx.reset_server_client, parent_full_path, ruleset_name,
 				&next_bundled_ruleset.code, &next_bundled_ruleset.db_schema,
-				&db_uses_functions, &db_uses_tables,
+				&next_bundled_ruleset.db_uses,
 			).await?;
 			let (_, _) = create_ruleset_validation(
 				&ctx.migrate_config, &ctx.migrate_server_client, parent_full_path, ruleset_name,
 				&next_bundled_ruleset.code, &next_bundled_ruleset.db_migration,
-				&db_uses_functions, &db_uses_tables,
+				&next_bundled_ruleset.db_uses,
 			).await?;
 
 			formatted_ruleset_schema
@@ -812,12 +783,62 @@ pub async fn create_ruleset<'u>(
 	Ok(migrator_client)
 }
 
-pub async fn create_ruleset_validation<'u>(
+pub async fn create_ruleset_validation(
 	base_config: &PgConfig, client: &PgClient,
 	parent_full_path: Option<&str>, name: &str,
 	ruleset_code: &str, db_schema: &str,
-	db_uses_functions: &Vec<DbUsesFunctionStructParams<'u>>, db_uses_tables: &Vec<DbUsesTableStructParams<'u>>,
+	db_uses: &Vec<ConcreteUse>,
 ) -> Result<(PgClient, String), postgres::Error> {
+	// Pre-collect the param slices for functions
+	let function_params: Vec<Vec<&str>> = db_uses.iter().filter_map(|u| {
+		match &u.use_kind {
+			UseKind::Function { params, .. } => Some(params.iter().map(AsRef::as_ref).collect()),
+			_ => None,
+		}
+	}).collect();
+
+	// Pre-collect the column slices for tables
+	let table_columns: Vec<Vec<DbUsesColumnStructBorrowed>> = db_uses.iter().filter_map(|u| {
+		match &u.use_kind {
+			UseKind::Table { columns, .. } => Some(columns.iter().map(|c| DbUsesColumnStructBorrowed {
+				name: &c.name,
+				typ: &c.pg_type,
+				can_null: c.can_null,
+			}).collect()),
+			_ => None,
+		}
+	}).collect();
+
+	// Collect the actual structs
+	let db_uses_functions: Vec<DbUsesFunctionStructParams> = db_uses.iter()
+		.filter_map(|u| match &u.use_kind {
+			UseKind::Function { is_action, return_type, .. } => Some((u, is_action, return_type)),
+			_ => None,
+		})
+		.zip(function_params.iter())
+		.map(|((u, is_action, return_type), params)| DbUsesFunctionStructParams {
+			ruleset_path: &u.ruleset_path,
+			object_name: &u.object_name,
+			is_action: *is_action,
+			params: params.as_slice(),
+			return_type: return_type,
+		})
+		.collect();
+
+	let db_uses_tables: Vec<DbUsesTableStructParams> = db_uses.iter()
+		.filter_map(|u| match &u.use_kind {
+			UseKind::Table { can_query, .. } => Some((u, can_query)),
+			_ => None,
+		})
+		.zip(table_columns.iter())
+		.map(|((u, can_query), columns)| DbUsesTableStructParams {
+			ruleset_path: &u.ruleset_path,
+			object_name: &u.object_name,
+			can_query: *can_query,
+			columns: columns.as_slice(),
+		})
+		.collect();
+
 	let ruleset_row = queries::rulesets::insert_ruleset()
 		.bind(client, &parent_full_path, &name, &(&[] as &[String]), &(&[] as &[String]), &ruleset_code, &db_schema, &db_uses_functions, &db_uses_tables).one().await?;
 
