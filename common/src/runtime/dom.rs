@@ -10,7 +10,8 @@ pub async fn op_fetch(
 	state: Rc<RefCell<OpState>>,
 	#[string] url: String,
 ) -> Result<String, deno_error::JsErrorBox> {
-	demand_external_allowed(state.as_ref())?;
+	let state = state.as_ref().borrow();
+	demand_external_allowed(&state)?;
 
 	let body = reqwest::get(url).await.map_err(js_err)?.text().await.map_err(js_err)?;
 	Ok(body)

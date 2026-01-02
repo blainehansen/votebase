@@ -22,9 +22,10 @@ futures = { workspace = true }
 walkdir = { workspace = true }
 sqlparser = { version = "0.60", features = ["visitor"] }
 postgres-from-row = "0.5"
-futures-util = "0.3"
+tokio-stream = { workspace = true }
 reqwest = "0.12"
 percent-encoding = { workspace = true }
+hashbrown = { workspace = true }
 
 
 [dev-dependencies]

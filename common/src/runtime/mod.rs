@@ -18,7 +18,7 @@ use dom::{op_fetch};
 
 use deno_core::{v8, OpState};
 use log::info;
-use crate::{FnRolePg, FnServerPg, FnType, PgClient, PgConfig, PgPool, RoleType, format_ruleset_role, postgres /*format_ruleset_schema*/};
+use crate::{postgres, FnRolePg, FnServerPg, FnType, PgClient, PgConfig, PgPool, RoleType, format_ruleset_role /*format_ruleset_schema*/};
 
 // TODO RuntimeError should be narrowed to only the things that can go wrong during deno execution, and other broader errors should contain it
 
@@ -271,11 +271,7 @@ pub async fn run_view(
 	server_role_pool: PgPool,
 	scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<String, RuntimeError> {
-	FnRolePg::for_role(base_config, &current_full_path, RoleType::View, view_pass);
-
-	let view_role = format_ruleset_role(&current_full_path, RoleType::View);
-	let mut view_role_config = server_role_config.clone();
-	view_role_config.user(view_role).password(view_pass);
+	let view_role_config = FnRolePg::for_role(&current_full_path, &base_config, RoleType::View, view_pass);
 
 	run_function(
 		ruleset_code, view_name, query, FnType::View,

@@ -34,6 +34,19 @@ alter default privileges in schema votebase_catalog grant all privileges on type
 create extension if not exists pgcrypto with schema votebase_catalog;
 
 
+create type votebase_catalog.rough_param_struct as (name text, typ text);
+create type votebase_catalog.rough_column_struct as (name text, typ text, not_null boolean);
+
+create type votebase_catalog.db_uses_function_struct as (
+	ruleset_path text, object_name text,
+	is_action boolean, return_type text, params text[]
+);
+create type votebase_catalog.db_uses_column_struct as (name text, typ text, can_null boolean);
+create type votebase_catalog.db_uses_table_struct as (
+	ruleset_path text, object_name text,
+	can_query boolean, columns votebase_catalog.db_uses_column_struct[]
+);
+
 create table votebase_catalog.ruleset (
 	full_path text primary key generated always as (case
 		when parent_full_path is null then "name"
@@ -52,7 +65,8 @@ create table votebase_catalog.ruleset (
 
 	code text not null,
 	db_schema text not null,
-	db_uses jsonb not null
+	db_uses_functions votebase_catalog.db_uses_function_struct[] not null,
+	db_uses_tables votebase_catalog.db_uses_table_struct[] not null
 );
 
 create function votebase_catalog.drop_ruleset_schema_on_delete() returns trigger as $$

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, cell::RefCell, rc::Rc};
 use deno_core::OpState;
-use crate::db_types::votebase_catalog::GranularityEnum;
+use crate::db_types::votebase_catalog::{GranularityEnum, DbUsesFunctionStructParams, DbUsesTableStructParams, DbUsesColumnStructBorrowed};
 use crate::runtime::RunInfo;
 use crate::{PgClient, PgConfig, RoleType, format_ruleset_role, format_ruleset_schema, postgres, queries};
 
@@ -23,8 +23,7 @@ pub enum ValidationError {
 	InvalidTs(String),
 	#[error("the uses of the rulesets have been violated\n\n{0:?}")]
 	InvalidUses(Vec<String>),
-	#[error("the database contains `uses` items that are corrupted!\n\n{0}")]
-	CorruptedUses(serde_json::Error),
+
 	#[error(transparent)]
 	RuntimeRejected(#[from] RuntimeError),
 	#[error(transparent)]
@@ -72,18 +71,71 @@ async fn validate_bundled_ruleset_top(
 
 		validate_bundled_ruleset(&full_path, &ctx, prev_bundled_ruleset, next_bundled_ruleset).await?;
 
+		// TODO it would be nice to figure out how to try_join all these below queries
+
 		// both possibly_effected_uses and existent_objects_by_ruleset_path_and_name come from the now updated state of the database
 		// TODO but that's a problem, because the way we just constructed the migrate database isn't real! we need to put all the right information in the database so it can be fetched out at the end
 		let possibly_effected_uses = queries::rulesets::get_possibly_effected_uses().bind(&ctx.migrate_server_client)
 			.map(|u| {
-				let uses = serde_json::from_str::<Vec<ConcreteUse>>(u.db_uses.0.get())?;
-				// this to_string() is probably not necessary in some arrangement, it seems possible to get possibly_effected_uses to be borrowing from the raw result or whatever's underneath this thing, but for now it's fine
-				Ok((u.using_full_path.to_string(), uses))
-			})
-			.all().await?.into_iter().collect::<Result<_, _>>()
-			.map_err(ValidationError::CorruptedUses)?;
+				let uses =
+					u.db_uses_functions.map(|f| ConcreteUse {
+						ruleset_path: f.ruleset_path.to_string(),
+						object_name: f.object_name.to_string(),
+						use_kind: UseKind::Function {
+							is_action: f.is_action,
+							params: f.params.map(|p| p.to_string()).collect(),
+							return_type: f.return_type.to_string(),
+						},
+					})
+					.chain(u.db_uses_tables.map(|t| ConcreteUse {
+						ruleset_path: t.ruleset_path.to_string(),
+						object_name: t.object_name.to_string(),
+						use_kind: UseKind::Table {
+							can_query: t.can_query,
+							columns: t.columns.map(|c| UseColumn {
+								name: c.name.to_string(),
+								pg_type: c.typ.to_string(),
+								can_null: c.can_null,
+							}).collect(),
+						},
+					}))
+					.collect();
 
-		let existent_objects_by_ruleset_path_and_name = HashMap::new();
+				// this to_string() is probably not necessary in some arrangement, it seems possible to get possibly_effected_uses to be borrowing from the raw result or whatever's underneath this thing, but for now it's fine
+				(u.using_full_path.to_string(), uses)
+			})
+			.all().await?;
+
+		let usable_columns = queries::rulesets::get_usable_columns().bind(&ctx.migrate_server_client)
+			.map(|u| UseableObject {
+				ruleset_path: u.schema_name[8..].to_string(),
+				object_name: u.table_name.to_string(),
+				db_object: UseableDbObject::Table {
+					can_query: true, // TODO this will be determined later by the exposes system. for now it's always true
+					columns: u.columns.map(|col| RoughColumn {
+						name: col.name.to_string(),
+						not_null: col.not_null,
+						pg_type_name: col.typ.to_string(),
+					}).collect(),
+				},
+			})
+			.iter().await?;
+
+		let usable_functions = queries::rulesets::get_usable_functions().bind(&ctx.migrate_server_client)
+			.map(|u| UseableObject {
+				ruleset_path: u.schema_name[8..].to_string(),
+				object_name: u.function_name.to_string(),
+				db_object: UseableDbObject::Function {
+					is_action: u.is_action,
+					params: u.params.map(|param| RoughParam { name: param.name.to_string(), pg_type_name: param.typ.to_string() }).collect(),
+					return_type: u.return_type.to_string(),
+				},
+			})
+			.iter().await?;
+
+		use futures::TryStreamExt;
+		use tokio_stream::StreamExt as TokioStreamExt;
+		let existent_objects_by_ruleset_path_and_name = usable_columns.merge(usable_functions).try_collect().await?;
 		validate_schema_uses(&possibly_effected_uses, &existent_objects_by_ruleset_path_and_name)
 			.map_err(ValidationError::InvalidUses)?;
 
@@ -97,6 +149,7 @@ async fn validate_bundled_ruleset_top(
 
 async fn validate_bundled_ruleset(
 	full_path: &str,
+	parent_full_path: Option<&str>, ruleset_name: &str,
 	ctx: &ValidateCtx,
 	prev_bundled_ruleset: Option<&StoredRuleset>,
 	next_bundled_ruleset: &BundledRuleset,
@@ -110,11 +163,44 @@ async fn validate_bundled_ruleset(
 	// ensure the runtime is okay with it
 	Runtime::new(&next_bundled_ruleset.code).await?;
 
+	let db_uses_functions = next_bundled_ruleset.db_uses.iter().filter_map(|u| {
+		match &u.use_kind {
+			UseKind::Function { is_action, params, return_type } => Some(DbUsesFunctionStructParams {
+				ruleset_path: &u.ruleset_path,
+				object_name: &u.object_name,
+				is_action: *is_action,
+				params: params.iter().map(AsRef::as_ref).collect::<Vec<_>>().as_slice(),
+				return_type: &return_type,
+			}),
+			_ => None,
+		}
+	}).collect::<Vec<_>>();
+
+	let db_uses_tables = next_bundled_ruleset.db_uses.iter().filter_map(|u| {
+		match &u.use_kind {
+			UseKind::Table { can_query, columns } => Some(DbUsesTableStructParams {
+				ruleset_path: &u.ruleset_path,
+				object_name: &u.object_name,
+				can_query: *can_query,
+				columns: columns.iter().map(|c| DbUsesColumnStructBorrowed {
+					name: &c.name,
+					typ: &c.pg_type,
+					can_null: c.can_null,
+				}).collect::<Vec<_>>().as_slice(),
+			}),
+			_ => None,
+		}
+	}).collect::<Vec<_>>();
+
 	let formatted_ruleset_schema =
 		if prev_bundled_ruleset.is_some() {
 			// for reset delete and recreate the ruleset
 			queries::rulesets::delete_ruleset().bind(&ctx.reset_server_client, &full_path).await?;
-			let (_, formatted_ruleset_schema) = create_ruleset_fake(&ctx.reset_config, &ctx.reset_server_client, full_path, &next_bundled_ruleset.db_schema).await?;
+			let (_, formatted_ruleset_schema) = create_ruleset_validation(
+				&ctx.reset_config, &ctx.reset_server_client, parent_full_path, ruleset_name,
+				&next_bundled_ruleset.code, &next_bundled_ruleset.db_schema,
+				&db_uses_functions, &db_uses_tables,
+			).await?;
 
 			// for migrate just apply the migration!
 			let migrator_pass = queries::rulesets::get_ruleset_migrator().bind(&ctx.migrate_server_client, &full_path).one().await?;
@@ -126,8 +212,16 @@ async fn validate_bundled_ruleset(
 		}
 		else {
 			// for entirely new rulesets the db_schema and db_migration should be the same!
-			let (_, formatted_ruleset_schema) = create_ruleset_fake(&ctx.reset_config, &ctx.reset_server_client, full_path, &next_bundled_ruleset.db_schema).await?;
-			let (_, _) = create_ruleset_fake(&ctx.migrate_config, &ctx.migrate_server_client, full_path, &next_bundled_ruleset.db_migration).await?;
+			let (_, formatted_ruleset_schema) = create_ruleset_validation(
+				&ctx.reset_config, &ctx.reset_server_client, parent_full_path, ruleset_name,
+				&next_bundled_ruleset.code, &next_bundled_ruleset.db_schema,
+				&db_uses_functions, &db_uses_tables,
+			).await?;
+			let (_, _) = create_ruleset_validation(
+				&ctx.migrate_config, &ctx.migrate_server_client, parent_full_path, ruleset_name,
+				&next_bundled_ruleset.code, &next_bundled_ruleset.db_migration,
+				&db_uses_functions, &db_uses_tables,
+			).await?;
 
 			formatted_ruleset_schema
 		};
@@ -216,38 +310,6 @@ pub async fn recursively_delete_ruleset(
 
 	Ok(())
 }
-
-pub async fn create_ruleset_fake(
-	base_config: &PgConfig, client: &PgClient,
-	full_path: &str,
-	db_schema: &str,
-) -> Result<(PgClient, String), postgres::Error> {
-	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
-	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
-	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
-
-	let formatted_ruleset_schema = format_ruleset_schema(&full_path);
-	let create_sql = format!(include_str!("./create-ruleset.sql"),
-		formatted_ruleset_schema=&formatted_ruleset_schema,
-		formatted_ruleset_role_migrator=formatted_ruleset_role_migrator,
-		formatted_ruleset_role_action=formatted_ruleset_role_action,
-		formatted_ruleset_role_view=formatted_ruleset_role_view,
-		migrator_pass="migrator_pass",
-		action_pass="action_pass",
-		view_pass="view_pass",
-	);
-	client.batch_execute(&create_sql).await?;
-
-	let mut migrator_config = base_config.clone();
-	migrator_config.user(formatted_ruleset_role_migrator);
-	migrator_config.password("migrator_pass");
-
-	let migrator_client = pg_con(&migrator_config).await?;
-	migrator_client.batch_execute(db_schema).await?;
-
-	Ok((migrator_client, formatted_ruleset_schema))
-}
-
 
 // // this function should already have had the "create ruleset" functionality called ahead of time, so the thing we actually have to pass down is a from_config and to_config that are set up for the migrator roles, since those are the ones
 // async fn validate_bundled_ruleset(
@@ -371,26 +433,36 @@ struct UseColumn {
 	can_null: bool,
 }
 
+#[derive(Eq, PartialEq, Hash)]
 struct UseableObject {
 	ruleset_path: String,
 	object_name: String,
 	db_object: UseableDbObject,
 }
-
+#[derive(Eq, PartialEq, Hash)]
+enum UseableDbObject {
+	Table { can_query: bool, columns: Vec<RoughColumn> },
+	Function { is_action: bool, params: Vec<RoughParam>, return_type: String },
+}
+#[derive(Eq, PartialEq, Hash)]
 struct RoughColumn {
 	name: String,
 	not_null: bool,
 	pg_type_name: String,
 }
+#[derive(Eq, PartialEq, Hash)]
 struct RoughParam {
 	name: String,
 	pg_type_name: String,
 }
 
-enum UseableDbObject {
-	Table { can_query: bool, columns: Vec<RoughColumn> },
-	Function { is_action: bool, params: Vec<RoughParam>, return_type: String },
+impl hashbrown::Equivalent<UseableObject> for (&str, &str) {
+	fn equivalent(&self, key: &UseableObject) -> bool {
+		key.ruleset_path.as_str() == self.0 && key.object_name.as_str() == self.1
+	}
 }
+
+
 
 fn construct_abstract_use_standin(use_kind: &UseKind) -> String {
 	let dummy_name = "TODO".to_string();
@@ -416,13 +488,14 @@ fn construct_abstract_use_standin(use_kind: &UseKind) -> String {
 
 fn validate_schema_uses(
 	possibly_effected_uses: &Vec<(String, Vec<ConcreteUse>)>,
-	existent_objects_by_ruleset_path_and_name: &HashMap<(&str, &str), UseableObject>,
+	existent_objects_by_ruleset_path_and_name: &hashbrown::HashSet<UseableObject>,
 ) -> Result<(), Vec<String>> {
 	let mut errors = vec![];
 
 	for (using_ruleset_path, concrete_uses) in possibly_effected_uses {
 		for ConcreteUse { ruleset_path, object_name, use_kind } in concrete_uses {
-			if let Some(UseableObject { db_object, .. }) = existent_objects_by_ruleset_path_and_name.get(&(ruleset_path, object_name)) {
+			let obj = existent_objects_by_ruleset_path_and_name.get(&(ruleset_path.as_str(), object_name.as_str()));
+			if let Some(UseableObject { db_object, .. }) = obj {
 				match (use_kind, db_object) {
 					(
 						UseKind::Table { can_query: use_can_query, columns: use_columns },
@@ -485,12 +558,15 @@ fn validate_schema_uses(
 							}
 						}
 					},
+
 					_ => {
+						// TODO this error needs to be more accurate and helpful
 						errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
 					}
 				}
 			}
 			else {
+				// TODO this error needs to be more accurate and helpful
 				errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
 			}
 		}
@@ -542,12 +618,8 @@ async fn podman_pg_restore(
 	server_db_archive_path: &std::path::Path,
 	// exclude_schema: Option<&str>,
 ) -> std::io::Result<()> {
-	// TODO okay to achieve this, we need to change it so the postgres container that's running has a volume to some directory we can read and write
-	// then we use podman *exec* to run pg_restore/pg_dump inside the container
-	// we actually might not need to bother with the volumes if instead we instead receive stdout into a file in tokio and input to stdin from a file
-
 	// pg_dump outputs to stdout if no --file argument is given, and pg_restore reads from stdin if no --file is given
-	// podman exec db_container_name pg_dump -d db_name -U db_user -f /whatever_volume_name/server_db_archive_path
+	// if you go back to volumes: podman exec db_container_name pg_dump -d db_name -U db_user -f /whatever_volume_name/server_db_archive_path
 
 	let mut command = tokio::process::Command::new("podman");
 	command.arg("exec").arg(db_container_name)
@@ -698,15 +770,16 @@ pub enum KeepOrReplace<T> {
 }
 
 
-pub async fn create_ruleset(
+pub async fn create_ruleset<'u>(
 	base_config: &PgConfig, client: &mut PgClient,
 	parent_full_path: Option<&str>, name: &str,
 	action_names: &Vec<String>, view_names: &Vec<String>,
 	ruleset_code: &str, db_schema: &str,
+	db_uses_functions: &Vec<DbUsesFunctionStructParams<'u>>, db_uses_tables: &Vec<DbUsesTableStructParams<'u>>,
 ) -> Result<PgClient, postgres::Error> {
 	println!("inserting ruleset");
 	let ruleset_row = queries::rulesets::insert_ruleset()
-		.bind(client, &parent_full_path, &name, &action_names, &view_names, &ruleset_code, &db_schema).one().await?;
+		.bind(client, &parent_full_path, &name, &action_names, &view_names, &ruleset_code, &db_schema, &db_uses_functions, &db_uses_tables).one().await?;
 
 	let full_path = ruleset_row.full_path;
 	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
@@ -737,6 +810,43 @@ pub async fn create_ruleset(
 	migrator_client.batch_execute(db_schema).await?;
 
 	Ok(migrator_client)
+}
+
+pub async fn create_ruleset_validation<'u>(
+	base_config: &PgConfig, client: &PgClient,
+	parent_full_path: Option<&str>, name: &str,
+	ruleset_code: &str, db_schema: &str,
+	db_uses_functions: &Vec<DbUsesFunctionStructParams<'u>>, db_uses_tables: &Vec<DbUsesTableStructParams<'u>>,
+) -> Result<(PgClient, String), postgres::Error> {
+	let ruleset_row = queries::rulesets::insert_ruleset()
+		.bind(client, &parent_full_path, &name, &(&[] as &[String]), &(&[] as &[String]), &ruleset_code, &db_schema, &db_uses_functions, &db_uses_tables).one().await?;
+
+	let full_path = ruleset_row.full_path;
+	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
+	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
+	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
+
+	let formatted_ruleset_schema = format_ruleset_schema(&full_path);
+	let create_sql = format!(include_str!("./create-ruleset.sql"),
+		formatted_ruleset_schema=formatted_ruleset_schema,
+		formatted_ruleset_role_migrator=formatted_ruleset_role_migrator,
+		formatted_ruleset_role_action=formatted_ruleset_role_action,
+		formatted_ruleset_role_view=formatted_ruleset_role_view,
+		migrator_pass=ruleset_row.migrator_pass,
+		action_pass=ruleset_row.action_pass,
+		view_pass=ruleset_row.view_pass,
+	);
+	client.batch_execute(&create_sql).await?;
+
+	let mut migrator_config = base_config.clone();
+	migrator_config.user(formatted_ruleset_role_migrator);
+	migrator_config.password(ruleset_row.migrator_pass);
+
+	let (migrator_client, migrator_connection) = migrator_config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = migrator_connection.await { log::error!("DB connection error: {}", e); } });
+	migrator_client.batch_execute(db_schema).await?;
+
+	Ok((migrator_client, formatted_ruleset_schema))
 }
 
 pub async fn propose_candidate_ruleset(

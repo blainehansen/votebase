@@ -21,7 +21,7 @@ A server is just a computer program that can send and receive messages, and can 
 
 Normal servers are controlled by *admins*, some users that actually run the server and have complete control of what it does: what messages it can receive, what messages it sends in response, and what data it holds. A server admin can delete data or change the code of the server in any way they want.
 
-[Many smart people]() have pointed out that since these servers often create *digital social spaces* or community tools, it would be nice if they could be controlled [by the people who use them](). This kind of democratic control could prevent the kind of [platform decay]() that has become common.
+[Many smart people]() have pointed out that since these servers often create *digital social spaces* or community tools, it would be nice if they could be owned and controlled [by the people who use them](). This kind of democratic control could prevent the kind of [platform decay]() that has become common.
 
 But how can groups control a server? Servers are often complicated to update, and you would need to create some legal structure to delegate someone to make the code changes to the server you want made.
 

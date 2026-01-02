@@ -165,7 +165,7 @@ pub async fn op_sql_fetch_all(
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
-	use futures_util::{pin_mut, TryStreamExt};
+	use futures::{pin_mut, TryStreamExt};
 	pin_mut!(row_stream);
 	let rows = row_stream.try_collect::<Vec<_>>().await.map_err(run_err)?
 		.into_iter()
@@ -194,7 +194,7 @@ pub async fn op_sql_fetch_one(
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
 
-	use futures_util::{pin_mut, TryStreamExt};
+	use futures::{pin_mut, TryStreamExt};
 	pin_mut!(row_stream);
 	let mut first = None;
 	while let Some(row) = row_stream.try_next().await.map_err(run_err)? {
@@ -227,7 +227,7 @@ pub async fn op_sql_fetch_optional(
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
 
-	use futures_util::{pin_mut, TryStreamExt};
+	use futures::{pin_mut, TryStreamExt};
 	pin_mut!(row_stream);
 	let mut first = None;
 	while let Some(row) = row_stream.try_next().await.map_err(run_err)? {
@@ -257,7 +257,7 @@ pub async fn op_sql_execute_statement(
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
-	use futures_util::{pin_mut, TryStreamExt};
+	use futures::{pin_mut, TryStreamExt};
 	pin_mut!(row_stream);
 	// TODO more elegant way to throw away all the rows?
 	while let Some(_) = row_stream.try_next().await.map_err(run_err)? {}

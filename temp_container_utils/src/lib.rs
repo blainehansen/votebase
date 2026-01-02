@@ -135,14 +135,14 @@ async fn is_postgres_healthy(config: &Config) -> bool {
 }
 
 async fn healthcheck_postgres(
-	config: &Config,
+	config: Config,
 	max_retries: u64,
 	ms_per_retry: u64,
-) -> io::Result<()> {
+) -> io::Result<Config> {
 	let slow_threshold = 10 + max_retries / 10;
 	let mut nb_retries = 0;
 
-	while !is_postgres_healthy(config).await {
+	while !is_postgres_healthy(&config).await {
 		if nb_retries >= max_retries {
 			return Err(io::Error::new(io::ErrorKind::Other, "reached the max number of connection retries while waiting for postgres"))
 		};
@@ -157,7 +157,7 @@ async fn healthcheck_postgres(
 		}
 	}
 
-	Ok(())
+	Ok(config)
 }
 
 
@@ -168,16 +168,15 @@ pub async fn with_temp_postgres<
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
 	kill_container(&container_name).await?;
-
 	spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port).await?;
-	healthcheck_postgres(&config, 50, 100).await?;
 
-	// call user function
-	let result = func(container_name.clone(), config).await;
+	use futures::TryFutureExt;
+	let result = healthcheck_postgres(config, 50, 100)
+		.and_then(async |config| Ok(func(container_name.clone(), config).await)).await;
 
 	kill_container(&container_name).await?;
 
-	Ok(result)
+	Ok(result?)
 }
 
 pub async fn with_temp_postgres_client<
@@ -187,22 +186,26 @@ pub async fn with_temp_postgres_client<
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
 	kill_container(&container_name).await?;
-
 	spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port).await?;
-	healthcheck_postgres(&config, 50, 100).await?;
 
-	let (client, connection) = config.connect(postgres::NoTls).await?;
-	tokio::spawn(async move {
-		if let Err(e) = connection.await {
-			eprintln!("connection error: {}", e);
-		}
-	});
-	// call user function
-	let result = func(container_name.clone(), config, client).await;
+	use futures::TryFutureExt;
+	let result = healthcheck_postgres(config, 50, 100)
+		.err_into::<ContainerError>()
+		.and_then(async |config| {
+			let (client, connection) = config.connect(postgres::NoTls).await?;
+			tokio::spawn(async move {
+				if let Err(e) = connection.await {
+					eprintln!("connection error: {}", e);
+				}
+			});
+			// call user function
+			Ok(func(container_name.clone(), config, client).await)
+		})
+		.await;
 
 	kill_container(&container_name).await?;
 
-	Ok(result)
+	Ok(result?)
 }
 
 pub async fn with_temp_postgres_pool<
@@ -212,17 +215,21 @@ pub async fn with_temp_postgres_pool<
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
 	kill_container(&container_name).await?;
-
 	spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port).await?;
-	healthcheck_postgres(&config, 50, 100).await?;
 
-	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(5).build()?;
-	// call user function
-	let result = func(container_name.clone(), config, pool).await;
+	use futures::TryFutureExt;
+	let result = healthcheck_postgres(config, 50, 100)
+		.err_into::<ContainerError>()
+		.and_then(async|config| {
+			let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(5).build()?;
+			// call user function
+			Ok(func(container_name.clone(), config, pool).await)
+		})
+		.await;
 
 	kill_container(&container_name).await?;
 
-	Ok(result)
+	Ok(result?)
 }
 
 fn generate_temp_config() -> (String, Config, String, String, String, u16) {

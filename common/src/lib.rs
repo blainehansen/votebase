@@ -8,6 +8,9 @@ pub type PgConfig = postgres::Config;
 pub type PgClient = postgres::Client;
 pub type PgPool = deadpool::Pool;
 
+#[derive(serde::Deserialize)]
+pub enum GranularityEnum { Day, Week, Month, Year }
+
 struct FnServerPg(PgPool);
 impl From<PgPool> for FnServerPg {
 	fn from(value: PgPool) -> Self { FnServerPg(value) }
