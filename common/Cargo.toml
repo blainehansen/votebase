@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tmpdir = { workspace = true }
 log = { workspace = true }
+itertools = { workspace = true }
 
 futures = { workspace = true }
 walkdir = { workspace = true }
