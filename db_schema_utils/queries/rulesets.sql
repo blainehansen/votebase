@@ -15,12 +15,12 @@ where full_path = :ruleset_full_path;
 --! get_action_details
 select code, action_pass, migrator_pass
 from votebase_catalog.ruleset
-where full_path = :ruleset_full_path and :action_name = ANY(actions);
+where full_path = :ruleset_full_path and votebase_catalog.has_fn(fns, :action_name, 'Action');
 
 --! get_view_details
 select code, view_pass as pass
 from votebase_catalog.ruleset
-where full_path = :ruleset_full_path and :view_name = ANY(views);
+where full_path = :ruleset_full_path and votebase_catalog.has_fn(fns, :view_name, 'View');
 
 
 --! get_ruleset_migrator
@@ -30,29 +30,51 @@ where full_path = :ruleset_full_path;
 
 --! insert_ruleset (parent_full_path?)
 insert into votebase_catalog.ruleset (
-	parent_full_path, "name", actions, views, code, db_schema, db_uses_functions, db_uses_tables
+	parent_full_path, "name",
+	ts_code, db_schema, fns, db_uses_functions, db_uses_tables
 ) values (
-	:parent_full_path, :name, :actions, :views, :code, :db_schema, :db_uses_functions, :db_uses_tables
+	:parent_full_path, :name,
+	:ts_code, :db_schema, :fns, :db_uses_functions, :db_uses_tables
+
 ) returning full_path, migrator_pass, action_pass, view_pass;
 
 --! delete_ruleset
 delete from votebase_catalog.ruleset
 where full_path = :full_path;
 
+
 --! insert_candidate_replacement
-select u as candidate_uuid
-from votebase_catalog.insert_candidate_replacement(
-	:full_path, :actions, :views, :code, :db_schema, :db_migration
-) as t(u);
+insert into votebase_catalog.candidate_replacement_ruleset (candidate_for, bundled_ruleset)
+values (:candidate_for, :bundled_ruleset)
+returning id;
 
---! apply_candidate
-select m as "db_migration"
-from votebase_catalog.apply_candidate(:candidate_uuid) as t(m);
 
---! test_select_candidate_replacement_ruleset
-select candidate_for, actions, views, code, db_schema, db_migration
-from votebase_catalog.candidate_replacement_ruleset;
 
+--! take_candidate_deleting_others
+with
+target_candidate as (
+	select candidate_for, bundled_ruleset
+	from votebase_catalog.candidate_replacement_ruleset
+	where id = :candidate_id
+),
+candidate_deletions as (
+	delete from votebase_catalog.candidate_replacement_ruleset as ruleset
+	using target_candidate
+	where ruleset.candidate_for = target_candidate.candidate_for
+)
+select bundled_ruleset from target_candidate;
+
+--! take_candidate_not_deleting_others
+delete from votebase_catalog.candidate_replacement_ruleset
+where id = :candidate_uuid
+returning bundled_ruleset;
+
+
+--! update_ruleset
+update votebase_catalog.ruleset set
+	ts_code = :ts_code, db_schema = :db_schema, fns = :fns,
+	db_uses_functions = :db_uses_functions, db_uses_tables = :db_uses_tables
+where full_path = :full_path;
 
 
 --! get_possibly_effected_uses
@@ -61,28 +83,7 @@ from votebase_catalog.ruleset;
 -- where full_path in (:db_uses.ruleset);
 
 
--- select
--- 	sch.nspname::text as schema_name,
--- 	pgfn.proname::text as function_name,
--- 	pg_catalog.pg_get_function_identity_arguments(pgfn.oid) as params,
--- 	pg_catalog.format_type(pgfn.prorettype, null) as return_type,
--- 	case pgfn.provolatile
--- 		when 'i' then false -- 'immutable'
--- 		when 's' then false -- 'stable'
--- 		when 'v' then true -- 'volatile'
--- 	end as is_action
--- from
--- 	pg_catalog.pg_proc as pgfn
--- left join
--- 	pg_catalog.pg_namespace as sch on sch.oid = pgfn.pronamespace
--- where
--- 	-- TODO need to also exclude all the non-usable functions in votebase_catalog?
--- 	sch.nspname not in ('pg_catalog', 'information_schema')
--- 	-- 'f' for function, 'p' for procedure, 'a' for aggregate, 'w' for window function
--- 	and pgfn.prokind in ('f', 'p')
--- ;
-
-
+-- TODO in the future the usable functions and columns will be determined by the "exposes" system of the rulesets, so we'll join or filter by some passed list of relevant uses
 -- https://www.postgresql.org/docs/current/catalog-pg-proc.html
 --! get_usable_functions
 select
@@ -118,7 +119,6 @@ from
 where
 	-- only "normal" functions (no out/inout/variadic)
 	pgfn.proargmodes is null
-	-- TODO also need to exclude votebase_catalog?
 	and sch.nspname not in ('votebase_catalog', 'pg_catalog', 'information_schema')
 ;
 
@@ -147,3 +147,9 @@ where
 	and sch.nspname not in ('pg_catalog', 'information_schema')
 	and not (sch.nspname = 'votebase_catalog' and tab.relname != 'member' and col.attname != 'id')
 group by sch.nspname, tab.relname;
+
+
+
+--! test_select_candidate_replacement_ruleset
+select candidate_for, actions, views, code, db_schema, db_migration
+from votebase_catalog.candidate_replacement_ruleset;

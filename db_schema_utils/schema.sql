@@ -34,12 +34,16 @@ alter default privileges in schema votebase_catalog grant all privileges on type
 create extension if not exists pgcrypto with schema votebase_catalog;
 
 
-create type votebase_catalog.rough_param_struct as (name text, typ text);
-create type votebase_catalog.rough_column_struct as (name text, typ text, not_null boolean);
+create function votebase_catalog.valid_name(name text) returns boolean as $$
+	begin
+		return name similar to '[A-Za-z0-9]+';
+	end;
+$$ language plpgsql immutable;
+
 
 create type votebase_catalog.db_uses_function_struct as (
 	ruleset_path text, object_name text,
-	is_action boolean, return_type text, params text[]
+	is_action boolean, return_type text, param_types text[]
 );
 create type votebase_catalog.db_uses_column_struct as (name text, typ text, can_null boolean);
 create type votebase_catalog.db_uses_table_struct as (
@@ -47,26 +51,60 @@ create type votebase_catalog.db_uses_table_struct as (
 	can_query boolean, columns votebase_catalog.db_uses_column_struct[]
 );
 
+create type votebase_catalog.fn_type as enum('Action', 'View');
+create type votebase_catalog.ruleset_fn_raw as (
+	"name" text, "type" votebase_catalog.fn_type
+	-- input_schema jsonb, output_schema jsonb
+);
+create domain votebase_catalog.ruleset_fn as votebase_catalog.ruleset_fn_raw
+	not null
+	check ((VALUE)."name" is not null)
+	check (votebase_catalog.valid_name((VALUE)."name"))
+	check ((VALUE)."type" is not null)
+	-- check ((VALUE).input_schema is not null)
+	-- check ((VALUE).output_schema is not null)
+;
+create function votebase_catalog.check_fns_different_names(fns votebase_catalog.ruleset_fn[]) returns boolean as $$
+	begin
+		return not exists (
+			select 1
+			from unnest(fns) as fns
+			group by (fns)."name"
+			having count(*) > 1
+		);
+	end;
+$$ language plpgsql immutable;
+
+create function votebase_catalog.has_fn(fns votebase_catalog.ruleset_fn[], name text, type votebase_catalog.fn_type) returns boolean as $$
+	begin
+		return exists (
+			select 1
+			from unnest(fns) as fns
+			where (fns)."name" = name and (fns)."type" = type
+		);
+	end;
+$$ language plpgsql immutable;
+
+
 create table votebase_catalog.ruleset (
 	full_path text primary key generated always as (case
 		when parent_full_path is null then "name"
 		else parent_full_path || '|' || "name"
 	end) stored,
 	parent_full_path text references votebase_catalog.ruleset(full_path) on delete cascade,
-	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z0-9]+'),
+	"name" text not null constraint name_only_letters check (votebase_catalog.valid_name("name")),
 
-	actions text[] not null,
-	views text[] not null,
-	constraint actions_views_different_names check (not (actions && views)),
+	ts_code text not null,
+	db_schema text not null,
+
+	fns votebase_catalog.ruleset_fn[] not null
+		constraint fns_different_names check (votebase_catalog.check_fns_different_names(fns)),
+	db_uses_functions votebase_catalog.db_uses_function_struct[] not null,
+	db_uses_tables votebase_catalog.db_uses_table_struct[] not null,
 
 	migrator_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
 	action_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
-	view_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
-
-	code text not null,
-	db_schema text not null,
-	db_uses_functions votebase_catalog.db_uses_function_struct[] not null,
-	db_uses_tables votebase_catalog.db_uses_table_struct[] not null
+	view_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64')
 );
 
 create function votebase_catalog.drop_ruleset_schema_on_delete() returns trigger as $$
@@ -78,121 +116,30 @@ begin
 	return OLD;
 end;
 $$ language plpgsql;
-
 create trigger votebase_catalog_trigger_drop_ruleset_schema_on_delete
 after delete on votebase_catalog.ruleset for each row
 execute function votebase_catalog.drop_ruleset_schema_on_delete();
-
-
--- create type fn_type as enum('Action', 'View');
-
--- create table votebase_catalog.ruleset_fn (
--- 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
--- 	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
--- 	primary key (full_path, "name"),
--- 	"type" fn_type not null,
--- 	input_schema jsonb not null
--- 	-- trigger_on_slack bool not null default false,
--- 	-- trigger_on_github bool not null default false,
--- );
-
--- create table votebase_catalog.ruleset_replacements (
--- 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
-
--- 	old_actions text[] not null,
--- 	old_views text[] not null,
-
--- 	old_db_schema text not null,
--- 	db_migration text not null,
--- 	old_code text not null
--- );
 
 create unique index votebase_catalog_ruleset_single_null_parent
 on votebase_catalog.ruleset((true))
 where parent_full_path is null;
 
+
 create table votebase_catalog.candidate_replacement_ruleset (
 	id uuid primary key default gen_random_uuid(),
 	candidate_for text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 
-	actions text[] not null,
-	views text[] not null,
-	constraint actions_views_different_names check (not (actions && views)),
+	bundled_ruleset jsonb not null
 
-	code text not null,
-	db_schema text not null,
-	db_migration text not null
+	-- ts_code text not null,
+	-- db_schema text not null,
+	-- db_migration text not null,
+
+	-- fns votebase_catalog.ruleset_fn[] not null
+	-- 	constraint fns_different_names check (votebase_catalog.check_fns_different_names(fns)),
+	-- db_uses_functions votebase_catalog.db_uses_function_struct[] not null,
+	-- db_uses_tables votebase_catalog.db_uses_table_struct[] not null
 );
-
--- create table votebase_catalog.candidate_child_ruleset (
--- 	id uuid primary key default gen_random_uuid(),
--- 	candidate_for text not null references votebase_catalog.ruleset(full_path) on delete cascade,
-
--- 	actions text[] not null,
--- 	views text[] not null,
--- 	constraint actions_views_different_names check (not (actions && views)),
-
--- 	code text not null,
--- 	db_schema text not null,
--- 	db_migration text not null
--- );
-
-
-create function votebase_catalog.insert_candidate_replacement(
-	p_candidate_for text, p_actions text[], p_views text[],
-	p_code text, p_db_schema text, p_db_migration text
-) returns uuid as $$
-declare
-	candidate_id uuid;
-begin
-	if not exists (select 1 from votebase_catalog.ruleset where full_path = p_candidate_for) then
-		raise exception 'ruleset % not found', p_candidate_for;
-	end if;
-
-	insert into votebase_catalog.candidate_replacement_ruleset (
-		candidate_for,
-		actions, views,
-		code, db_schema, db_migration
-	) values (
-		p_candidate_for,
-		p_actions, p_views,
-		p_code, p_db_schema, p_db_migration
-	)
-	returning id into candidate_id;
-
-	return candidate_id;
-end;
-$$ language plpgsql;
-
-
-create function votebase_catalog.apply_candidate(candidate_id uuid) returns text as $$
-declare
-	candidate votebase_catalog.candidate_replacement_ruleset;
-begin
-	select * into candidate
-	from votebase_catalog.candidate_replacement_ruleset
-	where id = candidate_id;
-
-	if not found then
-		raise exception 'candidate ruleset % not found', candidate_id;
-	end if;
-
-	update votebase_catalog.ruleset
-	set
-		actions = candidate.actions, views = candidate.views,
-		code = candidate.code, db_schema = candidate.db_schema
-	where full_path = candidate.candidate_for;
-
-	delete from votebase_catalog.candidate_replacement_ruleset
-	where id = candidate_id;
-
-	-- TODO insert into votebase_catalog.ruleset_replacements
-
-	-- TODO need to create child rulesets?
-
-	return candidate.db_migration;
-end;
-$$ language plpgsql;
 
 
 create table votebase_catalog.member (
@@ -206,11 +153,11 @@ create table votebase_catalog.member (
 -- 	primary key (member_id, ruleset_full_path)
 -- );
 
-create type votebase_catalog.granularity_enum as enum('Day', 'Week', 'Month', 'Year');
+-- create type votebase_catalog.granularity_enum as enum('Day', 'Week', 'Month', 'Year');
 
--- create table votebase_catalog.recurring_action (
+-- create table votebase_catalog.static_recurring_action (
 -- 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
--- 	"name" text not null constraint name_only_letters check ("name" similar to '[A-Za-z]+'),
+-- 	"name" text not null constraint name_only_letters check (votebase_catalog.valid_name("name")),
 -- 	primary key (full_path, "name"),
 -- 	description text not null,
 -- 	"start" timestamp not null,
@@ -228,31 +175,35 @@ create type votebase_catalog.granularity_enum as enum('Day', 'Week', 'Month', 'Y
 -- 	end) * recurrence_multiplier * executed_count)) stored
 -- );
 
-create table votebase_catalog.detached_recurring_action (
-	id uuid primary key default gen_random_uuid(),
-	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
-	description text not null,
-	"start" timestamp not null,
-	recurrence_granularity votebase_catalog.granularity_enum not null,
-	recurrence_multiplier smallint not null check(recurrence_multiplier > 0),
-	action_name text not null,
-	action_arg json not null,
-	executing bool not null default false,
-	executed_count int not null default 0,
-	next_scheduled_time timestamp not null generated always as ("start" + ((case recurrence_granularity
-		when 'Day' then '1 day'::interval
-		when 'Week' then '1 week'::interval
-		when 'Month' then '1 month'::interval
-		when 'Year' then '1 year'::interval
-	end) * recurrence_multiplier * executed_count)) stored
-);
+-- create table votebase_catalog.detached_recurring_action (
+-- 	id uuid primary key default gen_random_uuid(),
+-- 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
+-- 	description text not null,
+-- 	"start" timestamp not null,
+-- 	recurrence_granularity votebase_catalog.granularity_enum not null,
+-- 	recurrence_multiplier smallint not null check(recurrence_multiplier > 0),
+-- 	action_name text not null,
+-- 	action_arg json not null,
+-- 	executing bool not null default false,
+-- 	executed_count int not null default 0,
+-- 	next_scheduled_time timestamp not null generated always as ("start" + ((case recurrence_granularity
+-- 		when 'Day' then '1 day'::interval
+-- 		when 'Week' then '1 week'::interval
+-- 		when 'Month' then '1 month'::interval
+-- 		when 'Year' then '1 year'::interval
+-- 	end) * recurrence_multiplier * executed_count)) stored
+-- );
 
-create table votebase_catalog.detached_scheduled_action (
-	id uuid primary key default gen_random_uuid(),
-	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
-	description text not null,
-	scheduled_time timestamptz not null,
-	action_name text not null,
-	action_arg json not null,
-	executing bool not null default false
-);
+-- create table votebase_catalog.detached_scheduled_action (
+-- 	id uuid primary key default gen_random_uuid(),
+-- 	full_path text not null references votebase_catalog.ruleset(full_path) on delete cascade,
+-- 	description text not null,
+-- 	scheduled_time timestamptz not null,
+-- 	action_name text not null,
+-- 	action_arg json not null,
+-- 	executing bool not null default false
+-- );
+
+
+create type votebase_catalog.rough_param_struct as (name text, typ text);
+create type votebase_catalog.rough_column_struct as (name text, typ text, not_null boolean);

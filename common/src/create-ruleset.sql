@@ -76,5 +76,15 @@ grant all privileges on types to "{formatted_ruleset_role_migrator}";
 -- includes: usage
 
 
+grant usage on schema votebase_catalog to "{formatted_ruleset_role_view}";
+grant usage on schema votebase_catalog to "{formatted_ruleset_role_action}";
 grant usage on schema votebase_catalog to "{formatted_ruleset_role_migrator}";
+
+grant select(full_path, parent_full_path, "name", ts_code, db_schema, fns, db_uses_functions, db_uses_tables) on table votebase_catalog.ruleset to "{formatted_ruleset_role_action}";
+grant select(full_path, parent_full_path, "name", ts_code, db_schema, fns, db_uses_functions, db_uses_tables) on table votebase_catalog.ruleset to "{formatted_ruleset_role_view}";
+
+grant select on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_view}";
+grant select on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_action}";
+
 grant references (id) on table votebase_catalog.member to "{formatted_ruleset_role_migrator}";
+grant references (id) on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_migrator}";

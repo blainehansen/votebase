@@ -18,7 +18,7 @@ use dom::{op_fetch};
 
 use deno_core::{v8, OpState};
 use log::info;
-use crate::{postgres, FnRolePg, FnServerPg, FnType, PgClient, PgConfig, PgPool, RoleType, format_ruleset_role /*format_ruleset_schema*/};
+use crate::{postgres, FnRolePg, FnServerPg, FnType, PgClient, PgConfig, PgPool, RoleType};
 
 // TODO RuntimeError should be narrowed to only the things that can go wrong during deno execution, and other broader errors should contain it
 

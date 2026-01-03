@@ -121,7 +121,7 @@ export type KeepOrReplace<T> = 'keep' | T
 /**
  * This is the type you should return from an `Action` when you want to replace the current Ruleset with the one pointed to by `replace_self_with_uuid`.
 */
-export type ReplaceSelfStruct = { replace_self_with_uuid: string }
+export type ReplaceSelfStruct = { replace_self_with_uuid: string, delete_other_candidates: boolean }
 
 // make these have truly private members? or add some special symbol?
 export type FnAction<A extends JsonValue> = Readonly<{

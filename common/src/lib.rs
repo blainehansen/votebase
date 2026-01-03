@@ -1,6 +1,8 @@
+pub mod rulesets;
 pub mod runtime;
 pub mod gen_queries;
 pub mod gen_ts;
+mod podman_fns;
 
 pub use db_generated::{queries, types as db_types, deadpool_postgres as deadpool, tokio_postgres as postgres};
 
@@ -18,6 +20,13 @@ impl std::ops::Deref for FnServerPg {
 }
 impl std::ops::DerefMut for FnServerPg {
 	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+}
+
+
+async fn pg_con(config: &PgConfig) -> Result<PgClient, postgres::Error> {
+	let (client, conn) = config.connect(postgres::NoTls).await?;
+	tokio::spawn(async move { if let Err(e) = conn.await { log::error!("DB connection error: {}", e); } });
+	Ok(client)
 }
 
 #[derive(Clone)]
@@ -248,3 +257,36 @@ fn test_url_encoded_connection_string() {
 
 // 	Ok(url)
 // }
+
+enum JoinOption<T1, T2> {
+	Left(T1),
+	Right(T2),
+	Both(T1, T2),
+}
+
+fn outer_join<'a, V1, V2>(
+	map1: &'a std::collections::HashMap<String, V1>,
+	map2: &'a std::collections::HashMap<String, V2>
+) -> std::collections::HashMap<&'a String, JoinOption<&'a V1, &'a V2>> {
+	let mut result = std::collections::HashMap::new();
+	use JoinOption::*;
+
+	for (k, v) in map1 {
+		result.insert(k, Left(v));
+	}
+	for (k, v) in map2 {
+		match result.entry(k) {
+			std::collections::hash_map::Entry::Occupied(mut entry) => {
+				if let Left(l) = entry.get() {
+					entry.insert(Both(l, v));
+				}
+				else { unreachable!() };
+			},
+			std::collections::hash_map::Entry::Vacant(entry) => {
+				entry.insert(Right(v));
+			},
+		}
+	}
+
+	result
+}
