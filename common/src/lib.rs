@@ -4,6 +4,8 @@ pub mod gen_queries;
 pub mod gen_ts;
 mod podman_fns;
 
+use std::hash::Hash;
+
 pub use db_generated::{queries, types as db_types, deadpool_postgres as deadpool, tokio_postgres as postgres};
 
 pub type PgConfig = postgres::Config;
@@ -119,6 +121,24 @@ pub fn format_full_path(parent_full_path: Option<&str>, child_name: &str) -> Str
 		None => format!("{child_name}"),
 	}
 }
+
+pub fn split_full_path(full_path: &str) -> (Option<String>, String) {
+	if let Some(pos) = full_path.rfind('|') {
+		let parent = &full_path[..pos];
+		let child = &full_path[pos + 1..];
+		(Some(parent.to_string()), child.to_string())
+	}
+	else {
+		(None, full_path.to_string())
+	}
+}
+
+#[test]
+fn test_split_full_path() {
+	assert_eq!(split_full_path("a|b|c"), (Some("a|b".to_string()), "c".to_string()));
+	assert_eq!(split_full_path("single"), (None, "single".to_string()));
+}
+
 
 /// `ruleset:{full_path}`
 pub fn format_ruleset_schema(full_path: &str) -> String {
@@ -264,10 +284,10 @@ enum JoinOption<T1, T2> {
 	Both(T1, T2),
 }
 
-fn outer_join<'a, V1, V2>(
-	map1: &'a std::collections::HashMap<String, V1>,
-	map2: &'a std::collections::HashMap<String, V2>
-) -> std::collections::HashMap<&'a String, JoinOption<&'a V1, &'a V2>> {
+fn outer_join<'a, K: Eq + Hash, V1, V2>(
+	map1: &'a std::collections::HashMap<K, V1>,
+	map2: &'a std::collections::HashMap<K, V2>
+) -> std::collections::HashMap<&'a K, JoinOption<&'a V1, &'a V2>> {
 	let mut result = std::collections::HashMap::new();
 	use JoinOption::*;
 

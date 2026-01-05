@@ -45,22 +45,24 @@ create type votebase_catalog.db_uses_function_struct as (
 	ruleset_path text, object_name text,
 	is_action boolean, return_type text, param_types text[]
 );
-create type votebase_catalog.db_uses_column_struct as (name text, typ text, can_null boolean);
+
+create type votebase_catalog.column_use_kind as enum('Query', 'Reference', 'Both');
+create type votebase_catalog.db_uses_column_struct as (name text, typ text, can_null boolean, use_kind votebase_catalog.column_use_kind);
 create type votebase_catalog.db_uses_table_struct as (
 	ruleset_path text, object_name text,
-	can_query boolean, columns votebase_catalog.db_uses_column_struct[]
+	columns votebase_catalog.db_uses_column_struct[]
 );
 
 create type votebase_catalog.fn_type as enum('Action', 'View');
 create type votebase_catalog.ruleset_fn_raw as (
-	"name" text, "type" votebase_catalog.fn_type
+	"name" text, fn_type votebase_catalog.fn_type
 	-- input_schema jsonb, output_schema jsonb
 );
 create domain votebase_catalog.ruleset_fn as votebase_catalog.ruleset_fn_raw
 	not null
 	check ((VALUE)."name" is not null)
 	check (votebase_catalog.valid_name((VALUE)."name"))
-	check ((VALUE)."type" is not null)
+	check ((VALUE).fn_type is not null)
 	-- check ((VALUE).input_schema is not null)
 	-- check ((VALUE).output_schema is not null)
 ;
@@ -80,7 +82,17 @@ create function votebase_catalog.has_fn(fns votebase_catalog.ruleset_fn[], name 
 		return exists (
 			select 1
 			from unnest(fns) as fns
-			where (fns)."name" = name and (fns)."type" = type
+			where (fns)."name" = name and (fns).fn_type = type
+		);
+	end;
+$$ language plpgsql immutable;
+
+create function votebase_catalog.filter_fns(fns votebase_catalog.ruleset_fn[], type votebase_catalog.fn_type) returns text[] as $$
+	begin
+		return array (
+			select (fns)."name"
+			from unnest(fns) as fns
+			where (fns).fn_type = type
 		);
 	end;
 $$ language plpgsql immutable;

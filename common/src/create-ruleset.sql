@@ -18,12 +18,12 @@ grant usage on schema "{formatted_ruleset_schema}" to "{formatted_ruleset_role_v
 
 -- read tables
 alter default privileges in schema "{formatted_ruleset_schema}"
-grant select on tables to "{formatted_ruleset_role_view}";
+	grant select on tables to "{formatted_ruleset_role_view}";
 -- leaving out: insert, update, delete, truncate, references, trigger, maintain
 
 -- read sequences
 alter default privileges in schema "{formatted_ruleset_schema}"
-grant usage, select on sequences to "{formatted_ruleset_role_view}";
+	grant usage, select on sequences to "{formatted_ruleset_role_view}";
 -- leaving out: update
 -- leaving out functions! this ensures views can only read, and can't call functions that modify
 
@@ -35,17 +35,17 @@ grant usage on schema "{formatted_ruleset_schema}" to "{formatted_ruleset_role_a
 
 -- write tables
 alter default privileges in schema "{formatted_ruleset_schema}"
-grant select, insert, update, delete on tables to "{formatted_ruleset_role_action}";
+	grant select, insert, update, delete on tables to "{formatted_ruleset_role_action}";
 -- leaving out: truncate, references, trigger, maintain
 
 -- everything sequences
 alter default privileges in schema "{formatted_ruleset_schema}"
-grant all privileges on sequences to "{formatted_ruleset_role_action}";
+	grant all privileges on sequences to "{formatted_ruleset_role_action}";
 -- includes: usage, select, update
 
 -- everything functions
 alter default privileges in schema "{formatted_ruleset_schema}"
-grant all privileges on functions to "{formatted_ruleset_role_action}";
+	grant all privileges on functions to "{formatted_ruleset_role_action}";
 -- includes: execute
 
 
@@ -57,34 +57,20 @@ grant all privileges on schema "{formatted_ruleset_schema}" to "{formatted_rules
 
 -- everything tables
 alter default privileges in schema "{formatted_ruleset_schema}"
-grant all privileges on tables to "{formatted_ruleset_role_migrator}";
+	grant all privileges on tables to "{formatted_ruleset_role_migrator}";
 -- includes: select, insert, update, delete, truncate, references, trigger, maintain
 
 -- everything sequences
 alter default privileges in schema "{formatted_ruleset_schema}"
-grant all privileges on sequences to "{formatted_ruleset_role_migrator}";
+	grant all privileges on sequences to "{formatted_ruleset_role_migrator}";
 -- includes: usage, select, update
 
 -- everything functions
 alter default privileges in schema "{formatted_ruleset_schema}"
-grant all privileges on functions to "{formatted_ruleset_role_migrator}";
+	grant all privileges on functions to "{formatted_ruleset_role_migrator}";
 -- includes: execute
 
 -- everything types
 alter default privileges in schema "{formatted_ruleset_schema}"
-grant all privileges on types to "{formatted_ruleset_role_migrator}";
+	grant all privileges on types to "{formatted_ruleset_role_migrator}";
 -- includes: usage
-
-
-grant usage on schema votebase_catalog to "{formatted_ruleset_role_view}";
-grant usage on schema votebase_catalog to "{formatted_ruleset_role_action}";
-grant usage on schema votebase_catalog to "{formatted_ruleset_role_migrator}";
-
-grant select(full_path, parent_full_path, "name", ts_code, db_schema, fns, db_uses_functions, db_uses_tables) on table votebase_catalog.ruleset to "{formatted_ruleset_role_action}";
-grant select(full_path, parent_full_path, "name", ts_code, db_schema, fns, db_uses_functions, db_uses_tables) on table votebase_catalog.ruleset to "{formatted_ruleset_role_view}";
-
-grant select on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_view}";
-grant select on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_action}";
-
-grant references (id) on table votebase_catalog.member to "{formatted_ruleset_role_migrator}";
-grant references (id) on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_migrator}";

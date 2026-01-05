@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod test;
 
-mod scheduling;
-pub use scheduling::{ScheduledActionQueue};
+// mod scheduling;
+// pub use scheduling::{ScheduledActionQueue};
 
 pub mod rulesets;
 use rulesets::{op_propose_self_replacement};
@@ -222,9 +222,9 @@ impl Runtime {
 	pub fn set_run_info(&mut self, run_info: RunInfo) {
 		self.js_runtime.op_state().borrow_mut().put(run_info);
 	}
-	pub fn set_action_queue(&mut self, spawner: ScheduledActionQueue) {
-		self.js_runtime.op_state().borrow_mut().put(spawner);
-	}
+	// pub fn set_action_queue(&mut self, spawner: ScheduledActionQueue) {
+	// 	self.js_runtime.op_state().borrow_mut().put(spawner);
+	// }
 	pub fn set_fn_server_pg(&mut self, opt: FnServerPg) {
 		self.js_runtime.op_state().borrow_mut().put(opt);
 	}
@@ -242,14 +242,14 @@ pub async fn run_action(
 	arg: serde_json::Value,
 	base_config: PgConfig,
 	server_role_client: PgClient,
-	scheduled_action_queue: ScheduledActionQueue,
+	// scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<(), RuntimeError> {
 	let migrator_pg = FnRolePg::for_role(&current_full_path, &base_config, RoleType::Migrator, migrator_pass);
 	let action_pg = FnRolePg::for_role(&current_full_path, &base_config, RoleType::Action, action_pass);
 
 	let new_ruleset_id = run_function::<Option<String>>(
 		current_full_path, ruleset_code, action_name, arg, FnType::Action,
-		action_pg, server_role_config, server_role_client, scheduled_action_queue,
+		action_pg, server_role_config, server_role_client, /*scheduled_action_queue,*/
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
@@ -269,13 +269,13 @@ pub async fn run_view(
 	query: serde_json::Value,
 	base_config: PgConfig,
 	server_role_pool: PgPool,
-	scheduled_action_queue: ScheduledActionQueue,
+	// scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<String, RuntimeError> {
 	let view_role_config = FnRolePg::for_role(&current_full_path, &base_config, RoleType::View, view_pass);
 
 	run_function(
 		ruleset_code, view_name, query, FnType::View,
-		view_role_config, base_config, scheduled_action_queue,
+		view_role_config, base_config, /*scheduled_action_queue,*/
 	).await
 }
 
@@ -286,7 +286,7 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	function_type: FnType,
 	server_role_pool: PgPool,
 	fn_role_pg: FnRolePg,
-	scheduled_action_queue: ScheduledActionQueue,
+	// scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<V, RuntimeError> {
 	let mut runtime = Runtime::new(ruleset_code).await.map_err(|e| RuntimeError::OtherError(e.to_string()))?;
 
@@ -303,7 +303,7 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 
 	runtime.set_external_allowed(true);
 	runtime.set_run_info(RunInfo { current_ruleset_path });
-	runtime.set_action_queue(scheduled_action_queue);
+	// runtime.set_action_queue(scheduled_action_queue);
 	runtime.set_fn_server_pg(server_role_pool.into());
 	runtime.set_fn_role_pg(fn_role_pg);
 
