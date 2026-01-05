@@ -8,46 +8,64 @@ set -euo pipefail
 # then we muck around with things in the first to see if we're rejected, or if foreign keys still exist
 # but most importantly what state the permissions are in, whether the grant we gave to the second schema role has been destroyed or changed or what
 
-# first create two schemas, and roles for them that have no default permissions
-# then grant one of them the ability to reference some interesting columns
-# then use those two roles to create
 
 PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db << EOF
 	drop schema if exists used cascade;
 	drop schema if exists b cascade;
-	drop role if exists "b|role";
+	drop role if exists "role:b|view";
 
 	create schema used
 		create table t(id integer primary key, s bool not null);
+	create function used.my_fn(a integer, b integer) returns integer
+		language sql immutable strict
+		return a + b;
+	create function used.my_fn(a smallint, b smallint) returns smallint
+		 language sql immutable strict
+		 return a + b;
 
 	create schema b;
-	create role "b|role" with nocreaterole nosuperuser nocreatedb noinherit login password 'b';
-	alter role "b|role" set search_path to b;
-	alter default privileges revoke all privileges on tables from "b|role";
-	alter default privileges revoke all privileges on sequences from "b|role";
-	alter default privileges revoke all privileges on functions from "b|role";
-	alter default privileges revoke all privileges on types from "b|role";
-	alter default privileges revoke all privileges on schemas from "b|role";
+	create role "role:b|view" with nocreaterole nosuperuser nocreatedb noinherit login password 'b';
+	alter role "role:b|view" set search_path to b;
+	alter default privileges revoke all privileges on tables from "role:b|view";
+	alter default privileges revoke all privileges on sequences from "role:b|view";
+	alter default privileges revoke all privileges on functions from "role:b|view";
+	alter default privileges revoke all privileges on types from "role:b|view";
+	alter default privileges revoke all privileges on schemas from "role:b|view";
 
-	grant all privileges on schema b to "b|role";
+	grant all privileges on schema b to "role:b|view";
 	alter default privileges in schema b
-		grant all privileges on tables to "b|role";
+		grant all privileges on tables to "role:b|view";
 	alter default privileges in schema b
-		grant all privileges on sequences to "b|role";
+		grant all privileges on sequences to "role:b|view";
 	alter default privileges in schema b
-		grant all privileges on functions to "b|role";
+		grant all privileges on functions to "role:b|view";
 	alter default privileges in schema b
-		grant all privileges on types to "b|role";
+		grant all privileges on types to "role:b|view";
 
-	grant usage on schema used to "b|role";
-	grant references (id) on table t in schema used to "b|role";
+	grant usage on schema used to "role:b|view";
+	grant references (id) on table used.t to "role:b|view";
+	grant select (s) on table used.t to "role:b|view";
+	grant execute on function used.my_fn(int, int) to "role:b|view";
+	grant execute on function used.my_fn(smallint, smallint) to "role:b|view";
 EOF
 
-PGPASSWORD='b' psql -U 'b|role' -h localhost dev_db << EOF
+PGPASSWORD='b' psql -U 'role:b|view' -h localhost dev_db << EOF
 	create table b(i integer references used.t(id));
 EOF
 
+PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -f dev.sql | cat
 
+PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db << EOF
+	alter table used.t
+		rename column id to yo_id;
+		-- drop column id cascade;
+	alter table used.t
+		drop column s;
+	drop function used.my_fn(int, int);
+	alter function used.my_fn(smallint, smallint) rename to my_small_fn;
+EOF
+
+PGPASSWORD='dev_admin_password' psql -U dev_admin_user -h localhost dev_db -f dev.sql | cat
 
 # cargo test -p votebase_common -- --nocapture
 # cargo test -p votebase_cli -- --nocapture

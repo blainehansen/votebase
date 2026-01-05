@@ -29,6 +29,8 @@ select migrator_pass
 from votebase_catalog.ruleset
 where full_path = :ruleset_full_path;
 
+-- https://dba.stackexchange.com/questions/195603/create-json-object-from-recursive-tree-structureX
+
 -- MODIFYING RULESETS
 
 --! insert_ruleset (parent_full_path?)

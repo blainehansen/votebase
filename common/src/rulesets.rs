@@ -752,6 +752,30 @@ pub async fn apply_candidate_top(
 	Ok(())
 }
 
+// grants are noop if they already exist
+// in the case of renames, the grant moves. this is bad in the situation where the using ruleset *removes* it's grant!
+// ultimately the thing we really need to do is compare the *stated* uses against the *actual* privileges.
+// if we do that, then everything will be fine, because we just revoke all the privileges that still exist that aren't directly supported by a *use*
+
+// so we'll have a "check uses against permissions" function
+// - it needs to grab the literal privileges (only care about column select/references) as well as any foreign key objects (we care about those because the references privilege is about *creating* referencing objects, not about *having* them)
+// - it needs the uses obviously
+// - we need to group together the referencing privileges along with the
+// so I imagine a query with columns:
+// using_schema (this comes from the role name, we have to extract the actual ruleset name from it),
+// used_schema, table_name, column_name, has_select_priv, has_reference_priv, has_referencing_key
+// - so we loop over the column privileges, and check if there's a *uses* that justifies it. if not we revoke it. if there's a referencing object that isn't justified we fail the ruleset. if there *is* a use justifying it but no corresponding privileges, we grant them
+// importantly, this has to happen *after* the ruleset being *used* has been fully modified to its new form
+// the reason for this is because it's fine if our grants get scrambled by the mutation, as long as we can look at what we *should* have after the update in the *using* ruleset, because that's what the rectification process is for
+
+// this rectify_uses happens after *all* schema changes have been made, and it doesn't care at all about the *previous* uses, only the new ones, comparing against the *actual* permissions that currently exist
+// are there any situations where we
+
+
+// async fn rectify_uses(arg: Type) -> RetType {
+// 	unimplemented!()
+// }
+
 async fn apply_candidate(
 	base_config: &PgConfig,
 	server_role_tx: &mut postgres::Transaction<'_>,
