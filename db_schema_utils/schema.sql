@@ -217,5 +217,23 @@ create table votebase_catalog.member (
 -- );
 
 
-create type votebase_catalog.rough_param_struct as (name text, typ text);
 create type votebase_catalog.rough_column_struct as (name text, typ text, not_null boolean);
+
+create function votebase_catalog.format_fn_args(proargtypes oidvector) returns text[] as $$
+	begin
+		return array (
+			select pg_catalog.format_type(p.arg_type_oid, null)
+			from unnest(proargtypes::oid[])
+				with ordinality as p(arg_type_oid, ordinality)
+		);
+	end;
+$$ language plpgsql immutable;
+
+create function votebase_catalog.unformat_schema_name(schema_name text) returns text as $$
+	begin
+		return case
+			when starts_with('ruleset:', schema_name) then substring(schema_name from 9)
+			else schema_name
+		end;
+	end;
+$$ language plpgsql immutable;

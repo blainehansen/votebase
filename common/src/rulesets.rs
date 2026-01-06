@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use db_generated::queries::reflection::GetForeignKeys;
+
 use crate::podman_fns::{podman_compute_diff, podman_pg_restore};
 use crate::runtime::RuntimeError;
 use crate::{
@@ -134,7 +136,7 @@ impl hashbrown::Equivalent<UseableObject> for (&str, &str) {
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub enum UseableDbObject {
 	Table { columns: Vec<RoughColumn> },
-	Function { is_action: bool, params: Vec<RoughParam>, return_type: String },
+	Function { is_action: bool, function_params: Vec<String>, return_type: String },
 }
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct RoughColumn {
@@ -142,11 +144,6 @@ pub struct RoughColumn {
 	pub not_null: bool,
 	pub pg_type_name: String,
 	pub allowed_use: ColumnUseKind,
-}
-#[derive(Debug, Eq, PartialEq, Hash)]
-pub struct RoughParam {
-	pub name: String,
-	pub pg_type_name: String,
 }
 
 
@@ -160,6 +157,8 @@ pub enum ValidationError {
 	InvalidTs(String),
 	#[error("the uses of the rulesets have been violated\n\n{0:?}")]
 	InvalidUses(Vec<String>),
+	#[error("there are disallowed foreign keys\n\n{0:?}")]
+	InvalidReferences(Vec<String>),
 
 	#[error(transparent)]
 	RuntimeRejected(#[from] RuntimeError),
@@ -262,14 +261,13 @@ async fn validate_bundled_ruleset_top(
 					})
 					.collect();
 
-				// this to_string() is probably not necessary in some arrangement, it seems possible to get possibly_effected_uses to be borrowing from the raw result or whatever's underneath this thing, but for now it's fine
 				(u.using_full_path.to_string(), function_uses, table_uses)
 			})
 			.all().await?;
 
-		let usable_columns = queries::rulesets::get_usable_columns().bind(&ctx.migrate_server_client)
+		let usable_columns = queries::reflection::get_usable_columns().bind(&ctx.migrate_server_client)
 			.map(|u| UseableObject {
-				ruleset_path: u.schema_name[8..].to_string(),
+				ruleset_path: u.ruleset_path.to_string(),
 				object_name: u.table_name.to_string(),
 				db_object: UseableDbObject::Table {
 					columns: u.columns.map(|col| RoughColumn {
@@ -282,13 +280,13 @@ async fn validate_bundled_ruleset_top(
 			})
 			.iter().await?;
 
-		let usable_functions = queries::rulesets::get_usable_functions().bind(&ctx.migrate_server_client)
+		let usable_functions = queries::reflection::get_usable_functions().bind(&ctx.migrate_server_client)
 			.map(|u| UseableObject {
-				ruleset_path: u.schema_name[8..].to_string(),
+				ruleset_path: u.ruleset_path.to_string(),
 				object_name: u.function_name.to_string(),
 				db_object: UseableDbObject::Function {
 					is_action: u.is_action,
-					params: u.params.map(|param| RoughParam { name: param.name.to_string(), pg_type_name: param.typ.to_string() }).collect(),
+					function_params: u.function_params.map(str::to_string).collect(),
 					return_type: u.return_type.to_string(),
 				},
 			})
@@ -306,6 +304,10 @@ async fn validate_bundled_ruleset_top(
 		// });
 		validate_schema_uses(&possibly_effected_uses, &existent_objects_by_ruleset_path_and_name)
 			.map_err(ValidationError::InvalidUses)?;
+
+		let foreign_key_references = queries::reflection::get_foreign_keys().bind(&ctx.migrate_server_client).all().await?;
+		validate_schema_references(&foreign_key_references, table_references_by_ruleset_and_table_and_column)
+			.map_err(ValidationError::InvalidReferences)?;
 
 		Ok(())
 	}).await?;
@@ -487,8 +489,10 @@ async fn validate_bundled_ruleset_children(
 	}
 }
 
+// we need to refactor this to also accept a list of foreign keys
 fn validate_schema_uses(
 	possibly_effected_uses: &Vec<(String, Vec<ConcreteFunctionUse>, Vec<ConcreteTableUse>)>,
+	// TODO the Hash impl of UseableObject needs to only hash the ruleset path and name
 	existent_objects_by_ruleset_path_and_name: &hashbrown::HashSet<UseableObject>,
 ) -> Result<(), Vec<String>> {
 	let mut errors = vec![];
@@ -545,7 +549,7 @@ fn validate_schema_uses(
 
 		for ConcreteFunctionUse { ruleset_path, object_name, is_action: use_is_action, params: use_params, return_type: use_return_type } in function_uses {
 			let obj = existent_objects_by_ruleset_path_and_name.get(&(ruleset_path.as_str(), object_name.as_str()));
-			if let Some(UseableObject { db_object: UseableDbObject::Function { is_action: usable_is_action, params: usable_params, return_type: usable_return_type }, .. }) = obj {
+			if let Some(UseableObject { db_object: UseableDbObject::Function { is_action: usable_is_action, function_params: usable_params, return_type: usable_return_type }, .. }) = obj {
 				if *use_is_action && !usable_is_action {
 					errors.push(format!("ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} as volatile, but that isn't allowed"));
 				}
@@ -562,10 +566,10 @@ fn validate_schema_uses(
 					continue
 				}
 				for (i, (use_param_type, usable_param)) in use_params.iter().zip(usable_params.iter()).enumerate() {
-					if use_param_type != &usable_param.pg_type_name {
+					if use_param_type != usable_param {
 						errors.push(format!(
-							"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} param {} (name {}) as type {}, but available type is {}",
-							i, usable_param.name, use_param_type, usable_param.pg_type_name,
+							"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} param {} as type {}, but available type is {}",
+							i, use_param_type, usable_param,
 						));
 					}
 				}
@@ -581,6 +585,156 @@ fn validate_schema_uses(
 
 	if errors.len() > 0 { Err(errors) }
 	else { Ok(()) }
+}
+
+fn validate_schema_references(
+	foreign_key_references: &Vec<GetForeignKeys>,
+	table_references_by_ruleset_and_table_and_column: &HashMap<(&str, &str, &str), UseColumn>,
+) -> Result<(), Vec<String>> {
+	let mut errors = vec![];
+
+	use crate::queries::reflection::GetForeignKeys;
+	for GetForeignKeys { using_ruleset_path, used_ruleset_path, table_name, column_name } in foreign_key_references {
+		let table_use = table_references_by_ruleset_and_table_and_column.get(&(&used_ruleset_path, &table_name, &column_name));
+
+		if let Some(UseColumn { use_kind: ColumnUseKind::Reference | ColumnUseKind::Both, .. }) = table_use {
+			/* we're good, the key is justified by a reference use */
+		}
+		else if let Some(UseColumn { use_kind: ColumnUseKind::Query, .. }) = table_use {
+			errors.push(format!(
+				"ruleset {using_ruleset_path} still has a foreign key pointing to {used_ruleset_path}.{table_name}.{column_name}, but its declared \"use\" only allows it to query that column, not reference it",
+			));
+		}
+		else {
+			errors.push(format!(
+				"ruleset {using_ruleset_path} still has a foreign key pointing to {used_ruleset_path}.{table_name}.{column_name}, but it doesn't have a declared \"use\" to reference that column",
+			));
+		}
+	}
+
+	if errors.len() > 0 { Err(errors) }
+	else { Ok(()) }
+}
+
+async fn add_and_check_ruleset_grant_commands_top(
+	server_client: &PgClient,
+	grant_commands: &mut Vec<String>,
+	possibly_effected_uses: &Vec<(String, Vec<ConcreteFunctionUse>, Vec<ConcreteTableUse>)>,
+) -> Result<(), ValidationError> {
+
+	let function_grants = queries::reflection::get_function_grants();
+	let column_grants = queries::reflection::get_column_grants();
+	let (function_grants, column_grants) = futures::try_join!(
+		function_grants.bind(server_client).all(),
+		column_grants.bind(server_client).all(),
+	)?;
+
+	add_and_check_ruleset_grant_commands(grant_commands, possibly_effected_uses, function_grants, column_grants)?;
+
+	Ok(())
+}
+
+use crate::queries::reflection::{GetColumnGrants, GetFunctionGrants};
+
+
+
+// after *all* of the migrations have been made to apply a candidate, we need to:
+// check that the uses and actual references are valid
+// - check that the uses in the final state are all valid, both that the object they point to exists and is of the right kind, and in the future whether that object is allowed to be used in that way
+// - check that every actual column reference is backed up by a references use, basically that it's allowed (really this should just be folded into the existing checking/validating of uses)
+// make sure the final state of the grants is correct, in a "clear all and replace" way (this produces a list of grant_commands we can batch_execute)
+// - go through all *actual* grants and revoke them all, just to avoid confusion and do things the easy way
+// - go through all the *new* uses and make grants for them all
+
+
+
+
+
+// so we'll have a "check uses against permissions" function
+// - it needs to grab the literal privileges (only care about column select/references) as well as any foreign key objects (we care about those because the references privilege is about *creating* referencing objects, not about *having* them)
+// - it needs the uses obviously
+// - we need to group together the referencing privileges along with the
+// so I imagine a query with columns:
+// using_schema (this comes from the role name, we have to extract the actual ruleset name from it),
+// used_schema, table_name, column_name, has_select_priv, has_reference_priv, has_referencing_key
+// - so we loop over the column privileges, and check if there's a *uses* that justifies it. if not we revoke it. if there's a referencing object that isn't justified we fail the ruleset. if there *is* a use justifying it but no corresponding privileges, we grant them
+// importantly, this has to happen *after* the ruleset being *used* has been fully modified to its new form
+// the reason for this is because it's fine if our grants get scrambled by the mutation, as long as we can look at what we *should* have after the update in the *using* ruleset, because that's what the rectification process is for
+
+// this rectify_uses happens after *all* schema changes have been made, and it doesn't care at all about the *previous* uses, only the new ones, comparing against the *actual* permissions that currently exist
+// are there any situations where we
+
+fn add_and_check_ruleset_grant_commands(
+	grant_commands: &mut Vec<String>,
+	actual_function_uses: &HashMap<(&str, &str), ConcreteFunctionUse>,
+	actual_column_uses: &HashMap<(&str, &str, &str), ConcreteTableUse>,
+	function_grants: Vec<GetFunctionGrants>,
+	column_grants: Vec<GetColumnGrants>,
+) -> Result<(), ValidationError> {
+	// essentially this needs to iterate through the *grants*, the ones that actually exist, and for each try to determine whether it *should* exist
+	// if it shouldn't, we just revoke it, assuming that it previously had a valid uses but the object was renamed or something (and we don't have the ability to tell if such renames etc happened, at least without writing a postgres static analysis engine)
+	// the only thing we actually flag as a *problem* is if there's a reference still in existence that is no longer justified by a uses, since that means that ruleset itself didn't clean it up. that's something we need to fail the validation for
+
+	// we could also just revoke *all* existing grants and then issue commands to grant all the new ones at the end?
+	// revoking a grant is cheap and won't error as long as the objects it's referencing exist, which here we know
+
+	// here's a problem, we need to not only check the *grants* to see if they're justified, we also need to check *all* the foreign keys held by a ruleset to ensure it's justified
+	// this ensures we catch ones that never made any sense
+
+	// the easiest way to do this is just to revoke everything for all the rulesets a ruleset actually points to
+	// although we still have figure out which ones it actually points to in order to not waste a huge amount of time
+	// revoke all privileges on all tables in schema schema_name from role_name;
+	// revoke all privileges on all sequences in schema schema_name from role_name;
+	// revoke all privileges on all functions in schema schema_name from role_name;
+	// revoke all privileges on all routines in schema schema_name from role_name;
+	// revoke all privileges on schema schema_name from role_name;
+
+
+	for GetFunctionGrants {
+		 using_ruleset_path, used_ruleset_path, function_name, function_params, has_execute_priv,
+	} in function_grants {
+		// find out if this function grant is justified by a uses
+		if let Some(function_use) = actual_function_uses.get(&(&using_schema, &function_name)) {
+			// we need to be sure the types of the granted object actually correspond to the types of the use
+
+		}
+	}
+
+	for GetColumnGrants {
+		using_ruleset_path, used_ruleset_path, table_name, column_name, has_reference_priv, has_select_priv,
+	} in column_grants {
+		// find out if this column grant is justified by a uses
+		let column_use = actual_column_uses.get(&(&using_schema, &table_name, &column_name));
+	}
+
+	Ok(())
+}
+
+enum GrantKind { Granting, Revoking }
+fn add_function_grant_commands(
+	grant_commands: &mut Vec<String>, granting: GrantKind,
+	formatted_used_schema: &str, object_name: &str, is_action: bool,
+	formatted_using_role_action: &str, formatted_using_role_view: &str,
+) {
+	// TODO should we allow the migrator role to call functions in foreign rulesets? I don't think we should
+	if let GrantKind::Granting = granting {
+		grant_commands.push(format!(r#"
+			grant all permissions on function "{formatted_used_schema}"."{object_name}" to "{formatted_using_role_action}";
+		"#));
+
+		if !is_action { grant_commands.push(format!(r#"
+			grant all permissions on function "{formatted_used_schema}"."{object_name}" to "{formatted_using_role_view}";
+		"#)); }
+	}
+	else {
+		grant_commands.push(format!(r#"
+			revoke all permissions on function "{formatted_used_schema}"."{object_name}" from "{formatted_using_role_action}";
+		"#));
+
+		if !is_action { grant_commands.push(format!(r#"
+			revoke all permissions on function "{formatted_used_schema}"."{object_name}" from "{formatted_using_role_view}";
+		"#)); }
+	}
 }
 
 
@@ -752,30 +906,6 @@ pub async fn apply_candidate_top(
 	Ok(())
 }
 
-// grants are noop if they already exist
-// in the case of renames, the grant moves. this is bad in the situation where the using ruleset *removes* it's grant!
-// ultimately the thing we really need to do is compare the *stated* uses against the *actual* privileges.
-// if we do that, then everything will be fine, because we just revoke all the privileges that still exist that aren't directly supported by a *use*
-
-// so we'll have a "check uses against permissions" function
-// - it needs to grab the literal privileges (only care about column select/references) as well as any foreign key objects (we care about those because the references privilege is about *creating* referencing objects, not about *having* them)
-// - it needs the uses obviously
-// - we need to group together the referencing privileges along with the
-// so I imagine a query with columns:
-// using_schema (this comes from the role name, we have to extract the actual ruleset name from it),
-// used_schema, table_name, column_name, has_select_priv, has_reference_priv, has_referencing_key
-// - so we loop over the column privileges, and check if there's a *uses* that justifies it. if not we revoke it. if there's a referencing object that isn't justified we fail the ruleset. if there *is* a use justifying it but no corresponding privileges, we grant them
-// importantly, this has to happen *after* the ruleset being *used* has been fully modified to its new form
-// the reason for this is because it's fine if our grants get scrambled by the mutation, as long as we can look at what we *should* have after the update in the *using* ruleset, because that's what the rectification process is for
-
-// this rectify_uses happens after *all* schema changes have been made, and it doesn't care at all about the *previous* uses, only the new ones, comparing against the *actual* permissions that currently exist
-// are there any situations where we
-
-
-// async fn rectify_uses(arg: Type) -> RetType {
-// 	unimplemented!()
-// }
-
 async fn apply_candidate(
 	base_config: &PgConfig,
 	server_role_tx: &mut postgres::Transaction<'_>,
@@ -829,47 +959,20 @@ async fn apply_candidate(
 		let db_uses_tables = db_uses_tables.into_iter()
 			.map(|f| ((f.ruleset_path, f.object_name), f.columns)).collect::<HashMap<_, _>>();
 
-		enum GrantKind { Granting, Revoking }
-		fn add_function_uses_commands(
-			uses_commands: &mut Vec<String>, granting: GrantKind,
-			formatted_used_schema: &str, object_name: &str, is_action: bool,
-			formatted_using_role_action: &str, formatted_using_role_view: &str,
-		) {
-			// TODO should we allow the migrator role to call functions in foreign rulesets? I don't think we should
-			if let GrantKind::Granting = granting {
-				uses_commands.push(format!(r#"
-					grant all permissions on function "{formatted_used_schema}"."{object_name}" to "{formatted_using_role_action}";
-				"#));
-
-				if !is_action { uses_commands.push(format!(r#"
-					grant all permissions on function "{formatted_used_schema}"."{object_name}" to "{formatted_using_role_view}";
-				"#)); }
-			}
-			else {
-				uses_commands.push(format!(r#"
-					revoke all permissions on function "{formatted_used_schema}"."{object_name}" from "{formatted_using_role_action}";
-				"#));
-
-				if !is_action { uses_commands.push(format!(r#"
-					revoke all permissions on function "{formatted_used_schema}"."{object_name}" from "{formatted_using_role_view}";
-				"#)); }
-			}
-		}
-
-		let mut uses_commands = vec![];
+		let mut grant_commands = vec![];
 		let joined_db_uses_functions = crate::outer_join(&prev_db_uses_functions, &db_uses_functions);
 		for ((used_ruleset_path, object_name), opt) in joined_db_uses_functions {
 			let formatted_used_schema = format_ruleset_schema(&used_ruleset_path);
 			match opt {
 				crate::JoinOption::Left((is_action, _, _)) => {
-					add_function_uses_commands(&mut uses_commands, GrantKind::Granting, &formatted_used_schema, &object_name, *is_action, &formatted_using_role_action, &formatted_using_role_view);
+					add_function_grant_commands(&mut grant_commands, GrantKind::Granting, &formatted_used_schema, &object_name, *is_action, &formatted_using_role_action, &formatted_using_role_view);
 				},
 				crate::JoinOption::Right((is_action, params, return_type)) => {
-					add_function_uses_commands(&mut uses_commands, GrantKind::Revoking, &formatted_used_schema, &object_name, *is_action, &formatted_using_role_action, &formatted_using_role_view);
+					add_function_grant_commands(&mut grant_commands, GrantKind::Revoking, &formatted_used_schema, &object_name, *is_action, &formatted_using_role_action, &formatted_using_role_view);
 				},
 				crate::JoinOption::Both((prev_is_action, _, _), (is_action, _, _)) => {
-					add_function_uses_commands(&mut uses_commands, GrantKind::Revoking, &formatted_used_schema, &object_name, *prev_is_action, &formatted_using_role_action, &formatted_using_role_view);
-					add_function_uses_commands(&mut uses_commands, GrantKind::Granting, &formatted_used_schema, &object_name, *is_action, &formatted_using_role_action, &formatted_using_role_view);
+					add_function_grant_commands(&mut grant_commands, GrantKind::Revoking, &formatted_used_schema, &object_name, *prev_is_action, &formatted_using_role_action, &formatted_using_role_view);
+					add_function_grant_commands(&mut grant_commands, GrantKind::Granting, &formatted_used_schema, &object_name, *is_action, &formatted_using_role_action, &formatted_using_role_view);
 				},
 			}
 		}
@@ -879,7 +982,7 @@ async fn apply_candidate(
 			let formatted_used_schema = format_ruleset_schema(&used_ruleset_path);
 			match opt {
 				crate::JoinOption::Left(columns) => {
-					columns.iter().map(|c| c.)
+					// columns.iter().map(|c| c.)
 					// TODO similar to functions, but per-column
 				},
 				crate::JoinOption::Right(columns) => {
