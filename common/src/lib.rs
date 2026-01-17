@@ -1,4 +1,7 @@
 pub mod rulesets;
+#[cfg(test)]
+mod rulesets_test;
+
 pub mod runtime;
 pub mod gen_queries;
 pub mod gen_ts;

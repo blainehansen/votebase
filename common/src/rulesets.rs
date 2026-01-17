@@ -121,11 +121,18 @@ impl ColumnUseKind {
 }
 
 
-#[derive(Debug, Eq, PartialEq, Hash)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct UseableObject {
 	pub ruleset_path: String,
 	pub object_name: String,
 	pub db_object: UseableDbObject,
+}
+impl std::hash::Hash for UseableObject {
+	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+		self.ruleset_path.hash(state);
+		self.object_name.hash(state);
+		// not db_object
+	}
 }
 impl hashbrown::Equivalent<UseableObject> for (&str, &str) {
 	fn equivalent(&self, key: &UseableObject) -> bool {
@@ -183,7 +190,7 @@ pub enum CandidateApplyError {
 }
 
 
-struct ValidateCtx {
+pub(crate) struct ValidateCtx {
 	db_container_name: String,
 	reset_server_client: PgClient,
 	reset_config: PgConfig,
@@ -192,18 +199,16 @@ struct ValidateCtx {
 }
 
 #[derive(Debug)]
-struct StoredRuleset {
-	ts_code: String,
-	db_schema: String,
-	// TODO when applying a ruleset, if there were uses that existed before that don't exist now, the grants for those old objects need to be revoked
-	// if possible, just revoke *all* the old permissions and then grant the new ones afresh
-	db_uses_functions: Vec<ConcreteFunctionUse>,
-	db_uses_tables: Vec<ConcreteTableUse>,
-	static_children: HashMap<String, StoredRuleset>,
+pub struct StoredRuleset {
+	pub ts_code: String,
+	pub db_schema: String,
+	pub db_uses_functions: Vec<ConcreteFunctionUse>,
+	pub db_uses_tables: Vec<ConcreteTableUse>,
+	pub static_children: HashMap<String, StoredRuleset>,
 	// static_recurring_events: HashMap<String, StaticRecurringEvent>,
 }
 
-async fn validate_bundled_ruleset_top(
+pub async fn validate_bundled_ruleset_top(
 	parent_full_path: Option<&str>, ruleset_name: &str,
 	full_path: &str,
 	prev_ruleset: Option<&StoredRuleset>,
@@ -211,6 +216,7 @@ async fn validate_bundled_ruleset_top(
 	server_db_archive_path: &std::path::Path,
 ) -> Result<(), ValidationError> {
 	temp_container_utils::with_temp_postgres_client(async |db_container_name, config, server_client| -> Result<(), ValidationError> {
+		// set up the two separate checking dbs
 		let reset_db_name = "tempdb|reset";
 		let migrate_db_name = "tempdb|migrate";
 		server_client.batch_execute(&format!(r#"create database "{reset_db_name}""#)).await?;
@@ -231,10 +237,12 @@ async fn validate_bundled_ruleset_top(
 			db_container_name, reset_server_client, reset_config, migrate_server_client, migrate_config,
 		};
 
+		// do the recursive validation, which is basically just application! but to two things at the same time
 		validate_bundled_ruleset(full_path, parent_full_path, ruleset_name, &ctx, prev_ruleset, next_bundled_ruleset).await?;
 
 		// TODO it would be nice to figure out how to try_join all these below queries
 
+		// grab the data needed to validate the uses state after doing the application
 		// both possibly_effected_uses and existent_objects_by_ruleset_path_and_name come from the now updated state of the database
 		let possibly_effected_uses = queries::rulesets::get_possibly_effected_uses().bind(&ctx.migrate_server_client)
 			.map(|u| {
@@ -328,7 +336,7 @@ pub async fn podman_votebase_tsc(full_ruleset_dir: &std::path::Path) -> Result<(
 	else { Ok(()) }
 }
 
-async fn validate_bundled_ruleset(
+pub(crate) async fn validate_bundled_ruleset(
 	full_path: &str,
 	parent_full_path: Option<&str>, ruleset_name: &str,
 	ctx: &ValidateCtx,
@@ -358,35 +366,10 @@ async fn validate_bundled_ruleset(
 		}).collect();
 		(u.ruleset_path.as_str(), u.object_name.as_str(), columns_vec)
 	}).collect();
-	// TODO we have to make sure that if a references use is being dropped, that after the db_migration no items in the new ruleset in fact are still doing that reference
-	// with unnested_confkey as (
-	//   select oid, unnest(confkey) as confkey
-	//   from pg_constraint
-	// ),
-	// unnested_conkey as (
-	//   select oid, unnest(conkey) as conkey
-	//   from pg_constraint
-	// )
-	// select
-	//   c.conname as constraint_name,
-	//   tbl.relname as constraint_table,
-	//   col.attname as constraint_column,
-	//   referenced_tbl.relname as referenced_table,
-	//   referenced_field.attname as referenced_column,
-	//   pg_get_constraintdef(c.oid) as definition
-	// from pg_constraint c
-	// left join unnested_conkey con on c.oid = con.oid
-	// left join pg_class tbl on tbl.oid = c.conrelid
-	// left join pg_attribute col on (col.attrelid = tbl.oid and col.attnum = con.conkey)
-	// left join pg_class referenced_tbl on c.confrelid = referenced_tbl.oid
-	// left join unnested_confkey conf on c.oid = conf.oid
-	// left join pg_attribute referenced_field on (referenced_field.attrelid = c.confrelid and referenced_field.attnum = conf.confkey)
-	// where c.contype = 'f';
 
 	let formatted_ruleset_schema =
 		if prev_ruleset.is_some() {
 			// for reset, delete and recreate the ruleset
-			// this delete is a cascade
 			queries::rulesets::delete_ruleset().bind(&ctx.reset_server_client, &full_path).await?;
 			let (_, formatted_ruleset_schema) = create_ruleset_validation(
 				&ctx.reset_config, &ctx.reset_server_client, parent_full_path, ruleset_name,
@@ -489,43 +472,52 @@ async fn validate_bundled_ruleset_children(
 	}
 }
 
-// we need to refactor this to also accept a list of foreign keys
 fn validate_schema_uses(
 	possibly_effected_uses: &Vec<(String, Vec<ConcreteFunctionUse>, Vec<ConcreteTableUse>)>,
-	// TODO the Hash impl of UseableObject needs to only hash the ruleset path and name
 	existent_objects_by_ruleset_path_and_name: &hashbrown::HashSet<UseableObject>,
 ) -> Result<(), Vec<String>> {
 	let mut errors = vec![];
 
 	for (using_ruleset_path, function_uses, table_uses) in possibly_effected_uses {
 
-		for ConcreteTableUse { ruleset_path, object_name, columns: use_columns } in table_uses {
-			let obj = existent_objects_by_ruleset_path_and_name.get(&(ruleset_path.as_str(), object_name.as_str()));
+		for ConcreteTableUse {
+			ruleset_path: used_ruleset_path, object_name,
+			columns: used_columns,
+		} in table_uses {
+
+			if used_ruleset_path.starts_with(using_ruleset_path) {
+				errors.push(format!(
+					"ruleset {using_ruleset_path} is attempting to use {used_ruleset_path}.{object_name}, but rulesets aren't allowed to reference their descendants",
+				));
+				continue
+			}
+
+			let obj = existent_objects_by_ruleset_path_and_name.get(&(used_ruleset_path.as_str(), object_name.as_str()));
 			if let Some(UseableObject { db_object: UseableDbObject::Table { columns: usable_columns }, .. }) = obj {
-				for UseColumn { name: use_col_name, pg_type: use_col_pg_type_name, can_null, use_kind } in use_columns {
+				for UseColumn { name: use_col_name, pg_type: use_col_pg_type_name, can_null, use_kind } in used_columns {
 					match usable_columns.iter().find(|c| &c.name == use_col_name) {
 						Some(usable_col) => {
 							if &usable_col.pg_type_name != use_col_pg_type_name {
 								errors.push(format!(
-									"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{use_col_name} as type {use_col_pg_type_name}, but available type is {}",
+									"ruleset {using_ruleset_path} uses {used_ruleset_path}.{object_name}.{use_col_name} as type {use_col_pg_type_name}, but available type is {}",
 									usable_col.pg_type_name
 								));
 							}
 							if usable_col.not_null && *can_null {
 								errors.push(format!(
-									"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{use_col_name} expecting not null, but it's nullable",
+									"ruleset {using_ruleset_path} uses {used_ruleset_path}.{object_name}.{use_col_name} expecting not null, but it's nullable",
 								));
 							}
 							match (use_kind, &usable_col.allowed_use) {
 								(_, ColumnUseKind::Both) => { /* everything is allowed */ },
 								(ColumnUseKind::Both | ColumnUseKind::Query, ColumnUseKind::Reference) => {
 									errors.push(format!(
-										"ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}.{use_col_name} to query, which isn't allowed",
+										"ruleset {using_ruleset_path} tries to use {used_ruleset_path}.{object_name}.{use_col_name} to query, which isn't allowed",
 									));
 								},
 								(ColumnUseKind::Both | ColumnUseKind::Reference, ColumnUseKind::Query) => {
 									errors.push(format!(
-										"ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}.{use_col_name} to reference, which isn't allowed",
+										"ruleset {using_ruleset_path} tries to use {used_ruleset_path}.{object_name}.{use_col_name} to reference, which isn't allowed",
 									));
 								},
 								_ => {}
@@ -533,52 +525,63 @@ fn validate_schema_uses(
 						},
 						None => {
 							errors.push(format!(
-								"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name}.{use_col_name}, but that column is not available"
+								"ruleset {using_ruleset_path} uses {used_ruleset_path}.{object_name}.{use_col_name}, but that column is not available"
 							));
 						}
 					}
 				}
 			}
 			else if let Some(UseableObject { db_object: UseableDbObject::Function { .. }, .. }) = obj {
-				errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name} as a table, but it's a function"));
+				errors.push(format!("ruleset {using_ruleset_path} tries to use {used_ruleset_path}.{object_name} as a table, but it's a function"));
 			}
 			else {
-				errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
+				errors.push(format!("ruleset {using_ruleset_path} tries to use {used_ruleset_path}.{object_name}, but it doesn't exist"));
 			}
 		}
 
-		for ConcreteFunctionUse { ruleset_path, object_name, is_action: use_is_action, params: use_params, return_type: use_return_type } in function_uses {
-			let obj = existent_objects_by_ruleset_path_and_name.get(&(ruleset_path.as_str(), object_name.as_str()));
+		for ConcreteFunctionUse {
+			ruleset_path: used_ruleset_path, object_name,
+			is_action: used_is_action, params: used_params, return_type: used_return_type,
+		} in function_uses {
+
+			if used_ruleset_path.starts_with(using_ruleset_path) {
+				errors.push(format!(
+					"ruleset {using_ruleset_path} is attempting to use {used_ruleset_path}.{object_name}, but rulesets aren't allowed to reference their descendants",
+				));
+				continue
+			}
+
+			let obj = existent_objects_by_ruleset_path_and_name.get(&(used_ruleset_path.as_str(), object_name.as_str()));
 			if let Some(UseableObject { db_object: UseableDbObject::Function { is_action: usable_is_action, function_params: usable_params, return_type: usable_return_type }, .. }) = obj {
-				if *use_is_action && !usable_is_action {
-					errors.push(format!("ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} as volatile, but that isn't allowed"));
+				if *used_is_action && !usable_is_action {
+					errors.push(format!("ruleset {using_ruleset_path} uses {used_ruleset_path}.{object_name} as volatile, but that isn't allowed"));
 				}
-				if use_return_type != usable_return_type {
-					errors.push(format!("ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} with return type {use_return_type}, but it returns {usable_return_type}"));
+				if used_return_type != usable_return_type {
+					errors.push(format!("ruleset {using_ruleset_path} uses {used_ruleset_path}.{object_name} with return type {used_return_type}, but it returns {usable_return_type}"));
 				}
 
-				if use_params.len() != usable_params.len() {
+				if used_params.len() != usable_params.len() {
 					errors.push(format!(
-						"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} with {} params, but it has {} params",
-						use_params.len(),
+						"ruleset {using_ruleset_path} uses {used_ruleset_path}.{object_name} with {} params, but it has {} params",
+						used_params.len(),
 						usable_params.len(),
 					));
 					continue
 				}
-				for (i, (use_param_type, usable_param)) in use_params.iter().zip(usable_params.iter()).enumerate() {
+				for (i, (use_param_type, usable_param)) in used_params.iter().zip(usable_params.iter()).enumerate() {
 					if use_param_type != usable_param {
 						errors.push(format!(
-							"ruleset {using_ruleset_path} uses {ruleset_path}.{object_name} param {} as type {}, but available type is {}",
+							"ruleset {using_ruleset_path} uses {used_ruleset_path}.{object_name} param {} as type {}, but available type is {}",
 							i, use_param_type, usable_param,
 						));
 					}
 				}
 			}
 			else if let Some(UseableObject { db_object: UseableDbObject::Table { .. }, .. }) = obj {
-				errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name} as a function, but it's a table"));
+				errors.push(format!("ruleset {using_ruleset_path} tries to use {used_ruleset_path}.{object_name} as a function, but it's a table"));
 			}
 			else {
-				errors.push(format!("ruleset {using_ruleset_path} tries to use {ruleset_path}.{object_name}, but it doesn't exist"));
+				errors.push(format!("ruleset {using_ruleset_path} tries to use {used_ruleset_path}.{object_name}, but it doesn't exist"));
 			}
 		}
 	}
@@ -593,7 +596,6 @@ fn validate_schema_references(
 ) -> Result<(), Vec<String>> {
 	let mut errors = vec![];
 
-	use crate::queries::reflection::GetForeignKeys;
 	for GetForeignKeys { using_ruleset_path, used_ruleset_path, table_name, column_name } in foreign_key_references {
 		let table_use = table_references_by_ruleset_and_table_and_column.get(&(&used_ruleset_path, &table_name, &column_name));
 
@@ -638,31 +640,7 @@ use crate::queries::reflection::{GetColumnGrants, GetFunctionGrants};
 
 
 
-// after *all* of the migrations have been made to apply a candidate, we need to:
-// check that the uses and actual references are valid
-// - check that the uses in the final state are all valid, both that the object they point to exists and is of the right kind, and in the future whether that object is allowed to be used in that way
-// - check that every actual column reference is backed up by a references use, basically that it's allowed (really this should just be folded into the existing checking/validating of uses)
-// make sure the final state of the grants is correct, in a "clear all and replace" way (this produces a list of grant_commands we can batch_execute)
-// - go through all *actual* grants and revoke them all, just to avoid confusion and do things the easy way
-// - go through all the *new* uses and make grants for them all
 
-
-
-
-
-// so we'll have a "check uses against permissions" function
-// - it needs to grab the literal privileges (only care about column select/references) as well as any foreign key objects (we care about those because the references privilege is about *creating* referencing objects, not about *having* them)
-// - it needs the uses obviously
-// - we need to group together the referencing privileges along with the
-// so I imagine a query with columns:
-// using_schema (this comes from the role name, we have to extract the actual ruleset name from it),
-// used_schema, table_name, column_name, has_select_priv, has_reference_priv, has_referencing_key
-// - so we loop over the column privileges, and check if there's a *uses* that justifies it. if not we revoke it. if there's a referencing object that isn't justified we fail the ruleset. if there *is* a use justifying it but no corresponding privileges, we grant them
-// importantly, this has to happen *after* the ruleset being *used* has been fully modified to its new form
-// the reason for this is because it's fine if our grants get scrambled by the mutation, as long as we can look at what we *should* have after the update in the *using* ruleset, because that's what the rectification process is for
-
-// this rectify_uses happens after *all* schema changes have been made, and it doesn't care at all about the *previous* uses, only the new ones, comparing against the *actual* permissions that currently exist
-// are there any situations where we
 
 fn add_and_check_ruleset_grant_commands(
 	grant_commands: &mut Vec<String>,
@@ -738,7 +716,7 @@ fn add_function_grant_commands(
 }
 
 
-async fn create_ruleset<'u>(
+pub(crate) async fn create_ruleset<'u>(
 	base_config: &PgConfig, client: &mut PgClient,
 	parent_full_path: Option<&str>, name: &str,
 	ruleset_code: &str, db_schema: &str, fns: &Vec<(String, FnType)>,
@@ -884,7 +862,10 @@ pub async fn apply_candidate_top(
 
 	// we always have *at least* a root ruleset, so whenever apply_candidate_top is being called it's to replace a ruleset
 	let mut server_role_tx = server_role_client.transaction().await?;
-	apply_candidate(&mut server_role_tx, Some(prev_ruleset), bundled_ruleset).await?;
+	apply_candidate(
+		base_config, &mut server_role_tx,
+		parent_full_path.as_deref(), &ruleset_name, &candidate_for, Some(prev_ruleset), bundled_ruleset,
+	).await?;
 
 	// we always delete other candidates if the old ruleset can't possibly be referencing any of them
 	// (which means it can't or at least shouldn't be using them in any continuous decision processes)
@@ -906,7 +887,7 @@ pub async fn apply_candidate_top(
 	Ok(())
 }
 
-async fn apply_candidate(
+pub(crate) async fn apply_candidate(
 	base_config: &PgConfig,
 	server_role_tx: &mut postgres::Transaction<'_>,
 	parent_full_path: Option<&str>, ruleset_name: &str, full_path: &str,
@@ -921,78 +902,20 @@ async fn apply_candidate(
 
 	// either migrate and update the ruleset if there was one previously...
 	if let Some(prev_ruleset) = prev_ruleset {
-		let migrator_pass = queries::rulesets::get_ruleset_migrator().bind(client, &full_path).one().await?;
+		let migrator_pass = queries::rulesets::get_ruleset_migrator().bind(server_role_tx, &full_path).one().await?;
 
 		let migrator_config = { let mut c = base_config.clone(); c.user(formatted_using_role_migrator); c.password(migrator_pass); c };
 		let migrator_client = crate::pg_con(&migrator_config).await?;
 		migrator_client.batch_execute(&db_migration).await?;
-		// remove all grants related to the uses of functions and tables
-		// or do a "rectification" process ugh
 
-		// rectification would go like this:
-		// go through the old uses, and for each that doesn't have a corresponding equivalent, revoke it directly
-		// for those that do have a new equivalent, if everything's the same do nothing, if they're different just make the changes implied by the differences
-		// this is once again an outer_join problem, where we join all the function uses and table uses and then go through the pairings and update accordingly
-		// since functions and tables aren't at all equivalent, if someone dropped a table/function and created a new one with that same name we're still okay, since that will be picked up as revoking the grant on the dropped thing (if even necessary? has the permission already disappeared when the item was dropped?) and granting entirely new permissions on the new thing
-		// and since all these permissions can be granted/revoked granularly by column and permission, we're fine just issuing them all individually
-
-		// all of this assumes that any ruleset we *use* already exists in the form we are updating it to! this is fine if children only reference ancestors, but not fine if people start doing sibling or cousin etc references
-		// in the future we can fix this by constructing a dag from all the uses
-
-		// this future dag will be even more complex
-		// the dag relationships aren't based on the *uses* themselves, but rather when a use points to an object that is somehow changing or newly coming into existence
-		// that's a better way to understand it: a dag pointer is only necessary if within the *current* application of the ruleset the thing it's pointing to is either changing or being created, because that means the thing needs to be created before we can issue the final grant for it
-		// - if a ruleset uses an object that is going away and still needs it, that's a violation we'll catch in validation
-		// - if a ruleset uses an object that is going away but will update to no longer use it, that that's fine, the deletion of the object will remove the permission for us
-		// - if a ruleset uses an object that is being updated in some way, then the changes to the object mean we won't have to revoke the old permission? it does probably mean we have to issue a grant for the new updated thing *after* the update itself has already happened
-		// the thing I'm most confused about is in what ways changes to an object invalidates grants that have already been made on it
-		// I have to experiment to find out what the state of permissions is after doing something like updating a column, it's name or type or whatever
-
-
-		let prev_db_uses_functions = prev_ruleset.db_uses_functions.into_iter()
-			.map(|f| ((f.ruleset_path, f.object_name), (f.is_action, f.params, f.return_type))).collect::<HashMap<_, _>>();
-		let prev_db_uses_tables = prev_ruleset.db_uses_tables.into_iter()
-			.map(|f| ((f.ruleset_path, f.object_name), f.columns)).collect::<HashMap<_, _>>();
-
-		let db_uses_functions = db_uses_functions.into_iter()
-			.map(|f| ((f.ruleset_path, f.object_name), (f.is_action, f.params, f.return_type))).collect::<HashMap<_, _>>();
-		let db_uses_tables = db_uses_tables.into_iter()
-			.map(|f| ((f.ruleset_path, f.object_name), f.columns)).collect::<HashMap<_, _>>();
-
+		// remove all grants the prev_ruleset had to foreign rulesets, and (re)grant all the new ones
+		// TODO in order to grant all the new ones, all the things you're granting to have to exist! this is fine if children only reference ancestors, but not fine if people start doing sibling or cousin etc references
+		// so before we do all the grants, we need to construct the entire new tree? that doesn't work cleanly because references grants are required in order for someone else to possibly construct a new foreign key
+		// so we have no real choice but to build the *siblings* in dag order (even more complicated if we're doing cousin references)
+		// this is at least necessary for *reference* uses, at least ones that will newly be exercised by creating references
+		// all the other ones though
 		let mut grant_commands = vec![];
-		let joined_db_uses_functions = crate::outer_join(&prev_db_uses_functions, &db_uses_functions);
-		for ((used_ruleset_path, object_name), opt) in joined_db_uses_functions {
-			let formatted_used_schema = format_ruleset_schema(&used_ruleset_path);
-			match opt {
-				crate::JoinOption::Left((is_action, _, _)) => {
-					add_function_grant_commands(&mut grant_commands, GrantKind::Granting, &formatted_used_schema, &object_name, *is_action, &formatted_using_role_action, &formatted_using_role_view);
-				},
-				crate::JoinOption::Right((is_action, params, return_type)) => {
-					add_function_grant_commands(&mut grant_commands, GrantKind::Revoking, &formatted_used_schema, &object_name, *is_action, &formatted_using_role_action, &formatted_using_role_view);
-				},
-				crate::JoinOption::Both((prev_is_action, _, _), (is_action, _, _)) => {
-					add_function_grant_commands(&mut grant_commands, GrantKind::Revoking, &formatted_used_schema, &object_name, *prev_is_action, &formatted_using_role_action, &formatted_using_role_view);
-					add_function_grant_commands(&mut grant_commands, GrantKind::Granting, &formatted_used_schema, &object_name, *is_action, &formatted_using_role_action, &formatted_using_role_view);
-				},
-			}
-		}
-
-		let joined_db_uses_tables = crate::outer_join(&prev_db_uses_tables, &db_uses_tables);
-		for ((used_ruleset_path, object_name), opt) in joined_db_uses_tables {
-			let formatted_used_schema = format_ruleset_schema(&used_ruleset_path);
-			match opt {
-				crate::JoinOption::Left(columns) => {
-					// columns.iter().map(|c| c.)
-					// TODO similar to functions, but per-column
-				},
-				crate::JoinOption::Right(columns) => {
-					// TODO similar to functions, but per-column
-				},
-				crate::JoinOption::Both(prev_columns, columns) => {
-					// TODO similar to functions, but per-column
-				},
-			}
-		}
+		add_and_check_ruleset_grant_commands_top(server_client, grant_commands, possibly_effected_uses).await?;
 	}
 	// ... or create it from scratch
 	else {
@@ -1086,7 +1009,9 @@ async fn get_stored_ruleset(full_path: &str) -> Result<StoredRuleset, postgres::
 
 
 // TODO is this necessary given the on delete cascade on parent_full_path?
-// honestly a big part of me wants to *get rid* of that delete cascade, and do these deletes in a depth-first way
+// honestly a big part of me wants to *get rid* of that delete cascade, and do these deletes in a bottom up way
+// the big tradeoff is between control of the process, the opportunity to do other work when you delete a ruleset:
+// vs having it be automatic
 async fn recursively_delete_ruleset(
 	full_path: &str,
 	ruleset: &StoredRuleset,
@@ -1108,16 +1033,16 @@ async fn recursively_delete_ruleset(
 
 pub async fn propose_candidate_ruleset(
 	parent_full_path: Option<&str>, ruleset_name: &str,
-	prev_ruleset: Option<&StoredRuleset>,
 	candidate: &BundledRuleset,
 	server_role_client: &PgClient,
 	server_db_archive_path: &std::path::Path,
 ) -> Result<uuid::Uuid, ValidationError> {
 	let full_path = &format_full_path(parent_full_path, ruleset_name);
+	let prev_ruleset = get_stored_ruleset(full_path).await?;
 
 	validate_bundled_ruleset_top(
 		parent_full_path, ruleset_name, full_path,
-		prev_ruleset, candidate, server_db_archive_path,
+		Some(&prev_ruleset), candidate, server_db_archive_path,
 	).await?;
 
 	let candidate_uuid = queries::rulesets::insert_candidate_replacement()

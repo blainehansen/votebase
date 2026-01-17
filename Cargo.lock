@@ -4727,6 +4727,8 @@ dependencies = [
 name = "votebase_common"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "assert_fs",
  "chrono",
  "db_generated",
  "db_schema_utils",

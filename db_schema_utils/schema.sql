@@ -32,6 +32,8 @@ alter default privileges in schema votebase_catalog grant all privileges on func
 alter default privileges in schema votebase_catalog grant all privileges on types to "votebase_server_{db_name}";
 
 create extension if not exists pgcrypto with schema votebase_catalog;
+-- https://github.com/supabase/pg_jsonschema/blob/master/dockerfiles/db/Dockerfile
+-- create extension if not exists pg_jsonschema with schema votebase_catalog;
 
 
 create function votebase_catalog.valid_name(name text) returns boolean as $$
@@ -103,7 +105,7 @@ create table votebase_catalog.ruleset (
 		when parent_full_path is null then "name"
 		else parent_full_path || '|' || "name"
 	end) stored,
-	parent_full_path text references votebase_catalog.ruleset(full_path) on delete cascade,
+	parent_full_path text references votebase_catalog.ruleset(full_path),
 	"name" text not null constraint name_only_letters check (votebase_catalog.valid_name("name")),
 
 	ts_code text not null,
@@ -141,7 +143,8 @@ create table votebase_catalog.candidate_replacement_ruleset (
 	id uuid primary key default gen_random_uuid(),
 	candidate_for text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 
-	bundled_ruleset jsonb not null
+	-- bundled_ruleset jsonb not null check (pg_jsonschema.json_matches_schema('', bundled_ruleset)),
+	bundled_ruleset jsonb not null,
 
 	-- ts_code text not null,
 	-- db_schema text not null,

@@ -1,0 +1,164 @@
+{ "$schema": "http://json-schema.org/draft-07/schema#", "definitions": {
+	"BundledRuleset": {
+		"type": "object",
+		"properties": {
+			"ts_code": { "type": "string" },
+			"db_schema": { "type": "string" },
+			"db_migration": { "type": "string" },
+			"db_uses_functions": {
+				"type": "array",
+				"items": { "$ref": "#/definitions/ConcreteFunctionUse" }
+			},
+			"db_uses_tables": {
+				"type": "array",
+				"items": { "$ref": "#/definitions/ConcreteTableUse" }
+			},
+			"static_children": {
+				"type": "object",
+				"additionalProperties": { "$ref": "#/definitions/KeepOrReplace_BundledRuleset" }
+			},
+			"static_recurring_events": {
+				"type": "object",
+				"additionalProperties": { "$ref": "#/definitions/KeepOrReplace_StaticRecurringEvent" }
+			},
+			"dynamic_children_keep_rule": { "type": "string" },
+			"dynamic_recurring_event_keep_rule": { "type": "string" },
+			"dynamic_standalone_event_keep_rule": { "type": "string" }
+		},
+		"required": ["ts_code", "db_schema", "db_migration", "db_uses_functions", "db_uses_tables", "static_children", "static_recurring_events", "dynamic_children_keep_rule", "dynamic_recurring_event_keep_rule", "dynamic_standalone_event_keep_rule"],
+		"additionalProperties": false
+	},
+	"ConcreteFunctionUse": {
+		"type": "object",
+		"properties": {
+			"ruleset_path": { "type": "string" },
+			"object_name": { "type": "string" },
+			"is_action": { "type": "boolean" },
+			"params": {
+				"type": "array",
+				"items": { "type": "string" }
+			},
+			"return_type": { "type": "string" }
+		},
+		"required": ["ruleset_path", "object_name", "is_action", "params", "return_type"],
+		"additionalProperties": false
+	},
+	"ConcreteTableUse": {
+		"type": "object",
+		"properties": {
+			"ruleset_path": { "type": "string" },
+			"object_name": { "type": "string" },
+			"columns": {
+				"type": "array",
+				"items": { "$ref": "#/definitions/UseColumn" }
+			}
+		},
+		"required": [
+			"ruleset_path",
+			"object_name",
+			"columns"
+		],
+		"additionalProperties": false
+	},
+	"UseColumn": {
+		"type": "object",
+		"properties": {
+			"name": { "type": "string" },
+			"pg_type": { "type": "string" },
+			"can_null": { "type": "boolean" },
+			"use_kind": { "$ref": "#/definitions/ColumnUseKind" }
+		},
+		"required": [
+			"name",
+			"pg_type",
+			"can_null",
+			"use_kind"
+		],
+		"additionalProperties": false
+	},
+	"ColumnUseKind": {
+		"type": "string",
+		"enum": [
+			"Query",
+			"Reference",
+			"Both"
+		]
+	},
+	"KeepOrReplace_BundledRuleset": {
+		"oneOf": [
+			{
+				"type": "object",
+				"properties": {
+					"Keep": {
+						"type": "null"
+					}
+				},
+				"required": [
+					"Keep"
+				],
+				"additionalProperties": false
+			},
+			{
+				"type": "object",
+				"properties": {
+					"Replace": { "$ref": "#/definitions/BundledRuleset" }
+				},
+				"required": [
+					"Replace"
+				],
+				"additionalProperties": false
+			}
+		]
+	},
+	"KeepOrReplace_StaticRecurringEvent": {
+		"oneOf": [
+			{
+				"type": "object",
+				"properties": {
+					"Keep": {
+						"type": "null"
+					}
+				},
+				"required": [
+					"Keep"
+				],
+				"additionalProperties": false
+			},
+			{
+				"type": "object",
+				"properties": {
+					"Replace": { "$ref": "#/definitions/StaticRecurringEvent" }
+				},
+				"required": [
+					"Replace"
+				],
+				"additionalProperties": false
+			}
+		]
+	},
+	"StaticRecurringEvent": {
+		"type": "object",
+		"properties": {
+			"description": { "type": "string" },
+			"start": { "type": "string", "format": "date-time"
+			},
+			"recurrence_granularity": { "type": "string" },
+			"recurrence_multiplier": {
+				"type": "integer",
+				"minimum": 0,
+				"maximum": 65535
+			},
+			"action_name": { "type": "string" },
+			"action_arg": {}
+		},
+		"required": [
+			"description",
+			"start",
+			"recurrence_granularity",
+			"recurrence_multiplier",
+			"action_name",
+			"action_arg"
+		],
+		"additionalProperties": false
+	}
+}, "$ref": "#/definitions/BundledRuleset" }
