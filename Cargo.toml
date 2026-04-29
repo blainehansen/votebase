@@ -14,8 +14,8 @@ members = [
 [workspace.dependencies]
 argh = "0.1"
 
-deno_core = "0.372"
-deno_error = "0.7.0"
+deno_core = "0.400"
+deno_error = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", default-features = false }
 # serde_jsonc2 = "0.1"

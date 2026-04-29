@@ -1,16 +1,89 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
-use deno_core::OpState;
+use deno_core::{OpState, FromV8, v8};
 
 use super::{RuntimeError, demand_external_allowed, run_err, js_err};
 use crate::{postgres, FnRolePg};
 
-#[derive(serde::Deserialize, Debug)]
-#[serde(variant_identifier)]
+// #[derive(serde::Deserialize, Debug)]
+// #[serde(variant_identifier)]
+#[derive(Debug)]
 pub enum PgTypeHint {
 	Json, Bool, Text, Bytea, Hstore,
 	I16, I32, I64, F32, F64,
 	// | `u32`: OID
 }
+
+impl<'a> FromV8<'a> for PgTypeHint {
+	type Error = deno_error::JsErrorBox;
+
+	fn from_v8(
+		scope: &mut v8::PinScope<'a, '_>,
+		value: v8::Local<'a, v8::Value>,
+	) -> Result<Self, Self::Error> {
+		if !value.is_string() {
+			return Err(deno_error::JsErrorBox::type_error(format!(
+				"expected string for PgTypeHint, got {}",
+				value.type_of(scope).to_rust_string_lossy(scope),
+			)));
+		}
+
+		match value.to_rust_string_lossy(scope).as_str() {
+			"json" => Ok(Self::Json),
+			"bool" => Ok(Self::Bool),
+			"text" => Ok(Self::Text),
+			"bytea" => Ok(Self::Bytea),
+			"hstore" => Ok(Self::Hstore),
+			"i16" => Ok(Self::I16),
+			"i32" => Ok(Self::I32),
+			"i64" => Ok(Self::I64),
+			"f32" => Ok(Self::F32),
+			"f64" => Ok(Self::F64),
+			other => Err(deno_error::JsErrorBox::type_error(format!(
+				"unknown PgTypeHint variant: {other:?}"
+			))),
+		}
+	}
+}
+
+
+#[derive(Debug)]
+pub enum HintedParam {
+	Json(serde_json::Value), Bool(bool), Text(String), Bytea(Vec<u8>), Hstore(HashMap<String, Option<String>>),
+	I16(i16), I32(i32), I64(i64), F32(f32), F64(f64),
+}
+
+impl<'a> FromV8<'a> for HintedParam {
+	type Error = deno_error::JsErrorBox;
+
+	fn from_v8(
+		scope: &mut v8::PinScope<'a, '_>,
+		value: v8::Local<'a, v8::Value>,
+	) -> Result<Self, Self::Error> {
+		if !value.is_string() {
+			return Err(deno_error::JsErrorBox::type_error(format!(
+				"expected string for PgTypeHint, got {}",
+				value.type_of(scope).to_rust_string_lossy(scope),
+			)));
+		}
+
+		match value.to_rust_string_lossy(scope).as_str() {
+			"json" => Ok(Self::Json),
+			"bool" => Ok(Self::Bool),
+			"text" => Ok(Self::Text),
+			"bytea" => Ok(Self::Bytea),
+			"hstore" => Ok(Self::Hstore),
+			"i16" => Ok(Self::I16),
+			"i32" => Ok(Self::I32),
+			"i64" => Ok(Self::I64),
+			"f32" => Ok(Self::F32),
+			"f64" => Ok(Self::F64),
+			other => Err(deno_error::JsErrorBox::type_error(format!(
+				"unknown PgTypeHint variant: {other:?}"
+			))),
+		}
+	}
+}
+
 
 pub fn prepare_param(
 	raw_param: serde_json::Value,
@@ -146,7 +219,7 @@ fn convert_col(row: &postgres::Row, ret: &PgTypeHint, i: usize) -> Result<serde_
 
 // op_sql_fetch_all: <P extends ParamHint[], R extends FullRetHint>
 // 	(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>[]>,
-#[deno_core::op2(async)]
+#[deno_core::op2(async(lazy))]
 #[serde]
 pub async fn op_sql_fetch_all(
 	state: Rc<RefCell<OpState>>,
@@ -177,7 +250,7 @@ pub async fn op_sql_fetch_all(
 
 // op_sql_fetch_one: <P extends ParamHint[], R extends FullRetHint>
 // 	(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R>>,
-#[deno_core::op2(async)]
+#[deno_core::op2(async(lazy))]
 #[serde]
 pub async fn op_sql_fetch_one(
 	state: Rc<RefCell<OpState>>,
@@ -210,7 +283,8 @@ pub async fn op_sql_fetch_one(
 
 // op_sql_fetch_optional: <P extends ParamHint[], R extends FullRetHint>
 // 	(sql: string, params: ActualParams<P>, hints: P, ret: R) => Promise<ActualRet<R> | null>,
-#[deno_core::op2(async)]
+// TODO apparently serde return values aren't recommended anymore
+#[deno_core::op2(async(lazy))]
 #[serde]
 pub async fn op_sql_fetch_optional(
 	state: Rc<RefCell<OpState>>,
@@ -243,12 +317,11 @@ pub async fn op_sql_fetch_optional(
 
 // op_sql_execute_statement: <P extends ParamHint[]>
 // 	(sql: string, params: ActualParams<P>, hints: P) => Promise<number>,
-#[deno_core::op2(async)]
+#[deno_core::op2(async(lazy))]
 pub async fn op_sql_execute_statement(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
-	#[serde] raw_params: Vec<serde_json::Value>,
-	#[serde] hints: Vec<PgTypeHint>,
+	#[scoped] hinted_params: Vec<HintedParam>,
 ) -> Result<u32, deno_error::JsErrorBox> {
 	let state = state.as_ref().borrow();
 	demand_external_allowed(&state)?;
@@ -266,7 +339,7 @@ pub async fn op_sql_execute_statement(
 }
 
 // op_sql_execute_statements: (sql: string) => Promise<void>,
-#[deno_core::op2(async)]
+#[deno_core::op2(async(lazy), fast)]
 pub async fn op_sql_execute_statements(
 	state: Rc<RefCell<OpState>>,
 	#[string] sql: String,
