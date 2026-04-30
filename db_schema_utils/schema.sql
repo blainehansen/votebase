@@ -43,17 +43,17 @@ create function votebase_catalog.valid_name(name text) returns boolean as $$
 $$ language plpgsql immutable;
 
 
-create type votebase_catalog.db_uses_function_struct as (
-	ruleset_path text, object_name text,
-	is_action boolean, return_type text, param_types text[]
-);
+-- create type votebase_catalog.db_uses_function_struct as (
+-- 	ruleset_path text, object_name text,
+-- 	is_action boolean, return_type text, param_types text[]
+-- );
 
-create type votebase_catalog.column_use_kind as enum('Query', 'Reference', 'Both');
-create type votebase_catalog.db_uses_column_struct as (name text, typ text, can_null boolean, use_kind votebase_catalog.column_use_kind);
-create type votebase_catalog.db_uses_table_struct as (
-	ruleset_path text, object_name text,
-	columns votebase_catalog.db_uses_column_struct[]
-);
+-- create type votebase_catalog.column_use_kind as enum('Query', 'Reference', 'Both');
+-- create type votebase_catalog.db_uses_column_struct as (name text, typ text, can_null boolean, use_kind votebase_catalog.column_use_kind);
+-- create type votebase_catalog.db_uses_table_struct as (
+-- 	ruleset_path text, object_name text,
+-- 	columns votebase_catalog.db_uses_column_struct[]
+-- );
 
 create type votebase_catalog.fn_type as enum('Action', 'View');
 create type votebase_catalog.ruleset_fn_raw as (
@@ -112,27 +112,24 @@ create table votebase_catalog.ruleset (
 	db_schema text not null,
 
 	fns votebase_catalog.ruleset_fn[] not null
-		constraint fns_different_names check (votebase_catalog.check_fns_different_names(fns)),
-	db_uses_functions votebase_catalog.db_uses_function_struct[] not null,
-	db_uses_tables votebase_catalog.db_uses_table_struct[] not null,
-
-	migrator_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
-	action_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64'),
-	view_pass text not null default encode(votebase_catalog.gen_random_bytes(526), 'base64')
+		constraint fns_different_names check (votebase_catalog.check_fns_different_names(fns))
+	-- db_uses_functions votebase_catalog.db_uses_function_struct[] not null,
+	-- db_uses_tables votebase_catalog.db_uses_table_struct[] not null,
 );
 
-create function votebase_catalog.drop_ruleset_schema_on_delete() returns trigger as $$
-begin
-	execute 'drop schema "ruleset:' || OLD.full_path || '" cascade';
-	execute 'drop role "role:' || OLD.full_path || '|migrator"';
-	execute 'drop role "role:' || OLD.full_path || '|action"';
-	execute 'drop role "role:' || OLD.full_path || '|view"';
-	return OLD;
-end;
-$$ language plpgsql;
-create trigger votebase_catalog_trigger_drop_ruleset_schema_on_delete
-after delete on votebase_catalog.ruleset for each row
-execute function votebase_catalog.drop_ruleset_schema_on_delete();
+-- TODO not sure if I should have this, it might just hide errors from me
+-- create function votebase_catalog.drop_ruleset_schema_on_delete() returns trigger as $$
+-- begin
+-- 	execute 'drop schema "ruleset:' || OLD.full_path || '" cascade';
+-- 	execute 'drop role "role:' || OLD.full_path || '|migrator"';
+-- 	execute 'drop role "role:' || OLD.full_path || '|action"';
+-- 	execute 'drop role "role:' || OLD.full_path || '|view"';
+-- 	return OLD;
+-- end;
+-- $$ language plpgsql;
+-- create trigger votebase_catalog_trigger_drop_ruleset_schema_on_delete
+-- after delete on votebase_catalog.ruleset for each row
+-- execute function votebase_catalog.drop_ruleset_schema_on_delete();
 
 create unique index votebase_catalog_ruleset_single_null_parent
 on votebase_catalog.ruleset((true))
@@ -144,7 +141,7 @@ create table votebase_catalog.candidate_replacement_ruleset (
 	candidate_for text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 
 	-- bundled_ruleset jsonb not null check (pg_jsonschema.json_matches_schema('', bundled_ruleset)),
-	bundled_ruleset jsonb not null,
+	bundled_ruleset jsonb not null
 
 	-- ts_code text not null,
 	-- db_schema text not null,
@@ -220,17 +217,17 @@ create table votebase_catalog.member (
 -- );
 
 
-create type votebase_catalog.rough_column_struct as (name text, typ text, not_null boolean);
+-- create type votebase_catalog.rough_column_struct as (name text, typ text, not_null boolean);
 
-create function votebase_catalog.format_fn_args(proargtypes oidvector) returns text[] as $$
-	begin
-		return array (
-			select pg_catalog.format_type(p.arg_type_oid, null)
-			from unnest(proargtypes::oid[])
-				with ordinality as p(arg_type_oid, ordinality)
-		);
-	end;
-$$ language plpgsql immutable;
+-- create function votebase_catalog.format_fn_args(proargtypes oidvector) returns text[] as $$
+-- 	begin
+-- 		return array (
+-- 			select pg_catalog.format_type(p.arg_type_oid, null)
+-- 			from unnest(proargtypes::oid[])
+-- 				with ordinality as p(arg_type_oid, ordinality)
+-- 		);
+-- 	end;
+-- $$ language plpgsql immutable;
 
 create function votebase_catalog.unformat_schema_name(schema_name text) returns text as $$
 	begin

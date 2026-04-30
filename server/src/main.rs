@@ -48,50 +48,50 @@ async fn main() -> std::io::Result<()> {
 	let pool = deadpool::Pool::builder(deadpool::Manager::new(server_role_config.clone(), postgres::NoTls))
 		.max_size(max_connections as usize)
 		.build().expect("Failed to create pool.");
-	let scheduled_action_queue = runtime::ScheduledActionQueue::new();
+	// let scheduled_action_queue = runtime::ScheduledActionQueue::new();
 
-	let queue_pool = pool.clone();
-	let queue_scheduled_action_queue = scheduled_action_queue.clone();
-	let queue_server_role_config = server_role_config.clone();
-	tokio::task::spawn(async move {
-		let client = match queue_pool.get().await {
-			Ok(client) => client,
-			Err(e) => {
-				log::error!("Failed to get client for queueing background tasks: {}", e);
-				return;
-			}
-		};
+	// let queue_pool = pool.clone();
+	// let queue_scheduled_action_queue = scheduled_action_queue.clone();
+	// let queue_server_role_config = server_role_config.clone();
+	// tokio::task::spawn(async move {
+	// 	let client = match queue_pool.get().await {
+	// 		Ok(client) => client,
+	// 		Err(e) => {
+	// 			log::error!("Failed to get client for queueing background tasks: {}", e);
+	// 			return;
+	// 		}
+	// 	};
 
-		match queries::scheduled::select_slim_detached_scheduled_actions().bind(&client).all().await {
-			Err(e) => log::error!("failed to fetch detached_scheduled_actions: {}", e),
-			Ok(detached_scheduled_actions) => {
-				log::info!("queuing {} detached_scheduled_actions", detached_scheduled_actions.len());
-				for action in detached_scheduled_actions {
-					queue_scheduled_action_queue.queue(
-						queue_pool.clone(), queue_server_role_config.clone(), votebase_common::ScheduledActionKind::DetachedScheduled,
-						action.id, action.scheduled_time.to_utc(),
-					);
-				}
-			},
-		}
+	// 	match queries::scheduled::select_slim_detached_scheduled_actions().bind(&client).all().await {
+	// 		Err(e) => log::error!("failed to fetch detached_scheduled_actions: {}", e),
+	// 		Ok(detached_scheduled_actions) => {
+	// 			log::info!("queuing {} detached_scheduled_actions", detached_scheduled_actions.len());
+	// 			for action in detached_scheduled_actions {
+	// 				queue_scheduled_action_queue.queue(
+	// 					queue_pool.clone(), queue_server_role_config.clone(), votebase_common::ScheduledActionKind::DetachedScheduled,
+	// 					action.id, action.scheduled_time.to_utc(),
+	// 				);
+	// 			}
+	// 		},
+	// 	}
 
-		match queries::scheduled::select_slim_detached_recurring_actions().bind(&client).all().await {
-			Err(e) => log::error!("failed to fetch detached_recurring_actions: {}", e),
-			Ok(detached_recurring_actions) => {
-				log::info!("queuing {} detached_recurring_actions", detached_recurring_actions.len());
-				for action in detached_recurring_actions {
-					queue_scheduled_action_queue.queue(
-						queue_pool.clone(), queue_server_role_config.clone(), votebase_common::ScheduledActionKind::DetachedRecurring,
-						action.id, action.next_scheduled_time.and_utc(),
-					);
-				}
-			},
-		}
+	// 	match queries::scheduled::select_slim_detached_recurring_actions().bind(&client).all().await {
+	// 		Err(e) => log::error!("failed to fetch detached_recurring_actions: {}", e),
+	// 		Ok(detached_recurring_actions) => {
+	// 			log::info!("queuing {} detached_recurring_actions", detached_recurring_actions.len());
+	// 			for action in detached_recurring_actions {
+	// 				queue_scheduled_action_queue.queue(
+	// 					queue_pool.clone(), queue_server_role_config.clone(), votebase_common::ScheduledActionKind::DetachedRecurring,
+	// 					action.id, action.next_scheduled_time.and_utc(),
+	// 				);
+	// 			}
+	// 		},
+	// 	}
 
 		// insert into votebase_catalog.detached_recurring_action
 		// (description, "start", recurrence_granularity, recurrence_multiplier, full_path, action_name, action_arg)
 		// values ('', current_timestamp, 'Day', 1, 'root', 'my_action', 'null'::json);
-	});
+	// });
 
 	#[cfg(debug_assertions)]
 	let host = std::env::var("VOTEBASE_HOST").unwrap_or("0.0.0.0".to_string());
@@ -114,9 +114,6 @@ async fn main() -> std::io::Result<()> {
 			.service(get_ruleset_detail)
 			.service(execute_action)
 			.service(execute_view);
-
-		#[cfg(debug_assertions)]
-		let app = app.service(debug_advance_time).wrap(actix_cors::Cors::permissive());
 
 		app
 	})
@@ -246,11 +243,4 @@ async fn execute_view(
 		server_role_config, &pool, scheduled_action_queue,
 	).await?;
 	Ok(web::Html::new(return_value))
-}
-
-#[cfg(debug_assertions)]
-#[actix_web::post("/__debug_advance_time")]
-async fn debug_advance_time(_amount: web::Json<()>) -> HttpResponse<()> {
-	// placeholder...
-	HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ())
 }

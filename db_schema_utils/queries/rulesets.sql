@@ -15,19 +15,14 @@ from votebase_catalog.ruleset
 where full_path = :ruleset_full_path;
 
 --! get_view_details
-select ts_code, view_pass as pass
+select ts_code
 from votebase_catalog.ruleset
 where full_path = :ruleset_full_path and votebase_catalog.has_fn(fns, :view_name, 'View');
 
 --! get_action_details
-select ts_code, action_pass, migrator_pass
+select ts_code
 from votebase_catalog.ruleset
 where full_path = :ruleset_full_path and votebase_catalog.has_fn(fns, :action_name, 'Action');
-
---! get_ruleset_migrator
-select migrator_pass
-from votebase_catalog.ruleset
-where full_path = :ruleset_full_path;
 
 -- https://dba.stackexchange.com/questions/195603/create-json-object-from-recursive-tree-structure
 
@@ -36,11 +31,11 @@ where full_path = :ruleset_full_path;
 --! insert_ruleset (parent_full_path?)
 insert into votebase_catalog.ruleset (
 	parent_full_path, "name",
-	ts_code, db_schema, fns, db_uses_functions, db_uses_tables
+	ts_code, db_schema, fns
 ) values (
 	:parent_full_path, :name,
-	:ts_code, :db_schema, :fns, :db_uses_functions, :db_uses_tables
-) returning full_path, migrator_pass, action_pass, view_pass;
+	:ts_code, :db_schema, :fns
+) returning full_path;
 
 --! delete_ruleset
 delete from votebase_catalog.ruleset
@@ -48,8 +43,7 @@ where full_path = :full_path;
 
 --! update_ruleset
 update votebase_catalog.ruleset set
-	ts_code = :ts_code, db_schema = :db_schema, fns = :fns,
-	db_uses_functions = :db_uses_functions, db_uses_tables = :db_uses_tables
+	ts_code = :ts_code, db_schema = :db_schema, fns = :fns
 where full_path = :full_path;
 
 -- MODIFYING RULESET CANDIDATES
@@ -98,14 +92,7 @@ where ruleset.candidate_for = target_candidate.candidate_for;
 -- where id = :candidate_uuid
 -- returning candidate_for, bundled_ruleset;
 
--- DB USES THINGS
-
---! get_possibly_effected_uses
-select full_path as using_full_path, db_uses_functions, db_uses_tables
-from votebase_catalog.ruleset;
--- where full_path in (:db_uses.ruleset);
-
--- -- TESTING FUNCTIONS
+-- TESTING FUNCTIONS
 
 --! test_select_candidate_replacement_ruleset
 select candidate_for, bundled_ruleset

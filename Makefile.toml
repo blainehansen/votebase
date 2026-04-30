@@ -13,17 +13,15 @@ default_to_workspace = false
 
 
 [tasks.do_gen_queries]
-command = "cargo"
-args = ["run", "-p", "db_schema_utils"]
+script = "cargo run -p db_schema_utils"
 condition = { files_modified = { input = ["./db_schema_utils/**/*"], output = ["./db_generated/**/*"] } }
 
 [tasks.dev_test]
-command = "cargo"
-args = ["test", "--", "--nocapture"]
+dependencies = ["do_gen_queries"]
+script = "cargo test -p votebase_common -- --nocapture"
 
 [tasks.votebase_tsc]
-command = "podman"
-args = ["build", "-t", "votebase-tsc", "-f", "Containerfile.votebase-tsc", "."]
+script = "podman build -t votebase-tsc -f Containerfile.votebase-tsc ."
 
 # [tasks.dev]
 # command = "cargo"

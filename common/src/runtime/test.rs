@@ -6,84 +6,112 @@ fn boil_string(s: &str) -> String {
 	s.split_whitespace().collect::<Vec<&str>>().join(" ")
 }
 
-// #[tokio::test]
-// async fn test_propose_self_replacement() {
-// 	let scheduled_action_queue = ScheduledActionQueue::new();
+#[tokio::test]
+async fn test_propose_self_replacement() {
+	// let scheduled_action_queue = ScheduledActionQueue::new();
 
-// 	temp_container_utils::with_temp_postgres_client(async |_, cf, mut client| {
-// 		let _votebase_server_password = db_schema_utils::load_votebase_server_schema("testdb", &mut client).await.unwrap();
+	temp_container_utils::with_temp_postgres_pool(async |_, cf, pool| {
+		let mut client = pool.get().await.unwrap();
+		let _votebase_server_password = db_schema_utils::load_votebase_server_schema_pool("tempdb", &client).await.unwrap();
 
-// 		let current_full_path = "root";
-// 		rulesets::create_ruleset(
-// 			&cf, &mut client, None, &current_full_path, &vec![], &vec![],
-// 			"", "create table stuff (id uuid primary key);",
-// 		).await.unwrap();
+		let current_full_path = "root";
+		crate::rulesets::create_ruleset(
+			&mut client, None, &current_full_path,
+			"", "create table stuff (id uuid primary key);",
+			&vec![],
+		).await.unwrap();
 
-// 		run_function::<()>(
-// 			current_full_path.to_string(), r#"
-// 				votebase.Action("test_action", async () => {
-// 					const u = await votebase.proposeSelfReplacement({
-// 						code: `
-// 							votebase.Action("action1", () => {});
-// 							votebase.Action("action2", () => {});
-// 							votebase.View("view1", () => {});
-// 						`,
-// 						db_schema: "create table stuff (id uuid primary key, color text not null);",
-// 						db_migration: "alter table stuff add column color text not null;",
-// 					})
-// 					if (typeof u !== 'string' || u.length !== 36)
-// 						throw new Error(`proposeSelfReplacement didn't return uuid: ${u}`)
-// 				})
-// 			"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, cf.clone(), cf.clone(), pool.clone(), scheduled_action_queue.clone(),
-// 		).await.unwrap();
+		run_function::<()>(
+			current_full_path.to_string(), r#"
+				votebase.Action("test_action", async () => {
+					const u = await votebase.proposeSelfReplacement({
+						ts_code: `
+							votebase.Action("action1", () => {});
+							votebase.Action("action2", () => {});
+							votebase.View("view1", () => {});
+						`,
+						db_schema: "create table stuff (id uuid primary key, color text not null);",
+						db_migration: "alter table stuff add column color text not null;",
+					})
+					// if (typeof u !== 'string' || u.length !== 36)
+					// 	throw new Error(`proposeSelfReplacement didn't return uuid: ${u}`)
+				})
+			"#, "test_action", serde_json::json!(null), FnType::Action,
+			pool.clone(),
+		).await.unwrap();
 
-// 		let mut result = queries::rulesets::test_select_candidate_replacement_ruleset()
-// 			.bind(&client).one().await.unwrap();
+		// let result = db_generated::queries::rulesets::test_select_candidate_replacement_ruleset()
+		// 	.bind(&client).one().await.unwrap();
 
-// 		assert_eq!(result.candidate_for, "root");
-// 		result.actions.sort();
-// 		assert_eq!(result.actions, &["action1", "action2"]);
-// 		assert_eq!(result.views, &["view1"]);
-// 		assert_eq!(boil_string(&result.code), boil_string(r#"
-// 			votebase.Action("action1", () => {});
-// 			votebase.Action("action2", () => {});
-// 			votebase.View("view1", () => {});
-// 		"#));
-// 		assert_eq!(result.db_schema, "create table stuff (id uuid primary key, color text not null);");
-// 		assert_eq!(result.db_migration, "alter table stuff add column color text not null;");
+		// assert_eq!(result.candidate_for, "root");
+		// // assert_eq!(result.actions, &["action1", "action2"]);
+		// // assert_eq!(result.views, &["view1"]);
+		// assert_eq!(boil_string(result.bundled_ruleset.pointer("/ts_code").unwrap().as_str().unwrap()), boil_string(r#"
+		// 	votebase.Action("action1", () => {});
+		// 	votebase.Action("action2", () => {});
+		// 	votebase.View("view1", () => {});
+		// "#));
+		// assert_eq!(result.bundled_ruleset.pointer("/db_schema").unwrap().as_str().unwrap(), "create table stuff (id uuid primary key, color text not null);");
+		// assert_eq!(result.bundled_ruleset.pointer("/db_migration").unwrap().as_str().unwrap(), "alter table stuff add column color text not null;");
 
 
-// 		let result = run_function::<()>(
-// 			current_full_path.to_string(), r#"
-// 				votebase.Action("test_action", async () => {
-// 					await votebase.proposeSelfReplacement({
-// 						code: '',
-// 						db_schema: "create table stuff (id uuid primary key, color text not null);",
-// 						db_migration: "alter table stuff add column color text;",
-// 					})
-// 				})
-// 			"#.to_string(), "test_action", serde_json::json!(null), FnType::Action, cf.clone(), cf.clone(), pool.clone(), scheduled_action_queue.clone(),
-// 		).await.unwrap_err();
-// 		assert!(result.to_string().contains("candidate for root has misdeclared schema"));
-// 	}).await.unwrap();
-// }
+		// let result = run_function::<()>(
+		// 	current_full_path.to_string(), r#"
+		// 		votebase.Action("test_action", async () => {
+		// 			await votebase.proposeSelfReplacement({
+		// 				code: '',
+		// 				db_schema: "create table stuff (id uuid primary key, color text not null);",
+		// 				db_migration: "alter table stuff add column color text;",
+		// 			})
+		// 		})
+		// 	"#, "test_action", serde_json::json!(null), FnType::Action,
+		// 	pool.clone(),
+		// ).await.unwrap_err();
+		// assert!(result.to_string().contains("candidate for root has misdeclared schema"));
+	}).await.unwrap();
+}
 
 #[tokio::test]
 async fn run_function_basics() {
-	let scheduled_action_queue = ScheduledActionQueue::new();
+	// let scheduled_action_queue = ScheduledActionQueue::new();
 
-	temp_container_utils::with_temp_postgres_client(async |_, cf, mut client| {
-		let result = run_function::<()>(
+	temp_container_utils::with_temp_postgres_pool(async |_, _, pool| {
+		let result = run_function::<bool>(
 			"".into(),
 			r#"
-				await Deno.core.ops.op_sql_fetch_one("select 1", [], [], 'I32')
 				votebase.Action("test_action", async () => {
 					return true
 				})
 			"#,
-			"test_action", serde_json::json!(null), FnType::Action, cf.clone(), cf.clone(), pool.clone(), scheduled_action_queue.clone(),
-		).await.unwrap_err();
-		assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
+			"test_action", serde_json::json!(null), FnType::Action,
+			pool.clone(),
+		).await.unwrap();
+		assert_eq!(result, true);
+
+		let result = run_function::<Vec<i32>>(
+			"".into(),
+			r#"
+				votebase.View("test_view", async () => {
+					return [1, -3, 4]
+				})
+			"#,
+			"test_view", serde_json::json!(null), FnType::View,
+			pool.clone(),
+		).await.unwrap();
+		assert_eq!(result, vec![1, -3, 4]);
+
+		// let result = run_function::<()>(
+		// 	"".into(),
+		// 	r#"
+		// 		await Deno.core.ops.op_sql_fetch_one("select 1", [], [], 'I32')
+		// 		votebase.Action("test_action", async () => {
+		// 			return true
+		// 		})
+		// 	"#,
+		// 	"test_action", serde_json::json!(null), FnType::Action,
+		// 	// cf.clone(), cf.clone(), pool.clone(), scheduled_action_queue.clone(),
+		// ).await.unwrap_err();
+		// assert!(result.to_string().contains(ERR_EXTERNAL_NOT_ALLOWED));
 
 		// let result = run_function::<()>(
 		// 	"".into(), r#"

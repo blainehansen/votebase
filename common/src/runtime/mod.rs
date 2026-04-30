@@ -5,20 +5,19 @@ mod test;
 // pub use scheduling::{ScheduledActionQueue};
 
 pub mod rulesets;
-use rulesets::{op_propose_self_replacement};
+use rulesets::op_propose_self_replacement;
 
-mod members;
-use members::{op_enroll_member, op_remove_member_by_email, op_remove_member_by_uuid};
+// mod members;
+// use members::{op_enroll_member, op_remove_member_by_email, op_remove_member_by_uuid};
 
-mod sql;
-use sql::{op_sql_fetch_all, op_sql_fetch_one, op_sql_fetch_optional, op_sql_execute_statement, op_sql_execute_statements};
+// mod sql;
+// use sql::{op_sql_fetch_all, op_sql_fetch_one, op_sql_fetch_optional, op_sql_execute_statement, op_sql_execute_statements};
 
-mod dom;
-use dom::{op_fetch};
+// mod dom;
+// use dom::{op_fetch};
 
 use deno_core::{v8, OpState};
-use log::info;
-use crate::{postgres, FnRolePg, FnServerPg, FnType, PgClient, PgConfig, PgPool, RoleType};
+use crate::{postgres, FnType, PgPool, RoleType};
 
 // TODO RuntimeError should be narrowed to only the things that can go wrong during deno execution, and other broader errors should contain it
 
@@ -64,11 +63,11 @@ impl Into<deno_error::JsErrorBox> for RuntimeError {
 	}
 }
 
-pub fn js_err<E: std::error::Error>(e: E) -> deno_error::JsErrorBox {
+pub(crate) fn js_err<E: std::error::Error>(e: E) -> deno_error::JsErrorBox {
 	deno_error::JsErrorBox::generic(e.to_string())
 }
 
-pub fn run_err<E: Into<RuntimeError>>(e: E) -> deno_error::JsErrorBox {
+pub(crate) fn run_err<E: Into<RuntimeError>>(e: E) -> deno_error::JsErrorBox {
 	e.into().into()
 }
 
@@ -77,25 +76,30 @@ deno_core::extension!(
 	ops = [
 		op_register_action,
 		op_register_view,
-		// op_create_recurring_action,
-		// op_remove_recurring_action,
-		// op_schedule_action,
-		// op_unschedule_action,
-		op_enroll_member,
-		op_remove_member_by_email,
-		op_remove_member_by_uuid,
+
 		op_propose_self_replacement,
 		// op_create_child_ruleset,
 		// op_delete_child_ruleset,
 		// op_propose_child_replacement,
 		// op_replace_child,
-		op_sql_fetch_all,
-		op_sql_fetch_one,
-		op_sql_fetch_optional,
-		op_sql_execute_statement,
-		op_sql_execute_statements,
+
+		// op_create_recurring_action,
+		// op_remove_recurring_action,
+		// op_schedule_action,
+		// op_unschedule_action,
+
+		// op_enroll_member,
+		// op_remove_member_by_email,
+		// op_remove_member_by_uuid,
+
+		// op_sql_fetch_all,
+		// op_sql_fetch_one,
+		// op_sql_fetch_optional,
+		// op_sql_execute_statement,
+		// op_sql_execute_statements,
+
 		// op_set_timeout,
-		op_fetch,
+		// op_fetch,
 	],
 );
 
@@ -105,8 +109,9 @@ static RUNTIME_SNAPSHOT: &[u8] =
 const MAIN_SPECIFIER: &'static str = "votebase:<main>";
 
 
-struct RunInfo {
+pub(crate) struct RunInfo {
 	current_ruleset_path: String,
+	pg_pool: PgPool,
 }
 
 fn demand_external_allowed(state: &OpState) -> Result<(), deno_error::JsErrorBox> {
@@ -120,10 +125,10 @@ fn demand_external_allowed(state: &OpState) -> Result<(), deno_error::JsErrorBox
 
 const ERR_EXTERNAL_NOT_ALLOWED: &'static str = "runtime functions that interact with timers or the outside world (such as database or http operations) aren't allowed outside of an action or view";
 
-pub type VotebaseFnMap = std::collections::HashMap<String, VotebaseFn>;
+pub(crate) type VotebaseFnMap = std::collections::HashMap<String, VotebaseFn>;
 
 #[derive(Debug)]
-pub enum VotebaseFn {
+pub(crate) enum VotebaseFn {
 	Action(v8::Global<v8::Function>),
 	View(v8::Global<v8::Function>),
 }
@@ -163,7 +168,7 @@ fn op_register_action(
 	state: &mut OpState,
 	#[string] fn_name: &str,
 	// #[serde] schema: serde_json::Value,
-	#[global] func: v8::Global<v8::Function>,
+	#[scoped] func: v8::Global<v8::Function>,
 ) -> Result<(), deno_error::JsErrorBox> {
 	register_fn(state, fn_name, true, func)
 }
@@ -173,17 +178,17 @@ fn op_register_view(
 	state: &mut OpState,
 	#[string] fn_name: &str,
 	// #[serde] schema: serde_json::Value,
-	#[global] func: v8::Global<v8::Function>,
+	#[scoped] func: v8::Global<v8::Function>,
 ) -> Result<(), deno_error::JsErrorBox> {
 	register_fn(state, fn_name, false, func)
 }
 
-pub struct Runtime {
+pub(crate) struct Runtime {
 	js_runtime: deno_core::JsRuntime,
 }
 
 impl Runtime {
-	pub async fn new(code: &str) -> Result<Self, RuntimeError> {
+	pub(crate) async fn new(code: &str) -> Result<Self, RuntimeError> {
 		let js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
 			module_loader: None,
 			startup_snapshot: Some(RUNTIME_SNAPSHOT),
@@ -208,89 +213,77 @@ impl Runtime {
 		Ok(runtime)
 	}
 
-	pub fn set_fn_map(&mut self) {
+	pub(crate) fn set_fn_map(&mut self) {
 		self.js_runtime.op_state().borrow_mut().put(VotebaseFnMap::new());
 	}
-	pub fn take_fn_map(&mut self) -> VotebaseFnMap {
+	pub(crate) fn take_fn_map(&mut self) -> VotebaseFnMap {
 		self.js_runtime.op_state().borrow_mut().take()
 	}
 
-	pub fn set_external_allowed(&mut self, allowed: bool) {
+	pub(crate) fn set_external_allowed(&mut self, allowed: bool) {
 		self.js_runtime.op_state().borrow_mut().put(allowed);
 	}
 
-	pub fn set_run_info(&mut self, run_info: RunInfo) {
+	pub(crate) fn set_run_info(&mut self, run_info: RunInfo) {
 		self.js_runtime.op_state().borrow_mut().put(run_info);
-	}
-	// pub fn set_action_queue(&mut self, spawner: ScheduledActionQueue) {
-	// 	self.js_runtime.op_state().borrow_mut().put(spawner);
-	// }
-	pub fn set_fn_server_pg(&mut self, opt: FnServerPg) {
-		self.js_runtime.op_state().borrow_mut().put(opt);
-	}
-	pub fn set_fn_role_pg(&mut self, client: FnRolePg) {
-		self.js_runtime.op_state().borrow_mut().put(client);
 	}
 }
 
 pub async fn run_action(
-	current_full_path: String,
+	current_ruleset_path: String,
 	ruleset_code: &str,
 	action_name: &str,
-	action_pass: &str,
-	migrator_pass: &str,
 	arg: serde_json::Value,
-	base_config: PgConfig,
-	server_role_client: PgClient,
+	pg_pool: PgPool,
 	// scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<(), RuntimeError> {
-	let migrator_pg = FnRolePg::for_role(&current_full_path, &base_config, RoleType::Migrator, migrator_pass);
-	let action_pg = FnRolePg::for_role(&current_full_path, &base_config, RoleType::Action, action_pass);
+	// let migrator_pg = FnRoleName::for_role(&current_ruleset_path, &base_config, RoleType::Migrator, migrator_pass);
+	// let action_pg = FnRoleName::for_role(&current_ruleset_path, &base_config, RoleType::Action, action_pass);
 
 	let new_ruleset_id = run_function::<Option<String>>(
-		current_full_path, ruleset_code, action_name, arg, FnType::Action,
-		action_pg, server_role_config, server_role_client, /*scheduled_action_queue,*/
+		current_ruleset_path, ruleset_code, action_name, arg, FnType::Action,
+		pg_pool,
+		// action_pg, server_role_config, server_role_pool, /*scheduled_action_queue,*/
 	).await?;
 
 	if let Some(new_ruleset_id) = new_ruleset_id {
 		let new_ruleset_id = new_ruleset_id.parse::<uuid::Uuid>()?;
-		info!("apply_candidate {new_ruleset_id}");
-		rulesets::replace_ruleset(&server_role_client, &migrator_pg, &new_ruleset_id).await?;
+		log::info!("apply_candidate {new_ruleset_id}");
+		// rulesets::replace_ruleset(&server_role_pool, &migrator_pg, &new_ruleset_id).await?;
 	}
 
 	Ok(())
 }
 
 pub async fn run_view(
-	current_full_path: String,
+	current_ruleset_path: String,
 	ruleset_code: &str,
 	view_name: &str,
-	view_pass: &str,
 	query: serde_json::Value,
-	base_config: PgConfig,
-	server_role_pool: PgPool,
+	pg_pool: PgPool,
 	// scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<String, RuntimeError> {
-	let view_role_config = FnRolePg::for_role(&current_full_path, &base_config, RoleType::View, view_pass);
+	// let view_role_config = FnRoleName::for_role(&current_ruleset_path, &base_config, RoleType::View, view_pass);
 
 	run_function(
-		ruleset_code, view_name, query, FnType::View,
-		view_role_config, base_config, /*scheduled_action_queue,*/
+		current_ruleset_path, ruleset_code, view_name, query, FnType::View,
+		pg_pool,
+		/*view_role_config, base_config,*/ /*scheduled_action_queue,*/
 	).await
 }
 
 async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
+	current_ruleset_path: String,
 	ruleset_code: &str,
 	function_name: &str,
 	function_arg: serde_json::Value,
 	function_type: FnType,
-	server_role_pool: PgPool,
-	fn_role_pg: FnRolePg,
+	pg_pool: PgPool,
+	// fn_role_name: FnRoleName,
 	// scheduled_action_queue: ScheduledActionQueue,
 ) -> Result<V, RuntimeError> {
 	let mut runtime = Runtime::new(ruleset_code).await.map_err(|e| RuntimeError::OtherError(e.to_string()))?;
 
-	// fn_role_config encodes the user, and therefore the role and powers of the connection
 	let fn_map = runtime.take_fn_map();
 	let function = fn_map.get(function_name)
 		.ok_or_else(|| RuntimeError::OtherError(format!("{} '{}' not found", function_type, function_name)))?;
@@ -302,10 +295,7 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	};
 
 	runtime.set_external_allowed(true);
-	runtime.set_run_info(RunInfo { current_ruleset_path });
-	// runtime.set_action_queue(scheduled_action_queue);
-	runtime.set_fn_server_pg(server_role_pool.into());
-	runtime.set_fn_role_pg(fn_role_pg);
+	runtime.set_run_info(RunInfo { current_ruleset_path, pg_pool });
 
 	// https://questions.deno.com/m/1201661871959310346
 	// https://github.com/denoland/deno_core/issues/515

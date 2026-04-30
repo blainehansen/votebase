@@ -4,11 +4,11 @@ use crate::rulesets::{BundledRuleset, propose_candidate_ruleset};
 use crate::runtime::RunInfo;
 use crate::{PgClient};
 
-use super::{demand_external_allowed, run_err};
+use super::{demand_external_allowed, js_err, run_err};
 
 
 // op_propose_self_replacement: (candidate: BundledRuleset) => Promise<string>,
-#[deno_core::op2(async, reentrant)]
+#[deno_core::op2(async(lazy), reentrant)]
 #[string]
 pub async fn op_propose_self_replacement(
 	state: Rc<RefCell<OpState>>,
@@ -17,12 +17,14 @@ pub async fn op_propose_self_replacement(
 	let state = state.as_ref().borrow();
 	demand_external_allowed(&state)?;
 	let run_info = state.borrow::<RunInfo>();
-	let server_role_config = state.borrow::<ServerRoleConfig>();
-	let server_role_client = state.borrow::<PgClient>();
+	let client = run_info.pg_pool.get().await.map_err(run_err)?;
+	let (parent_full_path, ruleset_name) = crate::split_full_path(&run_info.current_ruleset_path);
 
 	let candidate_uuid = propose_candidate_ruleset(
-		&run_info.current_ruleset_path, &server_role_config.0, server_role_client, &candidate,
-	).await.map_err(run_err)?;
+		&run_info.current_ruleset_path, parent_full_path.as_deref(), &ruleset_name,
+		&candidate,
+		&client,
+	).await.map_err(js_err)?;
 
 	Ok(candidate_uuid.to_string())
 }

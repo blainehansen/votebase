@@ -24,3 +24,14 @@ pub async fn load_votebase_server_schema(
 
 	Ok(votebase_server_password)
 }
+
+pub async fn load_votebase_server_schema_pool(
+	db_name: &str,
+	client: &db_generated::deadpool_postgres::Client,
+) -> Result<String, tokio_postgres::Error> {
+	let votebase_server_password = generate_votebase_server_pass();
+	let schema_sql = format!(include_str!("../schema.sql"), db_name=db_name, votebase_server_password=votebase_server_password);
+	client.batch_execute(&schema_sql).await?;
+
+	Ok(votebase_server_password)
+}

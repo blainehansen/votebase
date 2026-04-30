@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use deno_core::{OpState, FromV8, v8};
 
 use super::{RuntimeError, demand_external_allowed, run_err, js_err};
-use crate::{postgres, FnRolePg};
+use crate::{postgres, PgPool, FnRoleName};
 
 // #[derive(serde::Deserialize, Debug)]
 // #[serde(variant_identifier)]
@@ -223,7 +223,7 @@ fn convert_col(row: &postgres::Row, ret: &PgTypeHint, i: usize) -> Result<serde_
 #[serde]
 pub async fn op_sql_fetch_all(
 	state: Rc<RefCell<OpState>>,
-	#[string] sql: String,
+	#[string] sql: &str,
 	// TODO the ambition here is to no longer have this no longer be a vec of serde, but one of v8::Object or Value or whatever
 	// and then directly decoding those values in the functions
 	// similar with the return value, going directly from the rust values given by tokio postgres to v8 ones
@@ -231,10 +231,12 @@ pub async fn op_sql_fetch_all(
 	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<Vec<serde_json::Value>, deno_error::JsErrorBox> {
+	check_sql_safety(sql)?;
+
 	let state = state.as_ref().borrow();
 	demand_external_allowed(&state)?;
-	let fn_role_pg = state.borrow::<FnRolePg>();
-	let client = fn_role_pg.get_client().await.map_err(run_err)?;
+	let fn_role_name = state.borrow::<FnRoleName>();
+	let client = fn_role_name.get_client().await.map_err(run_err)?;
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
@@ -254,15 +256,17 @@ pub async fn op_sql_fetch_all(
 #[serde]
 pub async fn op_sql_fetch_one(
 	state: Rc<RefCell<OpState>>,
-	#[string] sql: String,
+	#[string] sql: &str,
 	#[serde] raw_params: Vec<serde_json::Value>,
 	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<serde_json::Value, deno_error::JsErrorBox> {
+	check_sql_safety(sql)?;
+
 	let state = state.as_ref().borrow();
 	demand_external_allowed(&state)?;
-	let fn_role_pg = state.borrow::<FnRolePg>();
-	let client = fn_role_pg.get_client().await.map_err(run_err)?;
+	let fn_role_name = state.borrow::<FnRoleName>();
+	let client = fn_role_name.get_client().await.map_err(run_err)?;
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
@@ -288,15 +292,17 @@ pub async fn op_sql_fetch_one(
 #[serde]
 pub async fn op_sql_fetch_optional(
 	state: Rc<RefCell<OpState>>,
-	#[string] sql: String,
+	#[string] sql: &str,
 	#[serde] raw_params: Vec<serde_json::Value>,
 	#[serde] hints: Vec<PgTypeHint>,
 	#[serde] ret: RetHint,
 ) -> Result<Option<serde_json::Value>, deno_error::JsErrorBox> {
+	check_sql_safety(sql)?;
+
 	let state = state.as_ref().borrow();
 	demand_external_allowed(&state)?;
-	let fn_role_pg = state.borrow::<FnRolePg>();
-	let client = fn_role_pg.get_client().await.map_err(run_err)?;
+	let fn_role_name = state.borrow::<FnRoleName>();
+	let client = fn_role_name.get_client().await.map_err(run_err)?;
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
@@ -320,13 +326,15 @@ pub async fn op_sql_fetch_optional(
 #[deno_core::op2(async(lazy))]
 pub async fn op_sql_execute_statement(
 	state: Rc<RefCell<OpState>>,
-	#[string] sql: String,
+	#[string] sql: &str,
 	#[scoped] hinted_params: Vec<HintedParam>,
 ) -> Result<u32, deno_error::JsErrorBox> {
+	check_sql_safety(sql)?;
+
 	let state = state.as_ref().borrow();
 	demand_external_allowed(&state)?;
-	let fn_role_pg = state.borrow::<FnRolePg>();
-	let client = fn_role_pg.get_client().await.map_err(run_err)?;
+	let fn_role_name = state.borrow::<FnRoleName>();
+	let client = fn_role_name.get_client().await.map_err(run_err)?;
 
 	let params = prepare_params(raw_params, hints).map_err(run_err)?;
 	let row_stream = client.query_typed_raw(&sql, params).await.map_err(run_err)?;
@@ -342,16 +350,30 @@ pub async fn op_sql_execute_statement(
 #[deno_core::op2(async(lazy), fast)]
 pub async fn op_sql_execute_statements(
 	state: Rc<RefCell<OpState>>,
-	#[string] sql: String,
+	#[string] sql: &str,
 ) -> Result<(), deno_error::JsErrorBox> {
+	check_sql_safety(sql)?;
+
 	let state = state.as_ref().borrow();
 	demand_external_allowed(&state)?;
-	let fn_role_pg = state.borrow::<FnRolePg>();
-	let mut client = fn_role_pg.get_client().await.map_err(run_err)?;
 
+	let pg_pool = state.borrow::<PgPool>();
+	let client = pg_pool.get().await.map_err(run_err)?;
+	let fn_role_name = state.borrow::<FnRoleName>().0;
+
+	// TODO in this case where we're using a transaction it's clear the set role should just be set within it so it resets afterward
+	// but for the others I'm not sure if the right way to do this is
+	// - using set session authorization/role, not sure if these clients have their session scoped to my get call
+	// - actually making a new manager or something like that at the deadpool level
+	// - just doing transactions in all cases (unnecessary for queries and performance?)
 	let txn = client.transaction().await.map_err(run_err)?;
-	txn.batch_execute(&sql).await.map_err(run_err)?;
+	txn.batch_execute(format!(r#"set role "{fn_role_name}";"#)).await.map_err(run_err)?;
+	txn.batch_execute(sql).await.map_err(run_err)?;
 	txn.commit().await.map_err(run_err)?;
-
 	Ok(())
+}
+
+fn check_sql_safety(sql: &str) -> Result<(), deno_error::JsErrorBox> {
+	// TODO do whatever we can to see if anything like set role or reset role or whatever is called
+	unimplemented!()
 }

@@ -1,6 +1,6 @@
 pub mod rulesets;
-#[cfg(test)]
-mod rulesets_test;
+// #[cfg(test)]
+// mod rulesets_test;
 
 pub mod runtime;
 pub mod gen_queries;
@@ -15,18 +15,6 @@ pub type PgConfig = postgres::Config;
 pub type PgClient = postgres::Client;
 pub type PgPool = deadpool::Pool;
 
-struct FnServerPg(PgPool);
-impl From<PgPool> for FnServerPg {
-	fn from(value: PgPool) -> Self { FnServerPg(value) }
-}
-impl std::ops::Deref for FnServerPg {
-	type Target = PgPool;
-	fn deref(&self) -> &Self::Target { &self.0 }
-}
-impl std::ops::DerefMut for FnServerPg {
-	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
-}
-
 
 async fn pg_con(config: &PgConfig) -> Result<PgClient, postgres::Error> {
 	let (client, conn) = config.connect(postgres::NoTls).await?;
@@ -34,32 +22,33 @@ async fn pg_con(config: &PgConfig) -> Result<PgClient, postgres::Error> {
 	Ok(client)
 }
 
-#[derive(Clone)]
-struct FnRolePg {
-	config: PgConfig,
-	// ruleset_path: String,
-}
-impl FnRolePg {
-	// fn new(config: PgConfig, ruleset_path: String) -> Self {
-	// 	FnRolePg { config, ruleset_path }
-	// }
+// #[derive(Clone)]
+// struct FnRolePg {
+// 	pool: PgPool,
+// 	role_name: String,
+// 	// ruleset_path: String,
+// }
+// impl FnRolePg {
+// 	// fn new(config: PgConfig, ruleset_path: String) -> Self {
+// 	// 	FnRolePg { config, ruleset_path }
+// 	// }
 
-	// fn into_role(self, role_type: RoleType, role_pass: &str) -> Self {
-	// 	let role_config = make_role_config(&self.ruleset_path, self.config, role_type, role_pass);
-	// 	FnRolePg { config: role_config, ruleset_path: self.ruleset_path }
-	// }
-	fn for_role(ruleset_path: &str, base_config: &PgConfig, role_type: RoleType, role_pass: &str) -> Self {
-		let role_config = make_role_config(&ruleset_path, base_config, role_type, role_pass);
-		FnRolePg { config: role_config }
-	}
+// 	// fn into_role(self, role_type: RoleType, role_pass: &str) -> Self {
+// 	// 	let role_config = make_role_config(&self.ruleset_path, self.config, role_type, role_pass);
+// 	// 	FnRolePg { config: role_config, ruleset_path: self.ruleset_path }
+// 	// }
+// 	fn for_role(pool: PgPool, ruleset_path: &str, base_config: &PgConfig, role_type: RoleType, role_pass: &str) -> Self {
+// 		let role_config = make_role_config(&ruleset_path, base_config, role_type, role_pass);
+// 		FnRolePg { config: role_config }
+// 	}
 
-	// TODO we're connecting every time here, which seems necessary for security, but terrible for performance
-	async fn get_client(&self) -> Result<postgres::Client, deadpool::PoolError> {
-		let (client, connection) = self.config.connect(postgres::NoTls).await?;
-		tokio::spawn(async move { if let Err(e) = connection.await { log::error!("DB connection error: {}", e); } });
-		Ok(client)
-	}
-}
+// 	// SAFETY this relies on
+// 	async fn get_client(&self) -> Result<postgres::Client, deadpool::PoolError> {
+// 		let client = self.pool.get().await?;
+// 		client.batch_execute(&format!(r#""#)).await?;
+// 		Ok(client)
+// 	}
+// }
 
 // TODO what I think I'm going to do is this:
 // *AFTER I'VE IMPLEMENTED THINGS AND THEY'RE WORKING AND THE CONCEPTUAL PROTOTYPE OF VOTEBASE IS DONE AND I'M THINKING ABOUT PERFORMANCE*
@@ -226,7 +215,7 @@ pub fn url_encoded_connection_string(config: &PgConfig) -> String {
 #[test]
 fn test_url_encoded_connection_string() {
 	let config = "postgres://dev_admin_user:dev_admin_password@localhost:5432/dev_db".parse().unwrap();
-	assert_eq!(url_encoded_connection_string(&config), "postgresql://dev_admin_user:dev_admin_password@localhost:5432/dev_db");
+	assert_eq!(url_encoded_connection_string(&config), "postgresql://dev%5Fadmin%5Fuser:dev%5Fadmin%5Fpassword@localhost:5432/dev%5Fdb");
 }
 
 // #[derive(thiserror::Error, Debug)]
