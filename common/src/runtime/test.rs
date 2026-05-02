@@ -10,13 +10,17 @@ fn boil_string(s: &str) -> String {
 async fn test_propose_self_replacement() {
 	// let scheduled_action_queue = ScheduledActionQueue::new();
 
-	temp_container_utils::with_temp_postgres_pool(async |_, cf, pool| {
+	temp_container_utils::with_temp_postgres_client(async |_, mut config, admin_client| {
+		let db_name = "tempdb";
+		let votebase_server_password = db_schema_utils::load_votebase_server_schema(db_name, &admin_client).await.unwrap();
+		config.user("votebase_server_tempdb");
+		config.password(votebase_server_password);
+		let pool = deadpool::Pool::builder(deadpool::Manager::new(config, postgres::NoTls)).max_size(2).build().unwrap();
 		let mut client = pool.get().await.unwrap();
-		let _votebase_server_password = db_schema_utils::load_votebase_server_schema_pool("tempdb", &client).await.unwrap();
 
 		let current_full_path = "root";
 		crate::rulesets::create_ruleset(
-			&mut client, None, &current_full_path,
+			db_name, &mut client, None, &current_full_path,
 			"", "create table stuff (id uuid primary key);",
 			&vec![],
 		).await.unwrap();
@@ -28,32 +32,31 @@ async fn test_propose_self_replacement() {
 						ts_code: `
 							votebase.Action("action1", () => {});
 							votebase.Action("action2", () => {});
-							votebase.View("view1", () => {});
+							votebase.View("view1", () => "yo");
 						`,
 						db_schema: "create table stuff (id uuid primary key, color text not null);",
 						db_migration: "alter table stuff add column color text not null;",
 					})
-					// if (typeof u !== 'string' || u.length !== 36)
-					// 	throw new Error(`proposeSelfReplacement didn't return uuid: ${u}`)
+					if (typeof u !== 'string' || u.length !== 36)
+						throw new Error(`proposeSelfReplacement didn't return uuid: ${u}`)
 				})
 			"#, "test_action", serde_json::json!(null), FnType::Action,
 			pool.clone(),
 		).await.unwrap();
 
-		// let result = db_generated::queries::rulesets::test_select_candidate_replacement_ruleset()
-		// 	.bind(&client).one().await.unwrap();
+		let result = db_generated::queries::rulesets::test_select_candidate_replacement_ruleset()
+			.bind(&client).one().await.unwrap();
 
-		// assert_eq!(result.candidate_for, "root");
-		// // assert_eq!(result.actions, &["action1", "action2"]);
-		// // assert_eq!(result.views, &["view1"]);
-		// assert_eq!(boil_string(result.bundled_ruleset.pointer("/ts_code").unwrap().as_str().unwrap()), boil_string(r#"
-		// 	votebase.Action("action1", () => {});
-		// 	votebase.Action("action2", () => {});
-		// 	votebase.View("view1", () => {});
-		// "#));
-		// assert_eq!(result.bundled_ruleset.pointer("/db_schema").unwrap().as_str().unwrap(), "create table stuff (id uuid primary key, color text not null);");
-		// assert_eq!(result.bundled_ruleset.pointer("/db_migration").unwrap().as_str().unwrap(), "alter table stuff add column color text not null;");
-
+		assert_eq!(result.candidate_for, "root");
+		// assert_eq!(result.actions, &["action1", "action2"]);
+		// assert_eq!(result.views, &["view1"]);
+		assert_eq!(boil_string(result.bundled_ruleset.pointer("/ts_code").unwrap().as_str().unwrap()), boil_string(r#"
+			votebase.Action("action1", () => {});
+			votebase.Action("action2", () => {});
+			votebase.View("view1", () => "yo");
+		"#));
+		assert_eq!(result.bundled_ruleset.pointer("/db_schema").unwrap().as_str().unwrap(), "create table stuff (id uuid primary key, color text not null);");
+		assert_eq!(result.bundled_ruleset.pointer("/db_migration").unwrap().as_str().unwrap(), "alter table stuff add column color text not null;");
 
 		// let result = run_function::<()>(
 		// 	current_full_path.to_string(), r#"
@@ -284,7 +287,7 @@ async fn run_function_basics() {
 		// ).await.unwrap();
 		// assert_eq!(affected_rows, 0);
 
-	 	// // op_sql_execute_statements (create temp table, insert, drop)
+		// // op_sql_execute_statements (create temp table, insert, drop)
 		// run_function::<()>(
 		// 	"".into(), r#"
 		// 		votebase.Action("test_action", async () => {

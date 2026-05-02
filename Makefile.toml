@@ -17,11 +17,15 @@ script = "cargo run -p db_schema_utils"
 condition = { files_modified = { input = ["./db_schema_utils/**/*"], output = ["./db_generated/**/*"] } }
 
 [tasks.dev_test]
-dependencies = ["do_gen_queries"]
+dependencies = ["build_votebase_tsc", "do_gen_queries"]
 script = "cargo test -p votebase_common -- --nocapture"
 
-[tasks.votebase_tsc]
+[tasks.build_votebase_tsc]
 script = "podman build -t votebase-tsc -f Containerfile.votebase-tsc ."
+
+[tasks.dev_votebase_tsc]
+dependencies = ["build_votebase_tsc"]
+script = "podman run --rm -v ./test-rulesets/blank:/workspace/ruleset votebase-tsc --noEmit"
 
 # [tasks.dev]
 # command = "cargo"

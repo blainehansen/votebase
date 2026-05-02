@@ -2,9 +2,8 @@
 	"$schema": "https://json.schemastore.org/tsconfig",
 	"compilerOptions": {
 		"lib": ["ES2024"],
-		"baseUrl": ".",
 		"paths": {
-			"votebase": ["votebase-runtime.ts"]
+			"votebase": ["./votebase-runtime.ts"]
 		},
 
 		"strict": true,
@@ -21,5 +20,5 @@
 
 		"esModuleInterop": true
 	},
-	"include": ["votebase-runtime.ts", "./ruleset/**/*.ts"]
+	"include": ["./votebase-runtime.ts", "./ruleset/**/*.ts"]
 }

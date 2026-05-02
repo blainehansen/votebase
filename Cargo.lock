@@ -1072,7 +1072,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clorinde",
- "db_generated",
  "temp_container_utils",
  "tokio",
  "tokio-postgres",

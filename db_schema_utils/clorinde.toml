@@ -28,7 +28,7 @@ derive-traits = ["serde::Serialize"]
 # ctypes = { path = "../ctypes" }
 # postgres_range = { version = "0.11.1", features = ["with-chrono-0_4"] }
 
-# [types.mapping]
-# # Map PostgreSQL types to custom Rust types
+[types.mapping]
+# Map PostgreSQL types to custom Rust types
 # "pg_catalog.date" = "ctypes::date::Date"
 # "pg_catalog.tstzrange" = "postgres_range::Range<chrono::DateTime<chrono::FixedOffset>>"

@@ -56,24 +56,24 @@ $$ language plpgsql immutable;
 -- );
 
 create type votebase_catalog.fn_type as enum('Action', 'View');
-create type votebase_catalog.ruleset_fn_raw as (
+create type votebase_catalog.ruleset_fn as (
 	"name" text, fn_type votebase_catalog.fn_type
 	-- input_schema jsonb, output_schema jsonb
 );
-create domain votebase_catalog.ruleset_fn as votebase_catalog.ruleset_fn_raw
-	not null
-	check ((VALUE)."name" is not null)
-	check (votebase_catalog.valid_name((VALUE)."name"))
-	check ((VALUE).fn_type is not null)
-	-- check ((VALUE).input_schema is not null)
-	-- check ((VALUE).output_schema is not null)
-;
+-- create domain votebase_catalog.ruleset_fn as votebase_catalog.ruleset_fn_raw
+-- 	not null
+-- 	check ((VALUE)."name" is not null)
+-- 	check (votebase_catalog.valid_name((VALUE)."name"))
+-- 	check ((VALUE).fn_type is not null)
+-- 	-- check ((VALUE).input_schema is not null)
+-- 	-- check ((VALUE).output_schema is not null)
+-- ;
 create function votebase_catalog.check_fns_different_names(fns votebase_catalog.ruleset_fn[]) returns boolean as $$
 	begin
 		return not exists (
 			select 1
-			from unnest(fns) as fns
-			group by (fns)."name"
+			from unnest(fns) as fn
+			group by (fn)."name"
 			having count(*) > 1
 		);
 	end;
@@ -83,8 +83,8 @@ create function votebase_catalog.has_fn(fns votebase_catalog.ruleset_fn[], name 
 	begin
 		return exists (
 			select 1
-			from unnest(fns) as fns
-			where (fns)."name" = name and (fns).fn_type = type
+			from unnest(fns) as fn
+			where (fn)."name" = name and (fn).fn_type = type
 		);
 	end;
 $$ language plpgsql immutable;
@@ -92,9 +92,9 @@ $$ language plpgsql immutable;
 create function votebase_catalog.filter_fns(fns votebase_catalog.ruleset_fn[], type votebase_catalog.fn_type) returns text[] as $$
 	begin
 		return array (
-			select (fns)."name"
-			from unnest(fns) as fns
-			where (fns).fn_type = type
+			select (fn)."name"
+			from unnest(fns) as fn
+			where (fn).fn_type = type
 		);
 	end;
 $$ language plpgsql immutable;

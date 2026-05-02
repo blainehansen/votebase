@@ -7,7 +7,7 @@ RUN corepack enable
 
 WORKDIR /workspace
 
-COPY tsconfig.votebase-rulesets.json
+COPY tsconfig.votebase-rulesets.json .
 COPY common/src/runtime/runtime.ts votebase-runtime.ts
 
 RUN pnpm add -g typescript

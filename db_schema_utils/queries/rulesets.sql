@@ -24,7 +24,11 @@ select ts_code
 from votebase_catalog.ruleset
 where full_path = :ruleset_full_path and votebase_catalog.has_fn(fns, :action_name, 'Action');
 
--- https://dba.stackexchange.com/questions/195603/create-json-object-from-recursive-tree-structure
+-- TODO https://dba.stackexchange.com/questions/195603/create-json-object-from-recursive-tree-structure
+--! get_stored_ruleset
+select ts_code, db_schema
+from votebase_catalog.ruleset
+where full_path = :ruleset_full_path;
 
 -- MODIFYING RULESETS
 

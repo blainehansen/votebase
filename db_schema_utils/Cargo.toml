@@ -9,5 +9,3 @@ clorinde = { version = "1" }
 tokio-postgres = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 temp_container_utils = { path = "../temp_container_utils" }
-# TODO this is a big problem, you've created a cyclic dependency!
-db_generated = { path = "../db_generated" }

@@ -8,7 +8,7 @@ use crate::{
 	PgClient, PgConfig, RoleType, format_full_path, format_ruleset_role, format_ruleset_schema, pg_con, postgres, queries /*format_ruleset_schema*/
 };
 use crate::db_types::votebase_catalog::{
-	FnType, RulesetFnRawBorrowed,
+	FnType, RulesetFnBorrowed,
 	// DbUsesFunctionStructParams, DbUsesTableStructParams, DbUsesColumnStructBorrowed,
 };
 
@@ -334,7 +334,7 @@ pub async fn validate_bundled_ruleset_top(
 		// 	.map_err(ValidationError::InvalidReferences)?;
 
 		Ok(())
-	}).await?;
+	}).await??;
 
 
 	Ok(())
@@ -363,9 +363,11 @@ pub(crate) async fn validate_bundled_ruleset(
 	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
 	let ts_file = temp_dir.as_ref().join("ruleset.ts");
 	tokio::fs::write(&ts_file, &next_bundled_ruleset.ts_code).await?;
+	println!("podman tsc");
 	podman_votebase_tsc(temp_dir.as_ref()).await?;
 
 	// ensure the runtime is okay with it
+	println!("trying runtime");
 	crate::runtime::Runtime::new(&next_bundled_ruleset.ts_code).await?;
 
 	// let function_uses: Vec<_> = next_bundled_ruleset.db_uses_functions.iter().map(|u| {
@@ -733,17 +735,17 @@ pub(crate) async fn validate_bundled_ruleset(
 
 
 pub(crate) async fn create_ruleset<'u>(
-	client: &mut PgClient,
+	db_name: &str, client: &mut PgClient,
 	parent_full_path: Option<&str>, name: &str,
 	ruleset_code: &str, db_schema: &str,
 	fns: &Vec<(String, FnType)>,
 	// function_uses: &'u Vec<(&'u str, &'u str, bool, &'u str, Vec<&'u str>)>,
 	// table_uses: &'u Vec<(&'u str, &'u str, Vec<DbUsesColumnStructBorrowed<'u>>)>,
 ) -> Result<(), postgres::Error> {
-	log::debug!("inserting ruleset");
+	println!("inserting ruleset");
 
 	use db_generated::IterSql;
-	let fns = IterSql(|| fns.iter().map(|(name, fn_type)| RulesetFnRawBorrowed { name, fn_type: *fn_type }));
+	let fns = IterSql(|| fns.iter().map(|(name, fn_type)| RulesetFnBorrowed { name: name.as_str(), fn_type: *fn_type }));
 	// let function_uses = IterSql(||
 	// 	function_uses.iter().map(|(ruleset_path, object_name, is_action, return_type, params)|
 	// 		DbUsesFunctionStructParams {
@@ -762,26 +764,34 @@ pub(crate) async fn create_ruleset<'u>(
 	let full_path = queries::rulesets::insert_ruleset()
 		.bind(client, &parent_full_path, &name, &ruleset_code, &db_schema, &fns)
 		.one().await?;
+	println!("inserted ruleset");
 
 	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
 	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
 	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
+	let formatted_ruleset_schema = format_ruleset_schema(&full_path);
 
-	log::debug!("creating ruleset schema");
+	println!("creating ruleset schema");
 	let transaction = client.transaction().await?;
 	let create_sql = format!(include_str!("./create-ruleset.sql"),
-		formatted_ruleset_schema=format_ruleset_schema(&full_path),
+		db_name=db_name,
+		formatted_ruleset_schema=formatted_ruleset_schema,
 		formatted_ruleset_role_migrator=formatted_ruleset_role_migrator,
 		formatted_ruleset_role_action=formatted_ruleset_role_action,
 		formatted_ruleset_role_view=formatted_ruleset_role_view,
 	);
 	transaction.batch_execute(&create_sql).await?;
+	println!("created ruleset schema");
 
 	// TODO same role concerns
-	transaction.batch_execute(&format!(r#"set role "{formatted_ruleset_role_migrator}""#)).await?;
-
-	log::debug!("applying ruleset schema");
-	transaction.batch_execute(db_schema).await?;
+	// TODO also the alter role stuff doesn't count because postgres that only counts when you connect as that role ugh
+	println!("applying ruleset schema");
+	transaction.batch_execute(&format!(r#"
+		set role "{formatted_ruleset_role_migrator}";
+		set search_path to "{formatted_ruleset_schema}";
+		reset role;
+		{db_schema}
+	"#)).await?;
 
 	transaction.commit().await?;
 
@@ -797,7 +807,7 @@ pub(crate) async fn create_ruleset<'u>(
 // ) -> Result<(PgClient, String), postgres::Error> {
 
 // 	use db_generated::IterSql;
-// 	let fns = IterSql(|| fns.iter().map(|(name, fn_type)| RulesetFnRawBorrowed { name, fn_type: *fn_type }));
+// 	let fns = IterSql(|| fns.iter().map(|(name, fn_type)| RulesetFnBorrowed { name, fn_type: *fn_type }));
 // 	// let function_uses = IterSql(||
 // 	// 	function_uses.iter().map(|(ruleset_path, object_name, is_action, return_type, params)|
 // 	// 		DbUsesFunctionStructParams {
@@ -814,7 +824,7 @@ pub(crate) async fn create_ruleset<'u>(
 // 	// );
 
 // 	let full_path = queries::rulesets::insert_ruleset()
-// 		.bind(client, &parent_full_path, &name, &ruleset_code, &db_schema, &(&[] as &[RulesetFnRawBorrowed<'static>]))
+// 		.bind(client, &parent_full_path, &name, &ruleset_code, &db_schema, &(&[] as &[RulesetFnBorrowed<'static>]))
 // 		.one().await?;
 
 // 	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
@@ -972,8 +982,10 @@ pub(crate) async fn create_ruleset<'u>(
 // 	unimplemented!()
 // }
 
-async fn get_stored_ruleset(full_path: &str) -> Result<StoredRuleset, postgres::Error> {
-	unimplemented!()
+async fn get_stored_ruleset(client: &PgClient, full_path: &str) -> Result<StoredRuleset, postgres::Error> {
+	queries::rulesets::get_stored_ruleset().bind(client, &full_path)
+		.map(|r| StoredRuleset { ts_code: r.ts_code.into(), db_schema: r.db_schema.into() })
+		.one().await
 
 	// use std::collections::HashMap;
 	// fn build_ruleset_tree(mut rows: Vec<RulesetRow>) -> StoredRuleset {
@@ -1044,7 +1056,7 @@ pub async fn propose_candidate_ruleset(
 	server_role_client: &PgClient,
 	// server_db_archive_path: &std::path::Path,
 ) -> Result<uuid::Uuid, ValidationError> {
-	let prev_ruleset = get_stored_ruleset(full_path).await?;
+	let prev_ruleset = get_stored_ruleset(&server_role_client, full_path).await?;
 
 	validate_bundled_ruleset_top(
 		parent_full_path, ruleset_name, full_path,

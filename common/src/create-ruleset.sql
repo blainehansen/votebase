@@ -1,12 +1,15 @@
 create schema "{formatted_ruleset_schema}";
 create extension if not exists pgcrypto with schema "{formatted_ruleset_schema}";
 
-create role "{formatted_ruleset_role_migrator}" with nocreaterole nosuperuser nocreatedb noinherit login nopassword;
+create role "{formatted_ruleset_role_migrator}" with nocreaterole nosuperuser nocreatedb noinherit nologin;
 alter role "{formatted_ruleset_role_migrator}" set search_path to "{formatted_ruleset_schema}";
-create role "{formatted_ruleset_role_action}" with nocreaterole nosuperuser nocreatedb noinherit login nopassword;
+grant "{formatted_ruleset_role_migrator}" to "votebase_server_{db_name}";
+create role "{formatted_ruleset_role_action}" with nocreaterole nosuperuser nocreatedb noinherit nologin;
 alter role "{formatted_ruleset_role_action}" set search_path to "{formatted_ruleset_schema}";
-create role "{formatted_ruleset_role_view}" with nocreaterole nosuperuser nocreatedb noinherit login nopassword;
+grant "{formatted_ruleset_role_action}" to "votebase_server_{db_name}";
+create role "{formatted_ruleset_role_view}" with nocreaterole nosuperuser nocreatedb noinherit nologin;
 alter role "{formatted_ruleset_role_view}" set search_path to "{formatted_ruleset_schema}";
+grant "{formatted_ruleset_role_view}" to "votebase_server_{db_name}";
 
 -- https://www.postgresql.org/docs/current/ddl-priv.html
 
