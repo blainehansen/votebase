@@ -5,10 +5,10 @@ use std::collections::HashMap;
 use crate::podman_fns::{podman_compute_diff, podman_pg_restore};
 use crate::runtime::RuntimeError;
 use crate::{
-	PgClient, PgConfig, RoleType, format_full_path, format_ruleset_role, format_ruleset_schema, pg_con, postgres, queries /*format_ruleset_schema*/
+	FnType, PgClient, PgConfig, RoleType, format_full_path, format_ruleset_role, format_ruleset_schema, pg_con, postgres, queries /*format_ruleset_schema*/
 };
 use crate::db_types::votebase_catalog::{
-	FnType, RulesetFnBorrowed,
+	RulesetFnBorrowed,
 	// DbUsesFunctionStructParams, DbUsesTableStructParams, DbUsesColumnStructBorrowed,
 };
 
@@ -24,6 +24,7 @@ pub struct BundledRuleset {
 	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
 	// pub fns: { [fn_name: string]: VotebaseFn<JsonValue> },
 	// is there a world where the fns are all declared separately, and then some "shared code" chunk also? how to do this? create temp files for each to do all the checking?
+	pub fns: Vec<(String, FnType)>,
 
 	/// The final intended database schema.
 	/// Used to check that `db_migration` does what it's intended to.
@@ -201,6 +202,7 @@ pub enum CandidateApplyError {
 	CorruptedCandidate(uuid::Uuid, serde_json::Error),
 	#[error("the candidate {0} was found to be invalid for the current state\n\n{1}")]
 	Invalid(uuid::Uuid, ValidationError),
+
 	#[error(transparent)]
 	Db(#[from] postgres::Error),
 }
@@ -737,15 +739,16 @@ pub(crate) async fn validate_bundled_ruleset(
 pub(crate) async fn create_ruleset<'u>(
 	db_name: &str, client: &mut PgClient,
 	parent_full_path: Option<&str>, name: &str,
-	ruleset_code: &str, db_schema: &str,
-	fns: &Vec<(String, FnType)>,
+	bundled_ruleset: &BundledRuleset,
 	// function_uses: &'u Vec<(&'u str, &'u str, bool, &'u str, Vec<&'u str>)>,
 	// table_uses: &'u Vec<(&'u str, &'u str, Vec<DbUsesColumnStructBorrowed<'u>>)>,
 ) -> Result<(), postgres::Error> {
 	println!("inserting ruleset");
 
-	use db_generated::IterSql;
-	let fns = IterSql(|| fns.iter().map(|(name, fn_type)| RulesetFnBorrowed { name: name.as_str(), fn_type: *fn_type }));
+	let BundledRuleset { ts_code, db_schema, db_migration, fns } = bundled_ruleset;
+	let fns = db_generated::IterSql(|| fns.iter()
+		.map(|(name, fn_type)| RulesetFnBorrowed { name: name.as_str(), fn_type: (*fn_type).into() }));
+
 	// let function_uses = IterSql(||
 	// 	function_uses.iter().map(|(ruleset_path, object_name, is_action, return_type, params)|
 	// 		DbUsesFunctionStructParams {
@@ -762,7 +765,7 @@ pub(crate) async fn create_ruleset<'u>(
 	// );
 
 	let full_path = queries::rulesets::insert_ruleset()
-		.bind(client, &parent_full_path, &name, &ruleset_code, &db_schema, &fns)
+		.bind(client, &parent_full_path, &name, &ts_code, &db_schema, &fns)
 		.one().await?;
 	println!("inserted ruleset");
 
@@ -772,7 +775,7 @@ pub(crate) async fn create_ruleset<'u>(
 	let formatted_ruleset_schema = format_ruleset_schema(&full_path);
 
 	println!("creating ruleset schema");
-	let transaction = client.transaction().await?;
+	let mut transaction = client.transaction().await?;
 	let create_sql = format!(include_str!("./create-ruleset.sql"),
 		db_name=db_name,
 		formatted_ruleset_schema=formatted_ruleset_schema,
@@ -786,16 +789,24 @@ pub(crate) async fn create_ruleset<'u>(
 	// TODO same role concerns
 	// TODO also the alter role stuff doesn't count because postgres that only counts when you connect as that role ugh
 	println!("applying ruleset schema");
-	transaction.batch_execute(&format!(r#"
-		set role "{formatted_ruleset_role_migrator}";
-		set search_path to "{formatted_ruleset_schema}";
-		reset role;
-		{db_schema}
-	"#)).await?;
-
+	sql_as_role(&mut transaction, &formatted_ruleset_schema, &formatted_ruleset_role_migrator, db_schema).await?;
 	transaction.commit().await?;
 
 	Ok(())
+}
+
+async fn sql_as_role(
+	transaction: &mut postgres::Transaction<'_>,
+	formatted_ruleset_schema: &str,
+	formatted_ruleset_role: &str,
+	sql: &str,
+) -> Result<(), postgres::Error> {
+	transaction.batch_execute(&format!(r#"
+		set role "{formatted_ruleset_role}";
+		set search_path to "{formatted_ruleset_schema}";
+		{sql}
+		reset role;
+	"#)).await
 }
 
 // async fn create_ruleset_validation<'u>(
@@ -849,130 +860,133 @@ pub(crate) async fn create_ruleset<'u>(
 // }
 
 
-// pub async fn apply_candidate_top(
-// 	server_role_client: &mut PgClient,
-// 	server_db_archive_path: &std::path::Path,
-// 	candidate_id: &uuid::Uuid,
-// 	delete_other_candidates: bool,
-// ) -> Result<(), CandidateApplyError> {
-// 	let (candidate_for, bundled_ruleset) = queries::rulesets::get_ruleset_candidate().bind(server_role_client, candidate_id)
-// 		.map(|r| {
-// 			let bundled_ruleset: BundledRuleset = serde_json::from_str(r.bundled_ruleset.0.get())?;
-// 			Ok((r.candidate_for.to_string(), bundled_ruleset))
-// 		})
-// 		.opt().await?
-// 		.ok_or_else(|| CandidateApplyError::CandidateNotFound(*candidate_id))?
-// 		.map_err(|e| CandidateApplyError::CorruptedCandidate(*candidate_id, e))?;
+pub async fn apply_candidate_top(
+	server_role_client: &mut PgClient,
+	// server_db_archive_path: &std::path::Path,
+	candidate_id: &uuid::Uuid,
+	delete_other_candidates: bool,
+) -> Result<(), CandidateApplyError> {
+	let (candidate_for, bundled_ruleset) = queries::rulesets::get_ruleset_candidate().bind(server_role_client, candidate_id)
+		.map(|r| {
+			let bundled_ruleset: BundledRuleset = serde_json::from_str(r.bundled_ruleset.0.get())?;
+			Ok((r.candidate_for.to_string(), bundled_ruleset))
+		})
+		.opt().await?
+		.ok_or_else(|| CandidateApplyError::CandidateNotFound(*candidate_id))?
+		.map_err(|e| CandidateApplyError::CorruptedCandidate(*candidate_id, e))?;
 
-// 	let prev_ruleset = get_stored_ruleset(&candidate_for).await?;
-// 	let (parent_full_path, ruleset_name) = crate::split_full_path(&candidate_for);
+	let prev_ruleset = get_stored_ruleset(&server_role_client, &candidate_for).await?;
+	let (parent_full_path, ruleset_name) = crate::split_full_path(&candidate_for);
 
-// 	validate_bundled_ruleset_top(
-// 		parent_full_path.as_deref(), &ruleset_name, &candidate_for,
-// 		Some(&prev_ruleset), &bundled_ruleset, server_db_archive_path,
-// 	).await.map_err(|e| CandidateApplyError::Invalid(*candidate_id, e))?;
+	validate_bundled_ruleset_top(
+		parent_full_path.as_deref(), &ruleset_name, &candidate_for,
+		Some(&prev_ruleset), &bundled_ruleset, /*server_db_archive_path,*/
+	).await.map_err(|e| CandidateApplyError::Invalid(*candidate_id, e))?;
 
-// 	let prev_has_candidate_references = prev_ruleset.db_uses_tables.iter().any(|t| {
-// 		t.ruleset_path == "votebase_catalog" && t.object_name == "candidate_replacement_ruleset"
-// 		&& t.columns.iter().any(|c| c.use_kind == ColumnUseKind::Reference)
-// 	});
+	// let prev_has_candidate_references = prev_ruleset.db_uses_tables.iter().any(|t| {
+	// 	t.ruleset_path == "votebase_catalog" && t.object_name == "candidate_replacement_ruleset"
+	// 	&& t.columns.iter().any(|c| c.use_kind == ColumnUseKind::Reference)
+	// });
 
-// 	// we always have *at least* a root ruleset, so whenever apply_candidate_top is being called it's to replace a ruleset
-// 	let mut server_role_tx = server_role_client.transaction().await?;
-// 	apply_candidate(
-// 		base_config, &mut server_role_tx,
-// 		parent_full_path.as_deref(), &ruleset_name, &candidate_for, Some(prev_ruleset), bundled_ruleset,
-// 	).await?;
+	// we always have *at least* a root ruleset, so whenever apply_candidate_top is being called it's to replace a ruleset
+	let mut server_role_tx = server_role_client.transaction().await?;
+	apply_candidate(
+		&mut server_role_tx,
+		parent_full_path.as_deref(), &ruleset_name, &candidate_for, Some(prev_ruleset), bundled_ruleset,
+	).await?;
 
-// 	// we always delete other candidates if the old ruleset can't possibly be referencing any of them
-// 	// (which means it can't or at least shouldn't be using them in any continuous decision processes)
-// 	if delete_other_candidates || !prev_has_candidate_references {
-// 		queries::rulesets::delete_candidate_and_others().bind(&mut server_role_tx, candidate_id).await?;
-// 	}
-// 	else {
-// 		queries::rulesets::delete_candidate_only().bind(&mut server_role_tx, candidate_id).await?;
-// 		// TODO validate any *remaining* candidates to see if they're actually valid to apply to the new state!
-// 		// so go through the existing candidates, and for any that fails validation just delete it
-// 		// validate_bundled_ruleset_top(
-// 		// 	parent_full_path.as_deref(), &ruleset_name, &candidate_for,
-// 		// 	Some(&prev_ruleset), &bundled_ruleset, server_db_archive_path,
-// 		// ).await.map_err(|e| CandidateApplyError::Invalid(*candidate_id, e))?;
-// 	}
+	// we always delete other candidates if the old ruleset can't possibly be referencing any of them
+	// (which means it can't or at least shouldn't be using them in any continuous decision processes)
+	if delete_other_candidates /*|| !prev_has_candidate_references*/ {
+		queries::rulesets::delete_candidate_and_others().bind(&mut server_role_tx, candidate_id).await?;
+	}
+	else {
+		queries::rulesets::delete_candidate_only().bind(&mut server_role_tx, candidate_id).await?;
+		// TODO validate any *remaining* candidates to see if they're actually valid to apply to the new state!
+		// so go through the existing candidates, and for any that fails validation just delete it
+		// validate_bundled_ruleset_top(
+		// 	parent_full_path.as_deref(), &ruleset_name, &candidate_for,
+		// 	Some(&prev_ruleset), &bundled_ruleset, server_db_archive_path,
+		// ).await.map_err(|e| CandidateApplyError::Invalid(*candidate_id, e))?;
+	}
 
-// 	server_role_tx.commit().await?;
+	server_role_tx.commit().await?;
 
-// 	Ok(())
-// }
+	Ok(())
+}
 
-// pub(crate) async fn apply_candidate(
-// 	base_config: &PgConfig,
-// 	server_role_tx: &mut postgres::Transaction<'_>,
-// 	parent_full_path: Option<&str>, ruleset_name: &str, full_path: &str,
-// 	prev_ruleset: Option<StoredRuleset>,
-// 	bundled_ruleset: BundledRuleset,
-// ) -> Result<(), CandidateApplyError> {
-// 	let BundledRuleset { ts_code, db_schema, db_migration, /*db_uses_functions, db_uses_tables, static_children*/ } = bundled_ruleset;
+pub(crate) async fn apply_candidate(
+	server_role_tx: &mut postgres::Transaction<'_>,
+	parent_full_path: Option<&str>, ruleset_name: &str, full_path: &str,
+	prev_ruleset: Option<StoredRuleset>,
+	bundled_ruleset: BundledRuleset,
+) -> Result<(), CandidateApplyError> {
+	let BundledRuleset { ts_code, db_schema, db_migration, fns, /*db_uses_functions, db_uses_tables, static_children*/ } = bundled_ruleset;
+	let fns = db_generated::IterSql(|| fns.iter()
+		.map(|(name, fn_type)| RulesetFnBorrowed { name: name.as_str(), fn_type: (*fn_type).into() }));
 
-// 	let formatted_using_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
-// 	let formatted_using_role_action = format_ruleset_role(&full_path, RoleType::Action);
-// 	let formatted_using_role_view = format_ruleset_role(&full_path, RoleType::View);
+	let formatted_using_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
+	// let formatted_using_role_action = format_ruleset_role(&full_path, RoleType::Action);
+	// let formatted_using_role_view = format_ruleset_role(&full_path, RoleType::View);
+	let formatted_ruleset_schema = format_ruleset_schema(full_path);
 
-// 	// either migrate and update the ruleset if there was one previously...
-// 	if let Some(prev_ruleset) = prev_ruleset {
-// 		let migrator_pass = queries::rulesets::get_ruleset_migrator().bind(server_role_tx, &full_path).one().await?;
+	// either migrate and update the ruleset if there was one previously...
+	if let Some(_prev_ruleset) = prev_ruleset {
+		sql_as_role(server_role_tx, &formatted_ruleset_schema, &formatted_using_role_migrator, &db_migration).await?;
 
-// 		let migrator_config = { let mut c = base_config.clone(); c.user(formatted_using_role_migrator); c.password(migrator_pass); c };
-// 		let migrator_client = crate::pg_con(&migrator_config).await?;
-// 		migrator_client.batch_execute(&db_migration).await?;
+		// remove all grants the prev_ruleset had to foreign rulesets, and (re)grant all the new ones
+		// TODO in order to grant all the new ones, all the things you're granting to have to exist! this is fine if children only reference ancestors, but not fine if people start doing sibling or cousin etc references
+		// so before we do all the grants, we need to construct the entire new tree? that doesn't work cleanly because references grants are required in order for someone else to possibly construct a new foreign key
+		// so we have no real choice but to build the *siblings* in dag order (even more complicated if we're doing cousin references)
+		// this is at least necessary for *reference* uses, at least ones that will newly be exercised by creating references
+		// all the other ones though
+		// let mut grant_commands = vec![];
+		// add_and_check_ruleset_grant_commands_top(server_client, grant_commands, possibly_effected_uses).await?;
 
-// 		// remove all grants the prev_ruleset had to foreign rulesets, and (re)grant all the new ones
-// 		// TODO in order to grant all the new ones, all the things you're granting to have to exist! this is fine if children only reference ancestors, but not fine if people start doing sibling or cousin etc references
-// 		// so before we do all the grants, we need to construct the entire new tree? that doesn't work cleanly because references grants are required in order for someone else to possibly construct a new foreign key
-// 		// so we have no real choice but to build the *siblings* in dag order (even more complicated if we're doing cousin references)
-// 		// this is at least necessary for *reference* uses, at least ones that will newly be exercised by creating references
-// 		// all the other ones though
-// 		let mut grant_commands = vec![];
-// 		add_and_check_ruleset_grant_commands_top(server_client, grant_commands, possibly_effected_uses).await?;
-// 	}
-// 	// ... or create it from scratch
-// 	else {
-// 		let db_uses_functions: Vec<_> = db_uses_functions.iter().map(|u| {
-// 			let params_vec: Vec<&str> = u.params.iter().map(AsRef::as_ref).collect();
-// 			(u.ruleset_path.as_str(), u.object_name.as_str(), u.is_action, u.return_type.as_str(), params_vec)
-// 		}).collect();
+		let _rows_updated = queries::rulesets::update_ruleset()
+			.bind(server_role_tx, &ts_code, &db_schema, &fns, &full_path).await?;
+	}
+	// ... or create it from scratch
+	else {
+		// let db_uses_functions: Vec<_> = db_uses_functions.iter().map(|u| {
+		// 	let params_vec: Vec<&str> = u.params.iter().map(AsRef::as_ref).collect();
+		// 	(u.ruleset_path.as_str(), u.object_name.as_str(), u.is_action, u.return_type.as_str(), params_vec)
+		// }).collect();
 
-// 		let db_uses_tables: Vec<_> = db_uses_tables.iter().map(|u| {
-// 			let columns_vec: Vec<DbUsesColumnStructBorrowed> = u.columns.iter().map(|c| DbUsesColumnStructBorrowed {
-// 				name: &c.name,
-// 				typ: &c.pg_type,
-// 				can_null: c.can_null,
-// 				use_kind: c.use_kind.into_db(),
-// 			}).collect();
-// 			(u.ruleset_path.as_str(), u.object_name.as_str(), columns_vec)
-// 		}).collect();
+		// let db_uses_tables: Vec<_> = db_uses_tables.iter().map(|u| {
+		// 	let columns_vec: Vec<DbUsesColumnStructBorrowed> = u.columns.iter().map(|c| DbUsesColumnStructBorrowed {
+		// 		name: &c.name,
+		// 		typ: &c.pg_type,
+		// 		can_null: c.can_null,
+		// 		use_kind: c.use_kind.into_db(),
+		// 	}).collect();
+		// 	(u.ruleset_path.as_str(), u.object_name.as_str(), columns_vec)
+		// }).collect();
 
-// 		create_ruleset(
-// 			base_config, client, parent_full_path, ruleset_name, &ts_code, &db_schema, fns, &db_uses_functions, &db_uses_tables,
-// 		).await?;
-// 	}
+		// create_ruleset(
+		// 	db_name, &mut client, parent_full_path, ruleset_name, &ts_code, &db_schema, fns,
+		// ).await?;
 
-// 	apply_candidate_children(parent_full_path, prev_ruleset_children, next_ruleset_children).await?;
+		unimplemented!();
+	}
 
-// 	// TODO allow "exposes" on only these two votebase_catalog items
-// 	// grant usage on schema votebase_catalog to "{formatted_ruleset_role_view}";
-// 	// grant usage on schema votebase_catalog to "{formatted_ruleset_role_action}";
-// 	// grant usage on schema votebase_catalog to "{formatted_ruleset_role_migrator}";
+	// apply_candidate_children(parent_full_path, prev_ruleset_children, next_ruleset_children).await?;
 
-// 	// grant references (id) on table votebase_catalog.member to "{formatted_ruleset_role_migrator}";
-// 	// grant references (id) on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_migrator}";
+	// TODO allow "exposes" on only these two votebase_catalog items
+	// grant usage on schema votebase_catalog to "{formatted_ruleset_role_view}";
+	// grant usage on schema votebase_catalog to "{formatted_ruleset_role_action}";
+	// grant usage on schema votebase_catalog to "{formatted_ruleset_role_migrator}";
 
-// 	// grant select(full_path, parent_full_path, "name", ts_code, db_schema, fns, db_uses_functions, db_uses_tables) on table votebase_catalog.ruleset to "{formatted_ruleset_role_action}";
-// 	// grant select(full_path, parent_full_path, "name", ts_code, db_schema, fns, db_uses_functions, db_uses_tables) on table votebase_catalog.ruleset to "{formatted_ruleset_role_view}";
+	// grant references (id) on table votebase_catalog.member to "{formatted_ruleset_role_migrator}";
+	// grant references (id) on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_migrator}";
 
-// 	// grant select on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_view}";
-// 	// grant select on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_action}";
-// 	Ok(())
-// }
+	// grant select(full_path, parent_full_path, "name", ts_code, db_schema, fns, db_uses_functions, db_uses_tables) on table votebase_catalog.ruleset to "{formatted_ruleset_role_action}";
+	// grant select(full_path, parent_full_path, "name", ts_code, db_schema, fns, db_uses_functions, db_uses_tables) on table votebase_catalog.ruleset to "{formatted_ruleset_role_view}";
+
+	// grant select on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_view}";
+	// grant select on table votebase_catalog.candidate_replacement_ruleset to "{formatted_ruleset_role_action}";
+	Ok(())
+}
 
 // async fn apply_candidate_children(
 // 	parent_full_path: &str,

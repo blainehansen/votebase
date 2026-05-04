@@ -132,6 +132,14 @@ pub(crate) enum VotebaseFn {
 	Action(v8::Global<v8::Function>),
 	View(v8::Global<v8::Function>),
 }
+impl Into<FnType> for &VotebaseFn {
+	fn into(self) -> FnType {
+		match self {
+			VotebaseFn::Action(_) => FnType::Action,
+			VotebaseFn::View(_) => FnType::View,
+		}
+	}
+}
 
 fn register_fn(
 	state: &mut OpState,
@@ -229,27 +237,49 @@ impl Runtime {
 	}
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ReplaceSelfStruct {
+	pub replace_self_with_uuid: String,
+	pub delete_other_candidates: bool,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum RunActionError {
+	#[error("the candidate couldn't be applied:\n\n{0}")]
+	CandidateApply(#[from] crate::rulesets::CandidateApplyError),
+	#[error("the returned candidate id isn't a valid uuid:\n\n{0}")]
+	UuidParseError(#[from] uuid::Error),
+
+	#[error(transparent)]
+	Db(#[from] postgres::Error),
+	#[error(transparent)]
+	PoolError(#[from] crate::deadpool::PoolError),
+	#[error(transparent)]
+	Runtime(#[from] RuntimeError),
+}
+
 pub async fn run_action(
 	current_ruleset_path: String,
 	ruleset_code: &str,
 	action_name: &str,
 	arg: serde_json::Value,
-	pg_pool: PgPool,
+	pg_pool: &PgPool,
 	// scheduled_action_queue: ScheduledActionQueue,
-) -> Result<(), RuntimeError> {
+) -> Result<(), RunActionError> {
 	// let migrator_pg = FnRoleName::for_role(&current_ruleset_path, &base_config, RoleType::Migrator, migrator_pass);
 	// let action_pg = FnRoleName::for_role(&current_ruleset_path, &base_config, RoleType::Action, action_pass);
 
-	let new_ruleset_id = run_function::<Option<String>>(
-		current_ruleset_path, ruleset_code, action_name, arg, FnType::Action,
-		pg_pool,
+	let replace_self_struct = run_function::<Option<ReplaceSelfStruct>>(
+		current_ruleset_path.clone(), ruleset_code, action_name, arg, FnType::Action,
+		pg_pool.clone(),
 		// action_pg, server_role_config, server_role_pool, /*scheduled_action_queue,*/
 	).await?;
 
-	if let Some(new_ruleset_id) = new_ruleset_id {
-		let new_ruleset_id = new_ruleset_id.parse::<uuid::Uuid>()?;
-		log::info!("apply_candidate {new_ruleset_id}");
-		// rulesets::replace_ruleset(&server_role_pool, &migrator_pg, &new_ruleset_id).await?;
+	if let Some(ReplaceSelfStruct { replace_self_with_uuid, delete_other_candidates }) = replace_self_struct {
+		let replace_self_with_uuid = replace_self_with_uuid.parse::<uuid::Uuid>()?;
+		log::info!("apply_candidate {replace_self_with_uuid}");
+		let mut client = pg_pool.get().await?;
+		crate::rulesets::apply_candidate_top(&mut client, &replace_self_with_uuid, delete_other_candidates).await?;
 	}
 
 	Ok(())
@@ -295,6 +325,7 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 	};
 
 	runtime.set_external_allowed(true);
+	// TODO also pass user_id here, maybe with some other context in the future
 	runtime.set_run_info(RunInfo { current_ruleset_path, pg_pool });
 
 	// https://questions.deno.com/m/1201661871959310346
@@ -307,8 +338,6 @@ async fn run_function<'r, V: deno_core::serde::Deserialize<'r>>(
 		let function_arg = deno_core::serde_v8::to_v8(scope, function_arg)?;
 		v8::Global::new(scope, function_arg)
 	};
-
-	// TODO also pass user_id here, maybe with some other context in the future
 
 	let call = runtime.js_runtime.call_with_args(function, &[function_arg]);
 	let call_return_value = runtime.js_runtime

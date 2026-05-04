@@ -99,6 +99,10 @@ where ruleset.candidate_for = target_candidate.candidate_for;
 -- TESTING FUNCTIONS
 
 --! test_select_candidate_replacement_ruleset
-select candidate_for, bundled_ruleset
+select id, candidate_for, bundled_ruleset
 from votebase_catalog.candidate_replacement_ruleset;
 
+--! test_get_ruleset : (parent_full_path?)
+select *
+from votebase_catalog.ruleset
+where full_path = :full_path;

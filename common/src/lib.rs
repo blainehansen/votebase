@@ -96,7 +96,7 @@ impl std::fmt::Display for RoleType {
 	}
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub enum FnType { Action, View }
 impl std::fmt::Display for FnType {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -106,6 +106,23 @@ impl std::fmt::Display for FnType {
 		}
 	}
 }
+impl From<db_types::votebase_catalog::FnType> for FnType {
+	fn from(value: db_types::votebase_catalog::FnType) -> Self {
+		match value {
+			db_types::votebase_catalog::FnType::Action => Self::Action,
+			db_types::votebase_catalog::FnType::View => Self::View,
+		}
+	}
+}
+impl Into<db_types::votebase_catalog::FnType> for FnType {
+	fn into(self) -> db_types::votebase_catalog::FnType {
+		match self {
+			Self::Action => db_types::votebase_catalog::FnType::Action,
+			Self::View => db_types::votebase_catalog::FnType::View,
+		}
+	}
+}
+
 
 pub fn format_full_path(parent_full_path: Option<&str>, child_name: &str) -> String {
 	match parent_full_path {

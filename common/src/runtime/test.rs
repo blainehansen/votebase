@@ -1,5 +1,5 @@
 use super::*;
-use crate::{deadpool, postgres};
+use crate::{deadpool, postgres, rulesets::BundledRuleset};
 use serde_json::Value as Val;
 
 fn boil_string(s: &str) -> String {
@@ -7,7 +7,7 @@ fn boil_string(s: &str) -> String {
 }
 
 #[tokio::test]
-async fn test_propose_self_replacement() {
+async fn test_propose_self_replacement_successful() {
 	// let scheduled_action_queue = ScheduledActionQueue::new();
 
 	temp_container_utils::with_temp_postgres_client(async |_, mut config, admin_client| {
@@ -21,8 +21,11 @@ async fn test_propose_self_replacement() {
 		let current_full_path = "root";
 		crate::rulesets::create_ruleset(
 			db_name, &mut client, None, &current_full_path,
-			"", "create table stuff (id uuid primary key);",
-			&vec![],
+			&BundledRuleset {
+				ts_code: "".to_string(),
+				db_schema: "create table stuff (id uuid primary key);".to_string(), db_migration: "".to_string(),
+				fns: vec![],
+			},
 		).await.unwrap();
 
 		run_function::<()>(
@@ -36,6 +39,7 @@ async fn test_propose_self_replacement() {
 						`,
 						db_schema: "create table stuff (id uuid primary key, color text not null);",
 						db_migration: "alter table stuff add column color text not null;",
+						fns: [["action1", "Action"], ["action2", "Action"], ["view1", "View"]],
 					})
 					if (typeof u !== 'string' || u.length !== 36)
 						throw new Error(`proposeSelfReplacement didn't return uuid: ${u}`)
@@ -44,19 +48,50 @@ async fn test_propose_self_replacement() {
 			pool.clone(),
 		).await.unwrap();
 
-		let result = db_generated::queries::rulesets::test_select_candidate_replacement_ruleset()
+		let db_generated::queries::rulesets::TestSelectCandidateReplacementRuleset { id, candidate_for, bundled_ruleset } =
+			db_generated::queries::rulesets::test_select_candidate_replacement_ruleset()
 			.bind(&client).one().await.unwrap();
 
-		assert_eq!(result.candidate_for, "root");
+		assert_eq!(candidate_for, "root");
 		// assert_eq!(result.actions, &["action1", "action2"]);
 		// assert_eq!(result.views, &["view1"]);
-		assert_eq!(boil_string(result.bundled_ruleset.pointer("/ts_code").unwrap().as_str().unwrap()), boil_string(r#"
+		assert_eq!(boil_string(bundled_ruleset.pointer("/ts_code").unwrap().as_str().unwrap()), boil_string(r#"
 			votebase.Action("action1", () => {});
 			votebase.Action("action2", () => {});
 			votebase.View("view1", () => "yo");
 		"#));
-		assert_eq!(result.bundled_ruleset.pointer("/db_schema").unwrap().as_str().unwrap(), "create table stuff (id uuid primary key, color text not null);");
-		assert_eq!(result.bundled_ruleset.pointer("/db_migration").unwrap().as_str().unwrap(), "alter table stuff add column color text not null;");
+		assert_eq!(bundled_ruleset.pointer("/db_schema").unwrap().as_str().unwrap(), "create table stuff (id uuid primary key, color text not null);");
+		assert_eq!(bundled_ruleset.pointer("/db_migration").unwrap().as_str().unwrap(), "alter table stuff add column color text not null;");
+		let fns = serde_json::from_value::<Vec<(String, FnType)>>(bundled_ruleset.pointer("/fns").unwrap().clone()).unwrap();
+		let expected_fns = vec![("action1".to_string(), FnType::Action), ("action2".to_string(), FnType::Action), ("view1".to_string(), FnType::View)];
+		assert_eq!(fns, expected_fns);
+
+		run_action(
+			current_full_path.to_string(), r#"
+				votebase.Action("test_action", async (replacementId) => {
+					return { replace_self_with_uuid: replacementId, delete_other_candidates: true }
+				})
+			"#, "test_action", serde_json::json!(id),
+			&pool,
+		).await.unwrap();
+
+		let candidate = db_generated::queries::rulesets::test_select_candidate_replacement_ruleset()
+			.bind(&client).opt().await.unwrap();
+		assert!(candidate.is_none());
+
+		let ruleset = db_generated::queries::rulesets::test_get_ruleset()
+			.bind(&client, &current_full_path).one().await.unwrap();
+
+		assert_eq!(boil_string(&ruleset.ts_code), boil_string(r#"
+			votebase.Action("action1", () => {});
+			votebase.Action("action2", () => {});
+			votebase.View("view1", () => "yo");
+		"#));
+		assert_eq!(ruleset.db_schema, "create table stuff (id uuid primary key, color text not null);");
+		assert_eq!(
+			ruleset.fns.into_iter().map(|rfn| (rfn.name, rfn.fn_type.into())).collect::<Vec<_>>(),
+			expected_fns,
+		);
 
 		// let result = run_function::<()>(
 		// 	current_full_path.to_string(), r#"

@@ -67,6 +67,8 @@ type BundledRuleset = Readonly<{
 
 	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
 	// fns: { [fn_name: string]: VotebaseFn<JsonValue> },
+	///
+	fns: [string, 'Action' | 'View'][],
 	// is there a world where the fns are all declared separately, and then some "shared code" chunk also? how to do this? create temp files for each to do all the checking?
 
 	/**
