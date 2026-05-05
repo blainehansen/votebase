@@ -1,4 +1,4 @@
-use votebase_common::{deadpool, postgres, queries, runtime, PgConfig};
+use votebase_common::{deadpool, postgres, queries, runtime};
 
 type PgPool = deadpool::Pool;
 
@@ -103,11 +103,11 @@ async fn main() -> std::io::Result<()> {
 	#[cfg(not(debug_assertions))]
 	let port = std::env::var("VOTEBASE_PORT").ok().and_then(|p| p.parse().ok()).expect("VOTEBASE_PORT must be set");
 
-	actix_web::HttpServer::new(|| {
+	actix_web::HttpServer::new(move || {
 		let app = actix_web::App::new()
 			.app_data(web::Data::new(pool.clone()))
 			.app_data(web::Data::new(server_role_config.clone()))
-			.app_data(web::Data::new(scheduled_action_queue.clone()))
+			// .app_data(web::Data::new(scheduled_action_queue.clone()))
 			.wrap(actix_web::middleware::Logger::default())
 			.service(get_rulesets)
 			.service(get_ruleset_views)
@@ -200,22 +200,20 @@ async fn execute_action(
 	fn_path: FnPath,
 	arg: web::Json<serde_json::Value>,
 	pool: web::Data<PgPool>,
-	server_role_config: web::Data<PgConfig>,
-	scheduled_action_queue: web::Data<runtime::ScheduledActionQueue>,
+	// scheduled_action_queue: web::Data<runtime::ScheduledActionQueue>,
 ) -> Result<HttpResponse<()>, VotebaseError> {
 	let client = pool.get().await?;
-	let server_role_config = server_role_config.get_ref().clone();
-	let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
+	// let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
 
-	let action_details = queries::rulesets::get_action_details()
+	let ts_code = queries::rulesets::get_action_details()
 		.bind(&client, &fn_path.ruleset_full_path, &fn_path.fn_name)
 		.opt().await?
 		.ok_or_else(|| VotebaseError::FnNotFoundError(fn_path.clone()))?;
 
 	runtime::run_action(
-		fn_path.ruleset_full_path, &action_details.code, &fn_path.fn_name,
-		&action_details.action_pass, &action_details.migrator_pass, arg.into_inner(),
-		server_role_config, &pool, scheduled_action_queue,
+		fn_path.ruleset_full_path, &ts_code, &fn_path.fn_name,
+		arg.into_inner(),
+		pool.as_ref(), /*scheduled_action_queue,*/
 	).await?;
 
 	Ok(HttpResponse::with_body(actix_web::http::StatusCode::NO_CONTENT, ()))
@@ -226,21 +224,19 @@ async fn execute_view(
 	fn_path: FnPath,
 	query: web::Query<serde_json::Value>,
 	pool: web::Data<PgPool>,
-	server_role_config: web::Data<PgConfig>,
-	scheduled_action_queue: web::Data<runtime::ScheduledActionQueue>,
+	// scheduled_action_queue: web::Data<runtime::ScheduledActionQueue>,
 ) -> Result<web::Html, VotebaseError> {
 	let client = pool.get().await?;
-	let server_role_config = server_role_config.get_ref().clone();
-	let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
+	// let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
 
-	let view_details = queries::rulesets::get_view_details()
+	let ts_code = queries::rulesets::get_view_details()
 		.bind(&client, &fn_path.ruleset_full_path, &fn_path.fn_name)
 		.opt().await?
 		.ok_or_else(|| VotebaseError::FnNotFoundError(fn_path.clone()))?;
 
 	let return_value = runtime::run_view(
-		fn_path.ruleset_full_path, &view_details.code, &fn_path.fn_name, &view_details.pass, query.into_inner(),
-		server_role_config, &pool, scheduled_action_queue,
+		fn_path.ruleset_full_path, &ts_code, &fn_path.fn_name, query.into_inner(),
+		pool.as_ref().clone(), /*scheduled_action_queue,*/
 	).await?;
 	Ok(web::Html::new(return_value))
 }

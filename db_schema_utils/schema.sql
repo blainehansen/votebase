@@ -60,24 +60,6 @@ create type votebase_catalog.ruleset_fn as (
 	"name" text, fn_type votebase_catalog.fn_type
 	-- input_schema jsonb, output_schema jsonb
 );
--- create domain votebase_catalog.ruleset_fn as votebase_catalog.ruleset_fn_raw
--- 	not null
--- 	check ((VALUE)."name" is not null)
--- 	check (votebase_catalog.valid_name((VALUE)."name"))
--- 	check ((VALUE).fn_type is not null)
--- 	-- check ((VALUE).input_schema is not null)
--- 	-- check ((VALUE).output_schema is not null)
--- ;
-create function votebase_catalog.check_fns_different_names(fns votebase_catalog.ruleset_fn[]) returns boolean as $$
-	begin
-		return not exists (
-			select 1
-			from unnest(fns) as fn
-			group by (fn)."name"
-			having count(*) > 1
-		);
-	end;
-$$ language plpgsql immutable;
 
 create function votebase_catalog.has_fn(fns votebase_catalog.ruleset_fn[], name text, type votebase_catalog.fn_type) returns boolean as $$
 	begin
@@ -99,6 +81,20 @@ create function votebase_catalog.filter_fns(fns votebase_catalog.ruleset_fn[], t
 	end;
 $$ language plpgsql immutable;
 
+create function votebase_catalog.validate_fns(fns votebase_catalog.ruleset_fn[]) returns boolean as $$
+	select
+		-- individual items are correct
+		not exists (
+			select 1 from unnest(fns) as fn
+			where fn is null or fn."name" is null or fn.fn_type is null or not votebase_catalog.valid_name(fn."name")
+		)
+		-- have different names
+		and not exists (
+			select 1 from unnest(fns) as fn
+			group by fn."name"
+			having count(*) > 1
+		);
+$$ language sql immutable;
 
 create table votebase_catalog.ruleset (
 	full_path text primary key generated always as (case
@@ -112,7 +108,7 @@ create table votebase_catalog.ruleset (
 	db_schema text not null,
 
 	fns votebase_catalog.ruleset_fn[] not null
-		constraint fns_different_names check (votebase_catalog.check_fns_different_names(fns))
+		constraint fns_different_names check (votebase_catalog.validate_fns(fns))
 	-- db_uses_functions votebase_catalog.db_uses_function_struct[] not null,
 	-- db_uses_tables votebase_catalog.db_uses_table_struct[] not null,
 );

@@ -233,6 +233,11 @@ pub async fn validate_bundled_ruleset_top(
 	next_bundled_ruleset: &BundledRuleset,
 	// server_db_archive_path: &std::path::Path,
 ) -> Result<(), ValidationError> {
+	// TODO it's possible (and probably *only* possible) to check migrations if we check *the entire database*
+	// - for the "migrate" db: start by loading the db archive, then just apply the migration(s)
+	// - for the "reset" db: load and run *all* the db schemas for all the rulesets. the tricky thing here is doing them in order
+	// for rulesets that are mutually dependent (which you intentionally want to allow!) you'll have to make it so the commands can all be run in order. the only way I can think of right now that achieves that is to require any tables that participate in these circular relationships to declare their foreign keys outside of the definition of the table, so you can parse the db_schemas and *fully* separate the table/function definitions from the foreign key definitions. that way you can put all the function definitions first (at least the ones with unchecked bodies), then the tables, then the foreign keys and other stuff
+
 	temp_container_utils::with_temp_postgres_client(async |db_container_name, config, server_client| -> Result<(), ValidationError> {
 		// set up the two separate checking dbs
 		let reset_db_name = "tempdb|reset";
@@ -947,6 +952,7 @@ pub(crate) async fn apply_candidate(
 			.bind(server_role_tx, &ts_code, &db_schema, &fns, &full_path).await?;
 	}
 	// ... or create it from scratch
+	// TODO only relevant when there are children!
 	else {
 		// let db_uses_functions: Vec<_> = db_uses_functions.iter().map(|u| {
 		// 	let params_vec: Vec<&str> = u.params.iter().map(AsRef::as_ref).collect();

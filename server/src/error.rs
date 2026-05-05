@@ -11,6 +11,8 @@ pub enum VotebaseError {
 	#[error(transparent)]
 	RuntimeError(#[from] runtime::RuntimeError),
 	#[error(transparent)]
+	RunActionError(#[from] votebase_common::runtime::RunActionError),
+	#[error(transparent)]
 	PostgresError(#[from] votebase_common::postgres::Error),
 	#[error(transparent)]
 	PoolError(#[from] votebase_common::deadpool::PoolError),

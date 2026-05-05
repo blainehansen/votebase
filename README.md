@@ -12,7 +12,8 @@ The [`runtime.ts` file](https://github.com/blainehansen/votebase/blob/main/commo
 
 ### Roadmap
 
-- [ ] single root ruleset with only ability to replace self and migration validation
+- [X] single root ruleset with only ability to replace self
+- [ ] migration validation
 - [ ] membership functions
 - [ ] sql functions
 - [ ] basic reset role protection
@@ -21,6 +22,7 @@ The [`runtime.ts` file](https://github.com/blainehansen/votebase/blob/main/commo
 - [ ] static events
 - [ ] dynamic events
 - [ ] fetch function
+- [ ] non-DAG migration validation
 - [ ] dynamic children with recursive application and validation
 - [ ] strong ruleset references with validation and prevention
 - [ ] weak ruleset references with validation and prevention
