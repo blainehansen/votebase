@@ -8,7 +8,8 @@ members = [
 	"db_schema_utils",
 	"transpile_utils",
 	"temp_container_utils",
-	# "gen_queries", intentionally leaving this out because it's generated? doesn't seem to need to be included to be imported by common
+	"integration_tests",
+	# "db_generated", intentionally leaving this out because it's generated? doesn't seem to need to be included to be imported by common
 ]
 
 [workspace.dependencies]

@@ -741,7 +741,7 @@ pub(crate) async fn validate_bundled_ruleset(
 // }
 
 
-pub(crate) async fn create_ruleset<'u>(
+pub async fn create_ruleset<'u>(
 	db_name: &str, client: &mut PgClient,
 	parent_full_path: Option<&str>, name: &str,
 	bundled_ruleset: &BundledRuleset,

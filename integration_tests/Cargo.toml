@@ -1,0 +1,15 @@
+[package]
+name = "integration_tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+temp_container_utils = { path = "../temp_container_utils" }
+
+votebase_cli = { path = "../cli" }
+votebase_bootstrap_cli = { path = "../bootstrap_cli" }
+votebase_server = { path = "../server" }

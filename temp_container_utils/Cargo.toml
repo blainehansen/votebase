@@ -12,3 +12,7 @@ tokio-postgres = { workspace = true }
 deadpool-postgres = { workspace = true }
 rand = "0.9"
 rand_distr = "0.5"
+nix = { version = "0.29", features = ["signal"] }
+
+[dev-dependencies]
+serial_test = "3"

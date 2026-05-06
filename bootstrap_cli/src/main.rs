@@ -13,11 +13,16 @@ async fn main() -> Result<(), AnyError> {
 	let db_name = config.get_dbname().unwrap().to_owned();
 	let votebase_server_password = db_schema_utils::load_votebase_server_schema(&db_name, &client).await?;
 
-	votebase_common::runtime::rulesets::create_ruleset(
-		&config, &mut client,
+	votebase_common::rulesets::create_ruleset(
+		&db_name,
+		&mut client,
 		None, "root",
-		&vec!["__insert_initial".to_string()], &vec![],
-		include_str!("../../rulesets/accept-any/ruleset.ts"), "",
+		&votebase_common::rulesets::BundledRuleset {
+			ts_code: include_str!("../../rulesets/accept-any/ruleset.ts"),
+			db_schema: "".to_string(),
+			db_migration: "".to_string(),
+			fns: vec![],
+		},
 	).await?;
 
 	println!("{votebase_server_password}");

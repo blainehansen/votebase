@@ -16,9 +16,13 @@ default_to_workspace = false
 script = "cargo run -p db_schema_utils"
 condition = { files_modified = { input = ["./db_schema_utils/**/*"], output = ["./db_generated/**/*"] } }
 
+[tasks.integration_tests]
+dependencies = ["build_votebase_tsc", "do_gen_queries"]
+script = "cargo test -p integration_tests"
+
 [tasks.dev_test]
 dependencies = ["build_votebase_tsc", "do_gen_queries"]
-script = "cargo test -p votebase_common -- --nocapture"
+script = "cargo test -p votebase_common --lib -- --nocapture"
 
 [tasks.build_votebase_tsc]
 script = "podman build -t votebase-tsc -f Containerfile.votebase-tsc ."
