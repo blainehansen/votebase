@@ -12,6 +12,8 @@ pub async fn cmd_check(ruleset_dir: &Path) -> anyhow::Result<()> {
 	cmd_dev(ruleset_dir).await?;
 	let full_ruleset_dir = std::env::current_dir()?.join(ruleset_dir);
 	votebase_common::runtime::rulesets::podman_votebase_tsc(full_ruleset_dir).await?;
+
+	Ok(())
 }
 
 
@@ -19,7 +21,7 @@ async fn run_sql_checking_and_generation(ruleset_dir: &Path, do_generation: bool
 	let queries_dir = ruleset_dir.join("queries");
 	let schema_file = ruleset_dir.join("schema.sql");
 
-	let generated = temp_container_utils::with_temp_postgres_client(async |_, db_config, mut client| -> anyhow::Result<String> {
+	let generated = utils::temp_containers::with_temp_postgres_client(async |_, db_config, mut client| -> anyhow::Result<String> {
 		let db_name = db_config.get_dbname().unwrap();
 		println!("loading votebase schema");
 		db_schema_utils::load_votebase_server_schema(db_name, &mut client).await?;

@@ -7,7 +7,7 @@ async fn main() {
 		// .async(true)
 		.build();
 
-	temp_container_utils::with_temp_postgres_client(async |_, db_config, mut client| -> anyhow::Result<()> {
+	utils::temp_containers::with_temp_postgres_client(async |_, db_config, mut client| -> anyhow::Result<()> {
 		let db_name = db_config.get_dbname().ok_or(anyhow::anyhow!("no dbname"))?;
 		db_schema_utils::load_votebase_server_schema(db_name, &mut client).await?;
 

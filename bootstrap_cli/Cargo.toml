@@ -8,8 +8,6 @@ votebase_common = { path = "../common" }
 db_schema_utils = { path = "../db_schema_utils" }
 
 tokio-postgres = { workspace = true }
-deadpool-postgres = { workspace = true }
 tokio = { workspace = true }
-log = { workspace = true }
-rand = "0.9"
-base64 = "0.22"
+serde_json = { workspace = true }
+# log = { workspace = true }

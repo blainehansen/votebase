@@ -1,6 +1,7 @@
 use std::io;
 use tokio_postgres::{self as postgres, Config};
 use deadpool_postgres as deadpool;
+use crate::tokio_graceful_spawn::{GracefulChild, GracefulSpawn};
 
 #[derive(thiserror::Error, Debug)]
 pub enum ContainerError {
@@ -395,37 +396,3 @@ mod tests {
 // 		}
 // 	}
 // }
-
-
-pub struct GracefulChild {
-	inner: Option<tokio::process::Child>,
-}
-impl GracefulChild {
-	pub fn inner_mut(&mut self) -> Option<&mut tokio::process::Child> {
-		self.inner.as_mut()
-	}
-}
-impl Drop for GracefulChild {
-	fn drop(&mut self) {
-		if let Some(child) = self.inner.take() {
-			if let Some(pid) = child.id() {
-				let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGINT);
-			}
-			// spawn a background task to reap the process
-			tokio::spawn(async move {
-				let mut child = child;
-				let _ = child.wait().await;
-			});
-		}
-	}
-}
-
-pub trait GracefulSpawn {
-	fn graceful_spawn(&mut self) -> std::io::Result<GracefulChild>;
-}
-impl GracefulSpawn for tokio::process::Command {
-	fn graceful_spawn(&mut self) -> std::io::Result<GracefulChild> {
-		let child = self.kill_on_drop(false).spawn()?;
-		Ok(GracefulChild { inner: Some(child) })
-	}
-}

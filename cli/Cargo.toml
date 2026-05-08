@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 votebase_common = { path = "../common" }
-temp_container_utils = { path = "../temp_container_utils" }
+utils = { path = "../utils" }
 db_schema_utils = { path = "../db_schema_utils" }
 tokio = { workspace = true }
 serde = { workspace = true }

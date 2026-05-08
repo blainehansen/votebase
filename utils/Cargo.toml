@@ -1,5 +1,5 @@
 [package]
-name = "temp_container_utils"
+name = "utils"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,6 +10,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-postgres = { workspace = true }
 deadpool-postgres = { workspace = true }
+percent-encoding = { workspace = true }
 rand = "0.9"
 rand_distr = "0.5"
 nix = { version = "0.29", features = ["signal"] }

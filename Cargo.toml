@@ -7,7 +7,7 @@ members = [
 	"server",
 	"db_schema_utils",
 	"transpile_utils",
-	"temp_container_utils",
+	"utils",
 	"integration_tests",
 	# "db_generated", intentionally leaving this out because it's generated? doesn't seem to need to be included to be imported by common
 ]

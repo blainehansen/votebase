@@ -1,11 +1,11 @@
 mod cmd_init;
 pub use cmd_init::cmd_init;
 
-mod cmd_dev_check;
-pub use cmd_dev_check::{cmd_dev, cmd_check};
+// mod cmd_dev_check;
+// pub use cmd_dev_check::{cmd_dev, cmd_check};
 
-mod cmd_generate_migration;
-pub use cmd_generate_migration::cmd_generate_migration;
+// mod cmd_generate_migration;
+// pub use cmd_generate_migration::cmd_generate_migration;
 
 // TODO need to test situations where rulesets are incorrect, either for structural but especially permissions reasons
 
@@ -48,14 +48,16 @@ struct AbstractRuleset {
 	/// The migration intended to actually be run to reach the state of `db_schema`.
 	/// This will be checked to ensure it actually goes from the *current* state of the `Ruleset` database to the one declared in `db_schema`.
 	db_migration: String,
-	/// The fully qualified names of all the database objects this `Ruleset` uses as its `requires`.
-	db_uses: Vec<String>,
-	/// A mapping of the static children of this `Ruleset`, with some being simply `"keep"`, meaning to leave it as is.
-	/// If this `Ruleset` replaces the existing one, this will be the absolute state of the static children, with any existing ones changed to match their new description and extra ones recursively deleted.
-	static_children: HashMap<String, KeepOrReplace<BundledRuleset>>,
-	/// A mapping of the static recurring events of this `Ruleset`, with some being simply `"keep"`, meaning to leave it as is.
-	/// If this `Ruleset` replaces the existing one, this will be the absolute state of the static recurring events, with any existing ones changed to match their new description and extra ones deleted.
-	static_recurring_events: HashMap<String, KeepOrReplace<StaticRecurringEvent>>,
+
+
+	// /// The fully qualified names of all the database objects this `Ruleset` uses as its `requires`.
+	// db_uses: Vec<String>,
+	// /// A mapping of the static children of this `Ruleset`, with some being simply `"keep"`, meaning to leave it as is.
+	// /// If this `Ruleset` replaces the existing one, this will be the absolute state of the static children, with any existing ones changed to match their new description and extra ones recursively deleted.
+	// static_children: HashMap<String, KeepOrReplace<BundledRuleset>>,
+	// /// A mapping of the static recurring events of this `Ruleset`, with some being simply `"keep"`, meaning to leave it as is.
+	// /// If this `Ruleset` replaces the existing one, this will be the absolute state of the static recurring events, with any existing ones changed to match their new description and extra ones deleted.
+	// static_recurring_events: HashMap<String, KeepOrReplace<StaticRecurringEvent>>,
 
 	// TODO dynamic children and and events is scope I'm cutting for now
 	// /**

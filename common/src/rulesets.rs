@@ -171,7 +171,7 @@ pub enum ValidationError {
 	#[error(transparent)]
 	RuntimeRejected(#[from] RuntimeError),
 	#[error(transparent)]
-	Container(#[from] temp_container_utils::ContainerError),
+	Container(#[from] utils::temp_containers::ContainerError),
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
 	#[error(transparent)]
@@ -238,7 +238,7 @@ pub async fn validate_bundled_ruleset_top(
 	// - for the "reset" db: load and run *all* the db schemas for all the rulesets. the tricky thing here is doing them in order
 	// for rulesets that are mutually dependent (which you intentionally want to allow!) you'll have to make it so the commands can all be run in order. the only way I can think of right now that achieves that is to require any tables that participate in these circular relationships to declare their foreign keys outside of the definition of the table, so you can parse the db_schemas and *fully* separate the table/function definitions from the foreign key definitions. that way you can put all the function definitions first (at least the ones with unchecked bodies), then the tables, then the foreign keys and other stuff
 
-	temp_container_utils::with_temp_postgres_client(async |db_container_name, config, server_client| -> Result<(), ValidationError> {
+	utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, server_client| -> Result<(), ValidationError> {
 		// set up the two separate checking dbs
 		let reset_db_name = "tempdb|reset";
 		let migrate_db_name = "tempdb|migrate";
@@ -349,7 +349,7 @@ pub async fn validate_bundled_ruleset_top(
 
 pub async fn podman_votebase_tsc(full_ruleset_dir: &std::path::Path) -> Result<(), ValidationError> {
 	let workspace_arg = format!("{}:/workspace/ruleset", full_ruleset_dir.to_string_lossy());
-	let output = temp_container_utils::workspace_podman_run("votebase-tsc", &[], workspace_arg, &["--noEmit"]).await?;
+	let output = utils::temp_containers::workspace_podman_run("votebase-tsc", &[], workspace_arg, &["--noEmit"]).await?;
 
 	if !output.status.success() {
 		// let all_output = output.stdout.extend(output.stderr);
@@ -741,7 +741,7 @@ pub(crate) async fn validate_bundled_ruleset(
 // }
 
 
-pub async fn create_ruleset<'u>(
+pub async fn create_ruleset(
 	db_name: &str, client: &mut PgClient,
 	parent_full_path: Option<&str>, name: &str,
 	bundled_ruleset: &BundledRuleset,

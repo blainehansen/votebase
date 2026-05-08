@@ -10,7 +10,7 @@ fn boil_string(s: &str) -> String {
 async fn test_propose_self_replacement_successful() {
 	// let scheduled_action_queue = ScheduledActionQueue::new();
 
-	temp_container_utils::with_temp_postgres_client(async |_, mut config, admin_client| {
+	utils::temp_containers::with_temp_postgres_client(async |_, mut config, admin_client| {
 		let db_name = "tempdb";
 		let votebase_server_password = db_schema_utils::load_votebase_server_schema(db_name, &admin_client).await.unwrap();
 		config.user("votebase_server_tempdb");
@@ -113,7 +113,7 @@ async fn test_propose_self_replacement_successful() {
 async fn run_function_basics() {
 	// let scheduled_action_queue = ScheduledActionQueue::new();
 
-	temp_container_utils::with_temp_postgres_pool(async |_, _, pool| {
+	utils::temp_containers::with_temp_postgres_pool(async |_, _, pool| {
 		let result = run_function::<bool>(
 			"".into(),
 			r#"

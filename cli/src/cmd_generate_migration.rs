@@ -7,7 +7,7 @@ pub async fn cmd_generate_migration(ruleset_dir: &Path, server_db_archive_path: 
 	let db_schema_path = ruleset_dir.join("schema.sql");
 	let db_schema = tokio::fs::read_to_string(db_schema_path).await?;
 
-	let db_migration_str = temp_container_utils::with_temp_postgres_client(async |db_container_name, config, client| -> anyhow::Result<String> {
+	let db_migration_str = utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, client| -> anyhow::Result<String> {
 		// what we actually need to do here is use the client to create two diff databases
 		let from_db_name = &format!("tempdb|from");
 		let to_db_name = &format!("tempdb|to");
@@ -84,7 +84,7 @@ pub async fn compute_diff(
 	let from_url = votebase_common::url_encoded_connection_string(from_config);
 	let to_url = votebase_common::url_encoded_connection_string(to_config);
 
-	let output = temp_container_utils::podman_run(
+	let output = utils::podman_run(
 		"votebase-dbdiff",
 		&["--network", &format!("container:{}", db_container_name)],
 		&["--with-privileges", "--schema", pgschema, &from_url, &to_url],

@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 transpile_utils = { path = "../transpile_utils" }
 db_generated = { path = "../db_generated" }
-temp_container_utils = { path = "../temp_container_utils" }
+utils = { path = "../utils" }
 deno_core = { workspace = true }
 deno_error = { workspace = true }
 serde = { workspace = true }
@@ -25,7 +25,6 @@ sqlparser = { version = "0.60", features = ["visitor"] }
 postgres-from-row = "0.5"
 tokio-stream = { workspace = true }
 reqwest = "0.12"
-percent-encoding = { workspace = true }
 hashbrown = { workspace = true }
 
 

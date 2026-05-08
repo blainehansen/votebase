@@ -18,7 +18,7 @@ use crate::rulesets::{
 
 // 	for new_ruleset in new_rulesets {
 // 		validate_bundled_ruleset_top(parent_full_path, ruleset_name, full_path, None, next, server_db_archive_path).await?;
-// 		temp_container_utils::with_temp_postgres_client(async |db_container_name, config, client| {
+// 		utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, client| {
 // 			apply_candidate(config, server_role_tx, parent_full_path, ruleset_name, full_path, prev, bundled_ruleset).await?;
 
 // 			Ok(())
@@ -59,7 +59,7 @@ async fn test_valid_ruleset_transitions() -> anyhow::Result<()> {
 
 	for (prev, next) in transitions {
 
-		temp_container_utils::with_temp_postgres_client(async |db_container_name, config, client| {
+		utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, client| {
 			let ruleset_name = "root";
 			let ctx = ValidateCtx {
 				db_container_name,
@@ -88,7 +88,7 @@ async fn test_valid_ruleset_transitions() -> anyhow::Result<()> {
 // 	];
 
 // 	for (prev, transition_path) in paths {
-// 		temp_container_utils::with_temp_postgres_client(async |db_container_name, config, client| {
+// 		utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, client| {
 // 			let ruleset_name = "root";
 // 			let ctx = ValidateCtx {
 // 				db_container_name,

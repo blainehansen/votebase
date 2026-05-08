@@ -8,4 +8,4 @@ anyhow = { workspace = true }
 clorinde = { version = "1" }
 tokio-postgres = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
-temp_container_utils = { path = "../temp_container_utils" }
+utils = { path = "../utils" }

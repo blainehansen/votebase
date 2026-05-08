@@ -6,10 +6,10 @@ pub async fn podman_compute_diff(
 	from_config: &PgConfig,
 	to_config: &PgConfig,
 ) -> std::io::Result<String> {
-	let from_url = crate::url_encoded_connection_string(from_config);
-	let to_url = crate::url_encoded_connection_string(to_config);
+	let from_url = utils::url_encoded_connection_string(from_config);
+	let to_url = utils::url_encoded_connection_string(to_config);
 
-	let output = temp_container_utils::podman_run(
+	let output = utils::temp_containers::podman_run(
 		"votebase-dbdiff",
 		&["--network", &format!("container:{}", db_container_name)],
 		&["--with-privileges", "--schema", target_schema, &from_url, &to_url],
