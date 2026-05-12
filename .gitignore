@@ -12,6 +12,8 @@ frontend/.vitepress/dist
 db_generated
 queries.ts
 
+*.bundled.json
+
 # Added by cargo
 
 /target

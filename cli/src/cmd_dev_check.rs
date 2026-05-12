@@ -11,7 +11,7 @@ pub async fn cmd_dev(ruleset_dir: &Path) -> anyhow::Result<()> {
 pub async fn cmd_check(ruleset_dir: &Path) -> anyhow::Result<()> {
 	cmd_dev(ruleset_dir).await?;
 	let full_ruleset_dir = std::env::current_dir()?.join(ruleset_dir);
-	votebase_common::runtime::rulesets::podman_votebase_tsc(full_ruleset_dir).await?;
+	votebase_common::rulesets::podman_votebase_tsc(full_ruleset_dir.as_path()).await?;
 
 	Ok(())
 }
@@ -35,13 +35,14 @@ async fn run_sql_checking_and_generation(ruleset_dir: &Path, do_generation: bool
 				println!("no schema.sql file found, assuming no special schema");
 				"".to_string()
 			};
-		let migrator_client = votebase_common::runtime::rulesets::create_ruleset(
-			&db_config, &mut client,
-			None, "root",
-			&vec![], &vec![],
-			"", &ruleset_db_schema,
+		votebase_common::rulesets::create_ruleset(
+			db_name, &mut client,
+			None, /*parent_full_path,*/
+			name,
+			bundled_ruleset,
 		).await?;
 
+		// sql_as_role()
 		println!("generating");
 		// TODO use the migrator role?
 		let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &migrator_client).await?;

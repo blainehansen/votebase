@@ -162,6 +162,7 @@ async fn get_rulesets(
 	Ok(web::Json(rulesets))
 }
 
+// TODO return something a little more rich and descriptive than just the view names
 #[actix_web::get("/ruleset-views/{ruleset_full_path}")]
 async fn get_ruleset_views(
 	ruleset_full_path: web::Path<String>,
@@ -178,6 +179,7 @@ async fn get_ruleset_views(
 	Ok(web::Json(ruleset))
 }
 
+// TODO return something a little more rich and descriptive than just the view names
 #[actix_web::get("/ruleset-detail/{ruleset_full_path}")]
 async fn get_ruleset_detail(
 	ruleset_full_path: web::Path<String>,
@@ -228,6 +230,7 @@ async fn execute_view(
 ) -> Result<web::Html, VotebaseError> {
 	let client = pool.get().await?;
 	// let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
+	let fn_path = dbg!(fn_path);
 
 	let ts_code = queries::rulesets::get_view_details()
 		.bind(&client, &fn_path.ruleset_full_path, &fn_path.fn_name)

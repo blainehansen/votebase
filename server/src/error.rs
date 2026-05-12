@@ -45,6 +45,7 @@ impl actix_web::ResponseError for VotebaseError {
 			| Self::PostgresError(_)
 			| Self::PoolError(_)
 			| Self::UuidParseError(_)
+			| Self::RunActionError(_)
 				=> actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
 		}
 	}

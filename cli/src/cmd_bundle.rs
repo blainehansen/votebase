@@ -5,26 +5,60 @@
 //   - generate the queries and write them into the file
 // - using a temp podman typescript, run a typecheck with the votebase tsconfig
 // - analyze the ruleset by executing it, and use the migration generated above to create the bundle
-pub async fn cmd_bundle() -> anyhow::Result<()> {
-	// fetch server info, which includes whatever info about the Ruleset tree we need
+pub async fn cmd_bundle(ruleset_dir: &std::path::Path, bundle_path: &std::path::Path) -> anyhow::Result<()> {
+	// crate::cmd_check(ruleset_dir).await?;
+
+	// let queries_dir = ruleset_dir.join("queries");
+	let ts_code_file = ruleset_dir.join("ruleset.ts");
+	let schema_file = ruleset_dir.join("schema.sql");
+	let migration_file = ruleset_dir.join("migration.sql");
+
+	println!("before join");
+	let (existing_code, db_schema, db_migration) = tokio::try_join!(
+		tokio::fs::read_to_string(&ts_code_file),
+		read_file_or_none(&schema_file),
+		read_file_or_none(&migration_file),
+	)?;
+	println!("after join");
+
+	// let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &client).await?;
+	// TODO	have to to figure out what the existing code imports it as and strip it out
+	// let ts_code = format!("const queries = {{\n{generated_fields}\n}}\n{existing_code}");
+	let ts_code = existing_code;
+	// TODO check the db_migration against the real current schema (where do we get that from???) and the stated final schema
+
+	let (db_schema, db_migration) = match (db_schema, db_migration) {
+		(Some(db_schema), Some(db_migration)) => (db_schema, db_migration),
+		(Some(db_schema), None) => (db_schema.clone(), db_schema),
+		(None, None) => ("".to_string(), "".to_string()),
+		(None, Some(_)) => return Err(anyhow::anyhow!("it doesn't make any sense to have a migration.sql but no schema.sql")),
+	};
+
+	// TODO this should go in cmd_check
+	// TODO agghghgh next_bundled_ruleset has to already have the fns in it! this means it probably does make sense to have something apart to do this fn sensing?
+	let fns = votebase_common::rulesets::validate_bundled_ruleset_top(
+		parent_full_path, ruleset_name, full_path, prev_ruleset, next_bundled_ruleset
+	).await?;
+
+	let bundled_ruleset = serde_json::to_string(&votebase_common::rulesets::BundledRuleset {
+		ts_code, db_schema, db_migration, fns,
+	})?;
+	let bundle_file = std::env::current_dir()?.join(bundle_path);
+
+	use tokio::io::AsyncWriteExt;
+	let mut file = tokio::fs::OpenOptions::new().write(true).create(true).truncate(true)
+		.open(bundle_file).await?;
+	file.write_all(bundled_ruleset.as_bytes()).await?;
 
 	Ok(())
-	// let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &client).await?;
+}
 
-	// let existing_code = tokio::fs::read_to_string(ruleset_dir.join("ruleset.ts")).await?;
-	// // TODO	have to to figure out what the existing code imports it as and strip it out
-	// let code = format!("const queries = {{\n{generated_fields}\n}}\n{existing_code}");
-	// let db_schema = tokio::fs::read_to_string(ruleset_dir.join("schema.sql")).await?;
-	// let db_migration = tokio::fs::read_to_string(migration_file).await?;
-	// // TODO check the db_migration against the real current schema (where do we get that from???) and the stated final schema
-
-	// let bundled_ruleset = serde_json::to_string(&BundledRuleset { code, db_schema, db_migration })?;
-	// let bundle_file = ruleset_dir.join("ruleset.json");
-
-	// use tokio::io::AsyncWriteExt;
-	// let mut file = tokio::fs::OpenOptions::new().write(true).create(true).truncate(true)
-	// 	.open(bundle_file).await?;
-	// file.write_all(bundled_ruleset.as_bytes()).await?;
+async fn read_file_or_none(path: &std::path::Path) -> Result<Option<String>, std::io::Error> {
+	match tokio::fs::read_to_string(path).await {
+		Ok(content) => Ok(Some(content)),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+		Err(e) => Err(e),
+	}
 }
 
 // struct BundleInfo {

@@ -31,6 +31,8 @@ async fn main() -> Result<(), AnyError> {
 		&bundled_ruleset,
 	).await?;
 
+	// TODO need to make sure any other logging that may happen during this cli invocation is redirected to stderr or something
+	// proper logging done through logging crates probably goes to stderr regardless, so you just need to watch for errant println etc
 	println!("{votebase_server_password}");
 
 	Ok(())

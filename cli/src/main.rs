@@ -32,8 +32,8 @@ async fn main() -> anyhow::Result<()> {
 		SubCommand::CheckMigration(_) => {
 			unimplemented!();
 		},
-		SubCommand::Bundle(_) => {
-			votebase_cli::cmd_bundle().await?;
+		SubCommand::Bundle(Bundle { bundle_path }) => {
+			votebase_cli::cmd_bundle(&ruleset_dir, &bundle_path).await?;
 		},
 	}
 
@@ -44,8 +44,8 @@ async fn main() -> anyhow::Result<()> {
 #[derive(argh::FromArgs, Debug)]
 /// votebase ruleset development cli
 struct VotebaseCliArgs {
-	/// TODO
-	#[argh(option)]
+	/// the path of the ruleset you are targeting
+	#[argh(positional)]
 	ruleset_dir: PathBuf,
 
 	#[argh(subcommand)]
@@ -67,7 +67,7 @@ enum SubCommand {
 
 #[derive(argh::FromArgs, Debug)]
 #[argh(subcommand, name = "init")]
-/// sets up a directory with the skeleton of a new Ruleset
+/// Sets up a directory with the skeleton of a new Ruleset.
 struct Init {}
 
 // #[derive(argh::FromArgs, Debug)]
@@ -112,7 +112,9 @@ struct CheckMigration {}
 #[argh(subcommand, name = "bundle")]
 /// Bundle the ruleset as a json object ready to be proposed in through the `op_propose_self_replacement` runtime function.
 struct Bundle {
-	// /// TODO
+	#[argh(positional)]
+	bundle_path: PathBuf,
+
 	// #[argh(option)]
 	// vars_file: PathBuf,
 }

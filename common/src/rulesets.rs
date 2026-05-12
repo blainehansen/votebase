@@ -232,13 +232,13 @@ pub async fn validate_bundled_ruleset_top(
 	prev_ruleset: Option<&StoredRuleset>,
 	next_bundled_ruleset: &BundledRuleset,
 	// server_db_archive_path: &std::path::Path,
-) -> Result<(), ValidationError> {
+) -> Result<Vec<(String, FnType)>, ValidationError> {
 	// TODO it's possible (and probably *only* possible) to check migrations if we check *the entire database*
 	// - for the "migrate" db: start by loading the db archive, then just apply the migration(s)
 	// - for the "reset" db: load and run *all* the db schemas for all the rulesets. the tricky thing here is doing them in order
 	// for rulesets that are mutually dependent (which you intentionally want to allow!) you'll have to make it so the commands can all be run in order. the only way I can think of right now that achieves that is to require any tables that participate in these circular relationships to declare their foreign keys outside of the definition of the table, so you can parse the db_schemas and *fully* separate the table/function definitions from the foreign key definitions. that way you can put all the function definitions first (at least the ones with unchecked bodies), then the tables, then the foreign keys and other stuff
 
-	utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, server_client| -> Result<(), ValidationError> {
+	let fns = utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, server_client| -> Result<(), ValidationError> {
 		// set up the two separate checking dbs
 		let reset_db_name = "tempdb|reset";
 		let migrate_db_name = "tempdb|migrate";
@@ -261,7 +261,7 @@ pub async fn validate_bundled_ruleset_top(
 		};
 
 		// do the recursive validation, which is basically just application! but to two things at the same time
-		validate_bundled_ruleset(full_path, parent_full_path, ruleset_name, &ctx, prev_ruleset, next_bundled_ruleset).await?;
+		let fns = validate_bundled_ruleset(full_path, parent_full_path, ruleset_name, &ctx, prev_ruleset, next_bundled_ruleset).await?;
 
 		// TODO it would be nice to figure out how to try_join all these below queries
 
@@ -340,11 +340,11 @@ pub async fn validate_bundled_ruleset_top(
 		// validate_schema_references(&foreign_key_references, table_references_by_ruleset_and_table_and_column)
 		// 	.map_err(ValidationError::InvalidReferences)?;
 
-		Ok(())
+		Ok(fns)
 	}).await??;
 
 
-	Ok(())
+	Ok(fns)
 }
 
 pub async fn podman_votebase_tsc(full_ruleset_dir: &std::path::Path) -> Result<(), ValidationError> {
@@ -365,7 +365,7 @@ pub(crate) async fn validate_bundled_ruleset(
 	ctx: &ValidateCtx,
 	prev_ruleset: Option<&StoredRuleset>,
 	next_bundled_ruleset: &BundledRuleset,
-) -> Result<(), ValidationError> {
+) -> Result<Vec<(String, FnType)>, ValidationError> {
 	// place the typescript code in a temp directory and check it
 	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
 	let ts_file = temp_dir.as_ref().join("ruleset.ts");
@@ -375,7 +375,8 @@ pub(crate) async fn validate_bundled_ruleset(
 
 	// ensure the runtime is okay with it
 	println!("trying runtime");
-	crate::runtime::Runtime::new(&next_bundled_ruleset.ts_code).await?;
+	let runtime = crate::runtime::Runtime::new(&next_bundled_ruleset.ts_code).await?;
+	let fns = runtime.get_fns();
 
 	// let function_uses: Vec<_> = next_bundled_ruleset.db_uses_functions.iter().map(|u| {
 	// 	let params_vec: Vec<&str> = u.params.iter().map(AsRef::as_ref).collect();
@@ -439,7 +440,7 @@ pub(crate) async fn validate_bundled_ruleset(
 	// 	)
 	// ).await?;
 
-	Ok(())
+	Ok(fns)
 }
 
 // async fn validate_bundled_ruleset_children(
@@ -1078,7 +1079,7 @@ pub async fn propose_candidate_ruleset(
 ) -> Result<uuid::Uuid, ValidationError> {
 	let prev_ruleset = get_stored_ruleset(&server_role_client, full_path).await?;
 
-	validate_bundled_ruleset_top(
+	let fns = validate_bundled_ruleset_top(
 		parent_full_path, ruleset_name, full_path,
 		Some(&prev_ruleset), candidate,
 		// server_db_archive_path,
@@ -1089,4 +1090,9 @@ pub async fn propose_candidate_ruleset(
 		.one().await?;
 
 	Ok(candidate_uuid)
+}
+
+// TODO consolidate this into some other piece of functionality, such as
+async fn determine_fns(ts_code: &str) -> Result<, RuntimeError> {
+	crate::runtime::Runtime::new(ts_code)
 }

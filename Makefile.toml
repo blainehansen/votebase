@@ -16,9 +16,23 @@ default_to_workspace = false
 script = "cargo run -p db_schema_utils"
 condition = { files_modified = { input = ["./db_schema_utils/**/*"], output = ["./db_generated/**/*"] } }
 
+
+[tasks.test_build_cli]
+script = "cargo build -p votebase_cli"
+[tasks.test_build_bootstrap_cli]
+script = "cargo build -p votebase_bootstrap_cli"
+[tasks.test_build_server]
+script = "cargo build -p votebase_server"
+
+
 [tasks.integration_tests]
-dependencies = ["build_votebase_tsc", "do_gen_queries"]
-script = "cargo test -p integration_tests"
+dependencies = [
+	"build_votebase_tsc", "do_gen_queries",
+	"test_build_cli",
+	"test_build_bootstrap_cli",
+	"test_build_server",
+]
+script = "cargo test -p integration_tests -- --nocapture"
 
 [tasks.dev_test]
 dependencies = ["build_votebase_tsc", "do_gen_queries"]

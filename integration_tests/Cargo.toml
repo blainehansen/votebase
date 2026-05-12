@@ -7,9 +7,5 @@ edition = "2024"
 
 [dev-dependencies]
 tokio = { workspace = true }
-
 utils = { path = "../utils" }
-
-votebase_cli = { path = "../cli" }
-votebase_bootstrap_cli = { path = "../bootstrap_cli" }
-votebase_server = { path = "../server" }
+reqwest = { version = "0.13", features = ["json"] }

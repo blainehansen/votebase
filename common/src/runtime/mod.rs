@@ -227,6 +227,13 @@ impl Runtime {
 	pub(crate) fn take_fn_map(&mut self) -> VotebaseFnMap {
 		self.js_runtime.op_state().borrow_mut().take()
 	}
+	pub(crate) fn get_fns(&self) -> Vec<(String, FnType)> {
+		self.js_runtime.op_state().as_ref().borrow().borrow::<VotebaseFnMap>()
+			.iter().map(|(fn_name, f)| {
+				(fn_name.to_string(), f.into())
+			})
+			.collect()
+	}
 
 	pub(crate) fn set_external_allowed(&mut self, allowed: bool) {
 		self.js_runtime.op_state().borrow_mut().put(allowed);

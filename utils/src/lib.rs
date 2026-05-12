@@ -3,7 +3,7 @@ pub mod temp_containers;
 
 pub mod tokio_graceful_spawn {
 	pub struct GracefulChild {
-		inner: Option<tokio::process::Child>,
+		pub inner: Option<tokio::process::Child>,
 	}
 	impl GracefulChild {
 		pub fn inner_mut(&mut self) -> Option<&mut tokio::process::Child> {
@@ -38,7 +38,7 @@ pub mod tokio_graceful_spawn {
 
 pub mod std_graceful_spawn {
 	pub struct GracefulChild {
-		inner: Option<std::process::Child>,
+		pub inner: Option<std::process::Child>,
 	}
 	impl GracefulChild {
 		pub fn inner_mut(&mut self) -> Option<&mut std::process::Child> {

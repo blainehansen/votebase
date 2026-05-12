@@ -1,7 +1,6 @@
 use std::io;
 use tokio_postgres::{self as postgres, Config};
 use deadpool_postgres as deadpool;
-use crate::tokio_graceful_spawn::{GracefulChild, GracefulSpawn};
 
 #[derive(thiserror::Error, Debug)]
 pub enum ContainerError {
@@ -46,7 +45,7 @@ fn random_port() -> u16 {
 // 		return Err(anyhow::anyhow!("`{command}` is not installed or not found in PATH."));
 // 	}
 
-// 	spawn_postgres(container_image).await?;
+// 	spawn_postgres_tokio(container_image).await?;
 // 	healthcheck_postgres(120, 50, container_wait).await?;
 // 	Ok(())
 // }
@@ -106,14 +105,42 @@ pub async fn podman_run(
 // 	}
 // }
 
-pub fn spawn_postgres(
+pub fn spawn_postgres_tokio(
 	container_name: &str,
 	pg_pass: &str,
 	pg_user: &str,
 	pg_db: &str,
 	pg_port: u16,
-) -> io::Result<GracefulChild> {
+) -> io::Result<crate::tokio_graceful_spawn::GracefulChild> {
+	use crate::tokio_graceful_spawn::GracefulSpawn;
 	let child = tokio::process::Command::new("podman")
+		.args([
+			"run",
+			"--name", container_name,
+			"--env", &format!("POSTGRES_PASSWORD={pg_pass}"),
+			"--env", &format!("POSTGRES_USER={pg_user}"),
+			"--env", &format!("POSTGRES_DB={pg_db}"),
+			"--env", &format!("PGPORT={pg_port}"),
+			"-p", &format!("{pg_port}:{pg_port}"),
+			"--rm",
+			"docker.io/library/postgres:latest",
+		])
+		.stdout(std::process::Stdio::piped())
+		.stderr(std::process::Stdio::piped())
+		.graceful_spawn()?;
+
+	Ok(child)
+}
+
+pub fn spawn_postgres_std(
+	container_name: &str,
+	pg_pass: &str,
+	pg_user: &str,
+	pg_db: &str,
+	pg_port: u16,
+) -> io::Result<crate::std_graceful_spawn::GracefulChild> {
+	use crate::std_graceful_spawn::GracefulSpawn;
+	let child = std::process::Command::new("podman")
 		.args([
 			"run",
 			"--name", container_name,
@@ -148,7 +175,7 @@ async fn is_postgres_healthy(config: &Config) -> bool {
 	// }
 }
 
-async fn healthcheck_postgres(
+pub async fn healthcheck_postgres(
 	config: &Config,
 	max_retries: u64,
 	ms_per_retry: u64,
@@ -181,7 +208,7 @@ pub async fn with_temp_postgres<
 >(func: F) -> ContainerResult<Fut::Output> {
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
-	let _postgres_process = spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port)?;
+	let _postgres_process = spawn_postgres_tokio(&container_name, &pg_pass, &pg_user, &pg_db, pg_port)?;
 	healthcheck_postgres(&config, 50, 100).await?;
 
 	Ok(func(container_name, config).await)
@@ -193,7 +220,7 @@ pub async fn with_temp_postgres_client<
 >(func: F) -> ContainerResult<Fut::Output> {
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
-	let _postgres_process = spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port)?;
+	let _postgres_process = spawn_postgres_tokio(&container_name, &pg_pass, &pg_user, &pg_db, pg_port)?;
 	healthcheck_postgres(&config, 50, 100).await?;
 
 	let (client, connection) = config.connect(postgres::NoTls).await?;
@@ -212,7 +239,7 @@ pub async fn with_temp_postgres_pool<
 >(func: F) -> ContainerResult<Fut::Output> {
 	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
 
-	let _postgres_process = spawn_postgres(&container_name, &pg_pass, &pg_user, &pg_db, pg_port)?;
+	let _postgres_process = spawn_postgres_tokio(&container_name, &pg_pass, &pg_user, &pg_db, pg_port)?;
 	healthcheck_postgres(&config, 50, 100).await?;
 
 	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(5).build()?;

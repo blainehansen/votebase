@@ -61,22 +61,22 @@ create type votebase_catalog.ruleset_fn as (
 	-- input_schema jsonb, output_schema jsonb
 );
 
-create function votebase_catalog.has_fn(fns votebase_catalog.ruleset_fn[], name text, type votebase_catalog.fn_type) returns boolean as $$
+create function votebase_catalog.has_fn(fns votebase_catalog.ruleset_fn[], in_name text, in_type votebase_catalog.fn_type) returns boolean as $$
 	begin
 		return exists (
 			select 1
 			from unnest(fns) as fn
-			where (fn)."name" = name and (fn).fn_type = type
+			where (fn)."name" = in_name and (fn).fn_type = in_type
 		);
 	end;
 $$ language plpgsql immutable;
 
-create function votebase_catalog.filter_fns(fns votebase_catalog.ruleset_fn[], type votebase_catalog.fn_type) returns text[] as $$
+create function votebase_catalog.filter_fns(fns votebase_catalog.ruleset_fn[], in_type votebase_catalog.fn_type) returns text[] as $$
 	begin
 		return array (
 			select (fn)."name"
 			from unnest(fns) as fn
-			where (fn).fn_type = type
+			where (fn).fn_type = in_type
 		);
 	end;
 $$ language plpgsql immutable;
