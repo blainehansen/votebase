@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
-clorinde = { version = "1" }
+base64 = { workspace = true }
+rand = { workspace = true }
 tokio-postgres = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
+
+clorinde = { workspace  = true}
 utils = { path = "../utils" }

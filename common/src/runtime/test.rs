@@ -24,8 +24,8 @@ async fn test_propose_self_replacement_successful() {
 			&BundledRuleset {
 				ts_code: "".to_string(),
 				db_schema: "create table stuff (id uuid primary key);".to_string(), db_migration: "".to_string(),
-				fns: vec![],
 			},
+			&vec![],
 		).await.unwrap();
 
 		run_function::<()>(
@@ -48,21 +48,21 @@ async fn test_propose_self_replacement_successful() {
 			pool.clone(),
 		).await.unwrap();
 
-		let db_generated::queries::rulesets::TestSelectCandidateReplacementRuleset { id, candidate_for, bundled_ruleset } =
+		let db_generated::queries::rulesets::TestSelectCandidateReplacementRuleset { id, candidate_for, ts_code, db_schema, db_migration, fns } =
 			db_generated::queries::rulesets::test_select_candidate_replacement_ruleset()
 			.bind(&client).one().await.unwrap();
 
 		assert_eq!(candidate_for, "root");
 		// assert_eq!(result.actions, &["action1", "action2"]);
 		// assert_eq!(result.views, &["view1"]);
-		assert_eq!(boil_string(bundled_ruleset.pointer("/ts_code").unwrap().as_str().unwrap()), boil_string(r#"
+		assert_eq!(boil_string(&ts_code), boil_string(r#"
 			votebase.Action("action1", () => {});
 			votebase.Action("action2", () => {});
 			votebase.View("view1", () => "yo");
 		"#));
-		assert_eq!(bundled_ruleset.pointer("/db_schema").unwrap().as_str().unwrap(), "create table stuff (id uuid primary key, color text not null);");
-		assert_eq!(bundled_ruleset.pointer("/db_migration").unwrap().as_str().unwrap(), "alter table stuff add column color text not null;");
-		let fns = serde_json::from_value::<Vec<(String, FnType)>>(bundled_ruleset.pointer("/fns").unwrap().clone()).unwrap();
+		assert_eq!(db_schema, "create table stuff (id uuid primary key, color text not null);");
+		assert_eq!(db_migration, "alter table stuff add column color text not null;");
+		let fns = fns.into_iter().map(|f| (f.name, f.fn_type.into())).collect::<Vec<_>>();
 		let expected_fns = vec![("action1".to_string(), FnType::Action), ("action2".to_string(), FnType::Action), ("view1".to_string(), FnType::View)];
 		assert_eq!(fns, expected_fns);
 

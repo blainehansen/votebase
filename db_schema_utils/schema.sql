@@ -136,15 +136,12 @@ create table votebase_catalog.candidate_replacement_ruleset (
 	id uuid primary key default gen_random_uuid(),
 	candidate_for text not null references votebase_catalog.ruleset(full_path) on delete cascade,
 
-	-- bundled_ruleset jsonb not null check (pg_jsonschema.json_matches_schema('', bundled_ruleset)),
-	bundled_ruleset jsonb not null
+	ts_code text not null,
+	db_schema text not null,
+	db_migration text not null,
 
-	-- ts_code text not null,
-	-- db_schema text not null,
-	-- db_migration text not null,
-
-	-- fns votebase_catalog.ruleset_fn[] not null
-	-- 	constraint fns_different_names check (votebase_catalog.check_fns_different_names(fns)),
+	fns votebase_catalog.ruleset_fn[] not null
+		constraint fns_different_names check (votebase_catalog.validate_fns(fns))
 	-- db_uses_functions votebase_catalog.db_uses_function_struct[] not null,
 	-- db_uses_tables votebase_catalog.db_uses_table_struct[] not null
 );

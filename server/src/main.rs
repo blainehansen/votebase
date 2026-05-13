@@ -13,26 +13,10 @@ async fn main() -> std::io::Result<()> {
 		.parse_default_env()
 		.init();
 
-	#[cfg(debug_assertions)]
-	let db_port = std::env::var("DB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(5432);
-	#[cfg(not(debug_assertions))]
 	let db_port = std::env::var("DB_PORT").expect("DB_PORT must be set").parse().expect("DB_PORT must be a valid port number");
-
-	#[cfg(debug_assertions)]
-	let db_host = std::env::var("DB_HOST").unwrap_or("localhost".to_string());
-	#[cfg(not(debug_assertions))]
 	let db_host = std::env::var("DB_HOST").expect("DB_HOST must be set");
-
-	#[cfg(debug_assertions)]
-	let db_name = std::env::var("DB_NAME").unwrap_or("dev_db".to_string());
-	#[cfg(not(debug_assertions))]
 	let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
-
 	let db_votebase_user = format!("votebase_server_{db_name}");
-
-	#[cfg(debug_assertions)]
-	let db_votebase_server_password = std::env::var("VOTEBASE_SERVER_PASSWORD").unwrap_or("votebase_server_dev_pass".to_string());
-	#[cfg(not(debug_assertions))]
 	let db_votebase_server_password = std::env::var("VOTEBASE_SERVER_PASSWORD").expect("VOTEBASE_SERVER_PASSWORD must be set");
 
 	let mut server_role_config = postgres::Config::new();
@@ -93,14 +77,7 @@ async fn main() -> std::io::Result<()> {
 		// values ('', current_timestamp, 'Day', 1, 'root', 'my_action', 'null'::json);
 	// });
 
-	#[cfg(debug_assertions)]
-	let host = std::env::var("VOTEBASE_HOST").unwrap_or("0.0.0.0".to_string());
-	#[cfg(not(debug_assertions))]
 	let host = std::env::var("VOTEBASE_HOST").expect("VOTEBASE_HOST must be set");
-
-	#[cfg(debug_assertions)]
-	let port = std::env::var("VOTEBASE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
-	#[cfg(not(debug_assertions))]
 	let port = std::env::var("VOTEBASE_PORT").ok().and_then(|p| p.parse().ok()).expect("VOTEBASE_PORT must be set");
 
 	actix_web::HttpServer::new(move || {
@@ -230,7 +207,6 @@ async fn execute_view(
 ) -> Result<web::Html, VotebaseError> {
 	let client = pool.get().await?;
 	// let scheduled_action_queue = scheduled_action_queue.get_ref().clone();
-	let fn_path = dbg!(fn_path);
 
 	let ts_code = queries::rulesets::get_view_details()
 		.bind(&client, &fn_path.ruleset_full_path, &fn_path.fn_name)

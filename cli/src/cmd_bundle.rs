@@ -13,13 +13,11 @@ pub async fn cmd_bundle(ruleset_dir: &std::path::Path, bundle_path: &std::path::
 	let schema_file = ruleset_dir.join("schema.sql");
 	let migration_file = ruleset_dir.join("migration.sql");
 
-	println!("before join");
 	let (existing_code, db_schema, db_migration) = tokio::try_join!(
 		tokio::fs::read_to_string(&ts_code_file),
 		read_file_or_none(&schema_file),
 		read_file_or_none(&migration_file),
 	)?;
-	println!("after join");
 
 	// let generated_fields = votebase_common::gen_queries::generate_queries(queries_dir.clone(), &client).await?;
 	// TODO	have to to figure out what the existing code imports it as and strip it out
@@ -34,9 +32,8 @@ pub async fn cmd_bundle(ruleset_dir: &std::path::Path, bundle_path: &std::path::
 		(None, Some(_)) => return Err(anyhow::anyhow!("it doesn't make any sense to have a migration.sql but no schema.sql")),
 	};
 
-	let fns = votebase_common::rulesets::determine_fns(&ts_code).await?;
 	let bundled_ruleset = serde_json::to_string(&votebase_common::rulesets::BundledRuleset {
-		ts_code, db_schema, db_migration, fns,
+		ts_code, db_schema, db_migration,
 	})?;
 	let bundle_file = std::env::current_dir()?.join(bundle_path);
 

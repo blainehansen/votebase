@@ -21,10 +21,10 @@ itertools = { workspace = true }
 
 futures = { workspace = true }
 walkdir = { workspace = true }
-sqlparser = { version = "0.60", features = ["visitor"] }
-postgres-from-row = "0.5"
+sqlparser = { workspace = true }
+postgres-from-row = { workspace = true }
 tokio-stream = { workspace = true }
-reqwest = "0.12"
+reqwest = { workspace = true }
 hashbrown = { workspace = true }
 
 

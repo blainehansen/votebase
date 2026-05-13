@@ -1,17 +1,10 @@
 pub fn generate_votebase_server_pass() -> String {
-	#[cfg(debug_assertions)]
-	let votebase_server_password = "votebase_server_dev_pass".to_string();
-	#[cfg(not(debug_assertions))]
-	let votebase_server_password = {
-		use base64::Engine;
-		use rand::{Rng, SeedableRng};
-		let mut random_bytes = [0u8; 526];
-		let mut rng = rand::rngs::StdRng::from_os_rng();
-		rng.fill(&mut random_bytes);
-		base64::prelude::BASE64_STANDARD.encode(random_bytes)
-	};
-
-	votebase_server_password
+	use base64::Engine;
+	use rand::{Rng, SeedableRng};
+	let mut random_bytes = [0u8; 526];
+	let mut rng = rand::rngs::StdRng::from_os_rng();
+	rng.fill(&mut random_bytes);
+	base64::prelude::BASE64_STANDARD.encode(random_bytes)
 }
 
 pub async fn load_votebase_server_schema(

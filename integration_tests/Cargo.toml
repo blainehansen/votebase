@@ -8,5 +8,7 @@ edition = "2024"
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
+serial_test = { workspace = true }
+reqwest = { workspace = true }
+
 utils = { path = "../utils" }
-reqwest = { version = "0.13", features = ["json"] }

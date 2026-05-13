@@ -17,6 +17,7 @@ argh = "0.1"
 
 deno_core = "0.400"
 deno_error = "0.7"
+deno_ast = { version = "0.53", features = ["transpiling"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", default-features = false }
 # serde_jsonc2 = "0.1"
@@ -35,10 +36,24 @@ tokio-stream = "0.1"
 percent-encoding = "2"
 hashbrown = "0.16"
 itertools = "0.14"
+base64 = "0.22"
+rand = "0.9"
+rand_distr = "0.5"
+nix = { version = "0.29", features = ["signal"] }
+reqwest = { version = "0.13", features = ["json"] }
+clorinde = { version = "1" }
 
+actix-web = { version = "4" }
+actix-cors = { version = "0.7" }
+
+sqlparser = { version = "0.60", features = ["visitor"] }
 tokio-postgres = { version = "0.7" }
+postgres-from-row = "0.5"
 deadpool-postgres = { version = "0.14" }
+
+pretty_env_logger = "0.5"
 
 predicates = "3"
 assert_fs = "1"
+serial_test = "3"
 # assert_cmd = "2"

@@ -17,13 +17,13 @@ pub enum ContainerError {
 pub type ContainerResult<T> = Result<T, ContainerError>;
 
 
-fn random_string(len: usize) -> String {
+pub fn random_string(len: usize) -> String {
 	let mut rng = rand::rng();
 	use rand::distr::SampleString;
 	rand::distr::Alphanumeric.sample_string(&mut rng, len)
 }
 
-fn random_port() -> u16 {
+pub fn random_port() -> u16 {
 	let mut rng = rand::rng();
 	use rand::Rng;
 	rng.random_range(6000..=65535)

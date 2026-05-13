@@ -72,21 +72,12 @@ pub async fn compute_diff(
 	from_config: &PgConfig,
 	to_config: &PgConfig,
 ) -> anyhow::Result<String> {
-	// #[cfg(debug_assertions)]
-	// let mut command = {
-	// 	let mut command = tokio::process::Command::new("uv");
-	// 	command.args("tool run -p 3.11 --with psycopg2-binary --with setuptools migra".split_whitespace());
-	// 	command
-	// };
-	// #[cfg(not(debug_assertions))]
-	// let mut command = tokio::process::Command::new("migra");
-
 	let from_url = votebase_common::url_encoded_connection_string(from_config);
 	let to_url = votebase_common::url_encoded_connection_string(to_config);
 
 	let output = utils::podman_run(
 		"votebase-dbdiff",
-		&["--network", &format!("container:{}", db_container_name)],
+		&["--network", &format!("container:{db_container_name}")],
 		&["--with-privileges", "--schema", pgschema, &from_url, &to_url],
 	).await?;
 

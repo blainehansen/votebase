@@ -53,12 +53,12 @@ where full_path = :full_path;
 -- MODIFYING RULESET CANDIDATES
 
 --! insert_candidate_replacement
-insert into votebase_catalog.candidate_replacement_ruleset (candidate_for, bundled_ruleset)
-values (:candidate_for, :bundled_ruleset)
+insert into votebase_catalog.candidate_replacement_ruleset (candidate_for, ts_code, db_schema, db_migration, fns)
+values (:candidate_for, :ts_code, :db_schema, :db_migration, :fns)
 returning id;
 
 --! get_ruleset_candidate
-select candidate_for, bundled_ruleset
+select candidate_for, ts_code, db_schema, db_migration, fns
 from votebase_catalog.candidate_replacement_ruleset
 where id = :candidate_id;
 
@@ -69,7 +69,7 @@ where id = :candidate_id;
 --! delete_candidate_and_others
 with
 target_candidate as (
-	select candidate_for, bundled_ruleset
+	select candidate_for, ts_code, db_schema, db_migration, fns
 	from votebase_catalog.candidate_replacement_ruleset
 	where id = :candidate_id
 )
@@ -99,7 +99,7 @@ where ruleset.candidate_for = target_candidate.candidate_for;
 -- TESTING FUNCTIONS
 
 --! test_select_candidate_replacement_ruleset
-select id, candidate_for, bundled_ruleset
+select id, candidate_for, ts_code, db_schema, db_migration, fns
 from votebase_catalog.candidate_replacement_ruleset;
 
 --! test_get_ruleset : (parent_full_path?)

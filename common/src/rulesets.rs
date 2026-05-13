@@ -21,11 +21,6 @@ pub struct BundledRuleset {
 	/// It doesn't need to include the votebase runtime.
 	pub ts_code: String,
 
-	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
-	// pub fns: { [fn_name: string]: VotebaseFn<JsonValue> },
-	// is there a world where the fns are all declared separately, and then some "shared code" chunk also? how to do this? create temp files for each to do all the checking?
-	pub fns: Vec<(String, FnType)>,
-
 	/// The final intended database schema.
 	/// Used to check that `db_migration` does what it's intended to.
 	pub db_schema: String,
@@ -198,8 +193,8 @@ impl Into<deno_error::JsErrorBox> for ValidationError {
 pub enum CandidateApplyError {
 	#[error("the candidate {0} couldn't be found")]
 	CandidateNotFound(uuid::Uuid),
-	#[error("the candidate ruleset {0} couldn't be read correctly from the database\n\n{1}")]
-	CorruptedCandidate(uuid::Uuid, serde_json::Error),
+	// #[error("the candidate ruleset {0} couldn't be read correctly from the database\n\n{1}")]
+	// CorruptedCandidate(uuid::Uuid, serde_json::Error),
 	#[error("the candidate {0} was found to be invalid for the current state\n\n{1}")]
 	Invalid(uuid::Uuid, ValidationError),
 
@@ -232,13 +227,13 @@ pub async fn validate_bundled_ruleset_top(
 	prev_ruleset: Option<&StoredRuleset>,
 	next_bundled_ruleset: &BundledRuleset,
 	// server_db_archive_path: &std::path::Path,
-) -> Result<(), ValidationError> {
+) -> Result<Vec<(String, FnType)>, ValidationError> {
 	// TODO it's possible (and probably *only* possible) to check migrations if we check *the entire database*
 	// - for the "migrate" db: start by loading the db archive, then just apply the migration(s)
 	// - for the "reset" db: load and run *all* the db schemas for all the rulesets. the tricky thing here is doing them in order
 	// for rulesets that are mutually dependent (which you intentionally want to allow!) you'll have to make it so the commands can all be run in order. the only way I can think of right now that achieves that is to require any tables that participate in these circular relationships to declare their foreign keys outside of the definition of the table, so you can parse the db_schemas and *fully* separate the table/function definitions from the foreign key definitions. that way you can put all the function definitions first (at least the ones with unchecked bodies), then the tables, then the foreign keys and other stuff
 
-	utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, server_client| -> Result<(), ValidationError> {
+	utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, server_client| {
 		// set up the two separate checking dbs
 		let reset_db_name = "tempdb|reset";
 		let migrate_db_name = "tempdb|migrate";
@@ -261,90 +256,10 @@ pub async fn validate_bundled_ruleset_top(
 		};
 
 		// do the recursive validation, which is basically just application! but to two things at the same time
-		validate_bundled_ruleset(full_path, parent_full_path, ruleset_name, &ctx, prev_ruleset, next_bundled_ruleset).await?;
+		let fns = validate_bundled_ruleset(full_path, parent_full_path, ruleset_name, &ctx, prev_ruleset, next_bundled_ruleset).await?;
 
-		// TODO it would be nice to figure out how to try_join all these below queries
-
-		// // grab the data needed to validate the uses state after doing the application
-		// // both possibly_effected_uses and existent_objects_by_ruleset_path_and_name come from the now updated state of the database
-		// let possibly_effected_uses = queries::rulesets::get_possibly_effected_uses().bind(&ctx.migrate_server_client)
-		// 	.map(|u| {
-		// 		let function_uses: Vec<ConcreteFunctionUse> =
-		// 			u.db_uses_functions.map(|f| ConcreteFunctionUse {
-		// 				ruleset_path: f.ruleset_path.to_string(),
-		// 				object_name: f.object_name.to_string(),
-		// 				is_action: f.is_action,
-		// 				params: f.param_types.map(|p| p.to_string()).collect(),
-		// 				return_type: f.return_type.to_string(),
-		// 			})
-		// 			.collect();
-
-		// 		let table_uses: Vec<ConcreteTableUse> =
-		// 			u.db_uses_tables.map(|t| ConcreteTableUse {
-		// 				ruleset_path: t.ruleset_path.to_string(),
-		// 				object_name: t.object_name.to_string(),
-		// 				columns: t.columns.map(|c| UseColumn {
-		// 					name: c.name.to_string(),
-		// 					pg_type: c.typ.to_string(),
-		// 					can_null: c.can_null,
-		// 					use_kind: c.use_kind.into(),
-		// 				}).collect(),
-		// 			})
-		// 			.collect();
-
-		// 		(u.using_full_path.to_string(), function_uses, table_uses)
-		// 	})
-		// 	.all().await?;
-
-		// let usable_columns = queries::reflection::get_usable_columns().bind(&ctx.migrate_server_client)
-		// 	.map(|u| UseableObject {
-		// 		ruleset_path: u.ruleset_path.to_string(),
-		// 		object_name: u.table_name.to_string(),
-		// 		db_object: UseableDbObject::Table {
-		// 			columns: u.columns.map(|col| RoughColumn {
-		// 				name: col.name.to_string(),
-		// 				not_null: col.not_null,
-		// 				pg_type_name: col.typ.to_string(),
-		// 				allowed_use: ColumnUseKind::Both, // TODO this will be determined later by the exposes system. for now it's always permissive
-		// 			}).collect(),
-		// 		},
-		// 	})
-		// 	.iter().await?;
-
-		// let usable_functions = queries::reflection::get_usable_functions().bind(&ctx.migrate_server_client)
-		// 	.map(|u| UseableObject {
-		// 		ruleset_path: u.ruleset_path.to_string(),
-		// 		object_name: u.function_name.to_string(),
-		// 		db_object: UseableDbObject::Function {
-		// 			is_action: u.is_action,
-		// 			function_params: u.function_params.map(str::to_string).collect(),
-		// 			return_type: u.return_type.to_string(),
-		// 		},
-		// 	})
-		// 	.iter().await?;
-
-		// use futures::TryStreamExt;
-		// use tokio_stream::StreamExt as TokioStreamExt;
-		// let existent_objects_by_ruleset_path_and_name = usable_columns.merge(usable_functions).try_collect().await?;
-		// // existent_objects_by_ruleset_path_and_name.insert(UseableObject {
-		// // 	ruleset_path: "votebase_catalog".to_string(), object_name: "candidate_replacement_ruleset".to_string(),
-		// // 	db_object: UseableDbObject::Table { can_reference: true, columns: vec![
-		// // 		RoughColumn { name: "candidate_for".to_string(), not_null: true, pg_type_name: "Text".to_string() },
-		// // 		RoughColumn { name: "bundled_ruleset".to_string(), not_null: true, pg_type_name: "Json".to_string() },
-		// // 	] },
-		// // });
-		// validate_schema_uses(&possibly_effected_uses, &existent_objects_by_ruleset_path_and_name)
-		// 	.map_err(ValidationError::InvalidUses)?;
-
-		// let foreign_key_references = queries::reflection::get_foreign_keys().bind(&ctx.migrate_server_client).all().await?;
-		// validate_schema_references(&foreign_key_references, table_references_by_ruleset_and_table_and_column)
-		// 	.map_err(ValidationError::InvalidReferences)?;
-
-		Ok(())
-	}).await??;
-
-
-	Ok(())
+		Ok(fns)
+	}).await?
 }
 
 pub async fn podman_votebase_tsc(full_ruleset_dir: &std::path::Path) -> Result<(), ValidationError> {
@@ -365,16 +280,14 @@ pub(crate) async fn validate_bundled_ruleset(
 	ctx: &ValidateCtx,
 	prev_ruleset: Option<&StoredRuleset>,
 	next_bundled_ruleset: &BundledRuleset,
-) -> Result<(), ValidationError> {
+) -> Result<Vec<(String, FnType)>, ValidationError> {
 	// place the typescript code in a temp directory and check it
 	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
 	let ts_file = temp_dir.as_ref().join("ruleset.ts");
 	tokio::fs::write(&ts_file, &next_bundled_ruleset.ts_code).await?;
-	println!("podman tsc");
 	podman_votebase_tsc(temp_dir.as_ref()).await?;
 
 	// ensure the runtime is okay with it
-	println!("trying runtime");
 	let runtime = crate::runtime::Runtime::new(&next_bundled_ruleset.ts_code).await?;
 	let fns = runtime.get_fns();
 
@@ -440,7 +353,7 @@ pub(crate) async fn validate_bundled_ruleset(
 	// 	)
 	// ).await?;
 
-	Ok(())
+	Ok(fns)
 }
 
 // async fn validate_bundled_ruleset_children(
@@ -746,12 +659,12 @@ pub async fn create_ruleset(
 	db_name: &str, client: &mut PgClient,
 	parent_full_path: Option<&str>, name: &str,
 	bundled_ruleset: &BundledRuleset,
+	fns: &Vec<(String, FnType)>
 	// function_uses: &'u Vec<(&'u str, &'u str, bool, &'u str, Vec<&'u str>)>,
 	// table_uses: &'u Vec<(&'u str, &'u str, Vec<DbUsesColumnStructBorrowed<'u>>)>,
 ) -> Result<(), postgres::Error> {
-	println!("inserting ruleset");
 
-	let BundledRuleset { ts_code, db_schema, db_migration, fns } = bundled_ruleset;
+	let BundledRuleset { ts_code, db_schema, db_migration } = bundled_ruleset;
 	let fns = db_generated::IterSql(|| fns.iter()
 		.map(|(name, fn_type)| RulesetFnBorrowed { name: name.as_str(), fn_type: (*fn_type).into() }));
 
@@ -773,14 +686,12 @@ pub async fn create_ruleset(
 	let full_path = queries::rulesets::insert_ruleset()
 		.bind(client, &parent_full_path, &name, &ts_code, &db_schema, &fns)
 		.one().await?;
-	println!("inserted ruleset");
 
 	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
 	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
 	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
 	let formatted_ruleset_schema = format_ruleset_schema(&full_path);
 
-	println!("creating ruleset schema");
 	let mut transaction = client.transaction().await?;
 	let create_sql = format!(include_str!("./create-ruleset.sql"),
 		db_name=db_name,
@@ -790,11 +701,9 @@ pub async fn create_ruleset(
 		formatted_ruleset_role_view=formatted_ruleset_role_view,
 	);
 	transaction.batch_execute(&create_sql).await?;
-	println!("created ruleset schema");
 
 	// TODO same role concerns
 	// TODO also the alter role stuff doesn't count because postgres that only counts when you connect as that role ugh
-	println!("applying ruleset schema");
 	sql_as_role(&mut transaction, &formatted_ruleset_schema, &formatted_ruleset_role_migrator, db_schema).await?;
 	transaction.commit().await?;
 
@@ -872,14 +781,19 @@ pub async fn apply_candidate_top(
 	candidate_id: &uuid::Uuid,
 	delete_other_candidates: bool,
 ) -> Result<(), CandidateApplyError> {
-	let (candidate_for, bundled_ruleset) = queries::rulesets::get_ruleset_candidate().bind(server_role_client, candidate_id)
+	let (candidate_for, bundled_ruleset, fns) = queries::rulesets::get_ruleset_candidate().bind(server_role_client, candidate_id)
 		.map(|r| {
-			let bundled_ruleset: BundledRuleset = serde_json::from_str(r.bundled_ruleset.0.get())?;
-			Ok((r.candidate_for.to_string(), bundled_ruleset))
+			let bundled_ruleset = BundledRuleset {
+				ts_code: r.ts_code.into(),
+				db_schema: r.db_schema.into(),
+				db_migration: r.db_migration.into(),
+			};
+			let fns: Vec<(String, FnType)> = r.fns.map(|f| (f.name.into(), f.fn_type.into())).collect();
+			(r.candidate_for.to_string(), bundled_ruleset, fns)
 		})
 		.opt().await?
-		.ok_or_else(|| CandidateApplyError::CandidateNotFound(*candidate_id))?
-		.map_err(|e| CandidateApplyError::CorruptedCandidate(*candidate_id, e))?;
+		.ok_or_else(|| CandidateApplyError::CandidateNotFound(*candidate_id))?;
+		// .map_err(|e| CandidateApplyError::CorruptedCandidate(*candidate_id, e))?;
 
 	let prev_ruleset = get_stored_ruleset(&server_role_client, &candidate_for).await?;
 	let (parent_full_path, ruleset_name) = crate::split_full_path(&candidate_for);
@@ -899,6 +813,7 @@ pub async fn apply_candidate_top(
 	apply_candidate(
 		&mut server_role_tx,
 		parent_full_path.as_deref(), &ruleset_name, &candidate_for, Some(prev_ruleset), bundled_ruleset,
+		&fns,
 	).await?;
 
 	// we always delete other candidates if the old ruleset can't possibly be referencing any of them
@@ -926,8 +841,9 @@ pub(crate) async fn apply_candidate(
 	parent_full_path: Option<&str>, ruleset_name: &str, full_path: &str,
 	prev_ruleset: Option<StoredRuleset>,
 	bundled_ruleset: BundledRuleset,
+	fns: &Vec<(String, FnType)>,
 ) -> Result<(), CandidateApplyError> {
-	let BundledRuleset { ts_code, db_schema, db_migration, fns, /*db_uses_functions, db_uses_tables, static_children*/ } = bundled_ruleset;
+	let BundledRuleset { ts_code, db_schema, db_migration, /*db_uses_functions, db_uses_tables, static_children*/ } = bundled_ruleset;
 	let fns = db_generated::IterSql(|| fns.iter()
 		.map(|(name, fn_type)| RulesetFnBorrowed { name: name.as_str(), fn_type: (*fn_type).into() }));
 
@@ -1079,19 +995,18 @@ pub async fn propose_candidate_ruleset(
 ) -> Result<uuid::Uuid, ValidationError> {
 	let prev_ruleset = get_stored_ruleset(&server_role_client, full_path).await?;
 
-	validate_bundled_ruleset_top(
+	let fns = validate_bundled_ruleset_top(
 		parent_full_path, ruleset_name, full_path,
 		Some(&prev_ruleset), candidate,
 		// server_db_archive_path,
 	).await?;
 
+	let fns = db_generated::IterSql(|| fns.iter()
+		.map(|(name, fn_type)| RulesetFnBorrowed { name: name.as_str(), fn_type: (*fn_type).into() }));
+
 	let candidate_uuid = queries::rulesets::insert_candidate_replacement()
-		.bind(server_role_client, &full_path, &postgres::types::Json(candidate))
+		.bind(server_role_client, &full_path, &candidate.ts_code, &candidate.db_schema, &candidate.db_migration, &fns)
 		.one().await?;
 
 	Ok(candidate_uuid)
-}
-
-pub async fn determine_fns(ts_code: &str) -> Result<Vec<(String, FnType)>, RuntimeError> {
-	Ok(crate::runtime::Runtime::new(ts_code).await?.get_fns())
 }
