@@ -9,6 +9,27 @@ pub mod tokio_graceful_spawn {
 		pub fn inner_mut(&mut self) -> Option<&mut tokio::process::Child> {
 			self.inner.as_mut()
 		}
+		pub fn debug_output(mut self) -> GracefulChild {
+			let stdout = self.inner.as_mut().unwrap().stdout.take().unwrap();
+			tokio::spawn(async move {
+				use tokio::io::AsyncBufReadExt;
+				let mut reader = tokio::io::BufReader::new(stdout).lines();
+
+				while let Ok(Some(line)) = reader.next_line().await {
+					println!("stdout: {}", line);
+				}
+			});
+			let stderr = self.inner.as_mut().unwrap().stderr.take().unwrap();
+			tokio::spawn(async move {
+				use tokio::io::AsyncBufReadExt;
+				let mut reader = tokio::io::BufReader::new(stderr).lines();
+
+				while let Ok(Some(line)) = reader.next_line().await {
+					println!("stderr: {}", line);
+				}
+			});
+			self
+		}
 	}
 	impl Drop for GracefulChild {
 		fn drop(&mut self) {
@@ -16,7 +37,6 @@ pub mod tokio_graceful_spawn {
 				if let Some(pid) = child.id() {
 					let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGINT);
 				}
-				// spawn a background task to reap the process
 				tokio::spawn(async move {
 					let mut child = child;
 					let _ = child.wait().await;
@@ -40,11 +60,35 @@ pub mod std_graceful_spawn {
 	pub struct GracefulChild {
 		pub inner: Option<std::process::Child>,
 	}
+
 	impl GracefulChild {
 		pub fn inner_mut(&mut self) -> Option<&mut std::process::Child> {
 			self.inner.as_mut()
 		}
+
+		pub fn debug_output(mut self) -> GracefulChild {
+			let stdout = self.inner.as_mut().unwrap().stdout.take().unwrap();
+			std::thread::spawn(move || {
+				use std::io::BufRead;
+				let mut reader = std::io::BufReader::new(stdout).lines();
+
+				while let Some(Ok(line)) = reader.next() {
+					println!("stdout: {}", line);
+				}
+			});
+			let stderr = self.inner.as_mut().unwrap().stderr.take().unwrap();
+			std::thread::spawn(move || {
+				use std::io::BufRead;
+				let mut reader = std::io::BufReader::new(stderr).lines();
+
+				while let Some(Ok(line)) = reader.next() {
+					println!("stderr: {}", line);
+				}
+			});
+			self
+		}
 	}
+
 	impl Drop for GracefulChild {
 		fn drop(&mut self) {
 			if let Some(mut child) = self.inner.take() {

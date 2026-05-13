@@ -34,12 +34,7 @@ pub async fn cmd_bundle(ruleset_dir: &std::path::Path, bundle_path: &std::path::
 		(None, Some(_)) => return Err(anyhow::anyhow!("it doesn't make any sense to have a migration.sql but no schema.sql")),
 	};
 
-	// TODO this should go in cmd_check
-	// TODO agghghgh next_bundled_ruleset has to already have the fns in it! this means it probably does make sense to have something apart to do this fn sensing?
-	let fns = votebase_common::rulesets::validate_bundled_ruleset_top(
-		parent_full_path, ruleset_name, full_path, prev_ruleset, next_bundled_ruleset
-	).await?;
-
+	let fns = votebase_common::rulesets::determine_fns(&ts_code).await?;
 	let bundled_ruleset = serde_json::to_string(&votebase_common::rulesets::BundledRuleset {
 		ts_code, db_schema, db_migration, fns,
 	})?;

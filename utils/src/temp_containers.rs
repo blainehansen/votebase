@@ -94,7 +94,7 @@ pub async fn podman_run(
 // 	let output = tokio::process::Command::new("podman")
 // 		.args(args)
 // 		.stderr(std::process::Stdio::piped())
-// 		.stdout(std::process::Stdio::null())
+// 		.stdout(std::process::Stdio::piped())
 // 		.spawn()?.wait_with_output().await?;
 
 // 	if output.status.success() {
@@ -152,8 +152,8 @@ pub fn spawn_postgres_std(
 			"--rm",
 			"docker.io/library/postgres:latest",
 		])
-		.stdout(std::process::Stdio::null())
-		.stderr(std::process::Stdio::null())
+		.stdout(std::process::Stdio::piped())
+		.stderr(std::process::Stdio::piped())
 		.graceful_spawn()?;
 
 	Ok(child)
