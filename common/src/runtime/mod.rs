@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod test;
 
+mod loader;
+
 // mod scheduling;
 // pub use scheduling::{ScheduledActionQueue};
 
@@ -198,6 +200,7 @@ pub(crate) struct Runtime {
 impl Runtime {
 	pub(crate) async fn new(code: &str) -> Result<Self, RuntimeError> {
 		let js_runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+			// module_loader: loader::FileMapModuleLoader::new(std::collections::HashMap::new()),
 			module_loader: None,
 			startup_snapshot: Some(RUNTIME_SNAPSHOT),
 			extensions: vec![votebase::init()],

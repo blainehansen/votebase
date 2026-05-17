@@ -59,17 +59,11 @@ const { core } = (globalThis as any).Deno as { core: {
 
 // type Dict<T> = { [key: string]: T }
 
-type BundledRuleset = Readonly<{
+export type BundledRuleset = Readonly<{
 	/**
 	 * Typescript code containing all the Actions and Views of the `Ruleset`.
 	*/
 	ts_code: string,
-
-	// this is truly harvested from the code, but honestly it might be a good idea to also require a declaration we can check against
-	// fns: { [fn_name: string]: VotebaseFn<JsonValue> },
-	///
-	fns: [string, 'Action' | 'View'][],
-	// is there a world where the fns are all declared separately, and then some "shared code" chunk also? how to do this? create temp files for each to do all the checking?
 
 	/**
 	 * The final intended database schema.
