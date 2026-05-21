@@ -30,6 +30,10 @@ select ts_code, db_schema
 from votebase_catalog.ruleset
 where full_path = :ruleset_full_path;
 
+--! get_stored_schemas
+select full_path, /*parent_full_path, full_path,*/ db_schema
+from votebase_catalog.ruleset;
+
 -- MODIFYING RULESETS
 
 --! insert_ruleset (parent_full_path?)

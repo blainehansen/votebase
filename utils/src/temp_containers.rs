@@ -386,6 +386,36 @@ mod tests {
 
 
 
+pub struct PodmanNetwork {
+	pub network_name: String,
+}
+impl PodmanNetwork {
+	pub async fn new(network_name: String) -> std::io::Result<PodmanNetwork> {
+		tokio::process::Command::new("podman").args(&["network", "create", &network_name])
+			.stderr(std::process::Stdio::piped())
+			.stdout(std::process::Stdio::piped())
+			.spawn()?.wait_with_output().await?;
+
+		Ok(PodmanNetwork { network_name: network_name.to_string() })
+	}
+}
+
+impl Drop for PodmanNetwork {
+	fn drop(&mut self) {
+		let network_name = self.network_name.clone();
+
+		tokio::spawn(async move {
+			tokio::process::Command::new("podman").args(&["network", "rm", "-f", &network_name])
+			.stderr(std::process::Stdio::piped())
+			.stdout(std::process::Stdio::piped())
+			.spawn()?.wait_with_output().await?;
+
+			Ok::<_, std::io::Error>(())
+		});
+	}
+}
+
+
 // pub(crate) mod error {
 // 	use std::fmt::Debug;
 

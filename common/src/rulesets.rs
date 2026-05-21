@@ -9,7 +9,6 @@ use crate::{
 };
 use crate::db_types::votebase_catalog::{
 	RulesetFnBorrowed,
-	// DbUsesFunctionStructParams, DbUsesTableStructParams, DbUsesColumnStructBorrowed,
 };
 
 
@@ -27,10 +26,6 @@ pub struct BundledRuleset {
 	/// The migration intended to actually be run to reach the state of `db_schema`.
 	/// This will be checked to ensure it actually goes from the *current* state of the `Ruleset` database to the one declared in `db_schema`.
 	pub db_migration: String,
-	// /// The fully qualified names and nature of all the database functions this `Ruleset` uses as its `requires`.
-	// pub db_uses_functions: Vec<ConcreteFunctionUse>,
-	// /// The fully qualified names and nature of all the database tables this `Ruleset` uses as its `requires`.
-	// pub db_uses_tables: Vec<ConcreteTableUse>,
 
 	// /// A mapping of the static children of this `Ruleset`, with some being simply `"keep"`, meaning to leave it as is.
 	// /// If this `Ruleset` replaces the existing one, this will be the absolute state of the static children, with any existing ones changed to match their new description and extra ones recursively deleted.
@@ -70,83 +65,6 @@ pub struct BundledRuleset {
 // 	pub description: String, pub start: chrono::DateTime<chrono::Utc>,
 // 	pub recurrence_granularity: GranularityEnum, pub recurrence_multiplier: u16,
 // 	pub action_name: String, pub action_arg: serde_json::Value,
-// }
-
-
-// #[derive(Debug, serde::Serialize, serde::Deserialize)]
-// pub struct ConcreteFunctionUse {
-// 	pub ruleset_path: String,
-// 	pub object_name: String,
-// 	pub is_action: bool,
-// 	pub params: Vec<String>,
-// 	pub return_type: String,
-// }
-
-// #[derive(Debug, serde::Serialize, serde::Deserialize)]
-// pub struct ConcreteTableUse {
-// 	pub ruleset_path: String,
-// 	pub object_name: String,
-// 	pub columns: Vec<UseColumn>,
-// }
-// #[derive(Debug, serde::Serialize, serde::Deserialize)]
-// pub struct UseColumn {
-// 	pub name: String,
-// 	pub pg_type: String,
-// 	pub can_null: bool,
-// 	pub use_kind: ColumnUseKind,
-// }
-// #[derive(Debug, serde::Serialize, serde::Deserialize, Eq, PartialEq, Hash)]
-// pub enum ColumnUseKind { Query, Reference, Both }
-// impl From<crate::db_types::votebase_catalog::ColumnUseKind> for ColumnUseKind {
-// 	fn from(value: crate::db_types::votebase_catalog::ColumnUseKind) -> Self {
-// 		match value {
-// 			crate::db_types::votebase_catalog::ColumnUseKind::Query => ColumnUseKind::Query,
-// 			crate::db_types::votebase_catalog::ColumnUseKind::Reference => ColumnUseKind::Reference,
-// 			crate::db_types::votebase_catalog::ColumnUseKind::Both => ColumnUseKind::Both,
-// 		}
-// 	}
-// }
-// impl ColumnUseKind {
-// 	fn into_db(&self) -> crate::db_types::votebase_catalog::ColumnUseKind {
-// 		match self {
-// 			ColumnUseKind::Query => crate::db_types::votebase_catalog::ColumnUseKind::Query,
-// 			ColumnUseKind::Reference => crate::db_types::votebase_catalog::ColumnUseKind::Reference,
-// 			ColumnUseKind::Both => crate::db_types::votebase_catalog::ColumnUseKind::Both,
-// 		}
-// 	}
-// }
-
-
-// #[derive(Debug, Eq, PartialEq)]
-// pub struct UseableObject {
-// 	pub ruleset_path: String,
-// 	pub object_name: String,
-// 	pub db_object: UseableDbObject,
-// }
-// impl std::hash::Hash for UseableObject {
-// 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-// 		self.ruleset_path.hash(state);
-// 		self.object_name.hash(state);
-// 		// not db_object
-// 	}
-// }
-// impl hashbrown::Equivalent<UseableObject> for (&str, &str) {
-// 	fn equivalent(&self, key: &UseableObject) -> bool {
-// 		key.ruleset_path.as_str() == self.0 && key.object_name.as_str() == self.1
-// 	}
-// }
-
-// #[derive(Debug, Eq, PartialEq, Hash)]
-// pub enum UseableDbObject {
-// 	Table { columns: Vec<RoughColumn> },
-// 	Function { is_action: bool, function_params: Vec<String>, return_type: String },
-// }
-// #[derive(Debug, Eq, PartialEq, Hash)]
-// pub struct RoughColumn {
-// 	pub name: String,
-// 	pub not_null: bool,
-// 	pub pg_type_name: String,
-// 	pub allowed_use: ColumnUseKind,
 // }
 
 
@@ -205,61 +123,18 @@ pub enum CandidateApplyError {
 
 pub(crate) struct ValidateCtx {
 	db_container_name: String,
-	reset_server_client: PgClient,
-	reset_config: PgConfig,
-	migrate_server_client: PgClient,
-	migrate_config: PgConfig,
+	through_migration_server_client: PgClient,
+	through_migration_config: PgConfig,
+	through_schema_server_client: PgClient,
+	through_schema_config: PgConfig,
 }
 
 #[derive(Debug)]
 pub struct StoredRuleset {
 	pub ts_code: String,
 	pub db_schema: String,
-	// pub db_uses_functions: Vec<ConcreteFunctionUse>,
-	// pub db_uses_tables: Vec<ConcreteTableUse>,
 	// pub static_children: HashMap<String, StoredRuleset>,
-	// static_recurring_events: HashMap<String, StaticRecurringEvent>,
-}
-
-pub async fn validate_bundled_ruleset_top(
-	parent_full_path: Option<&str>, ruleset_name: &str,
-	full_path: &str,
-	prev_ruleset: Option<&StoredRuleset>,
-	next_bundled_ruleset: &BundledRuleset,
-	// server_db_archive_path: &std::path::Path,
-) -> Result<Vec<(String, FnType)>, ValidationError> {
-	// TODO it's possible (and probably *only* possible) to check migrations if we check *the entire database*
-	// - for the "migrate" db: start by loading the db archive, then just apply the migration(s)
-	// - for the "reset" db: load and run *all* the db schemas for all the rulesets. the tricky thing here is doing them in order
-	// for rulesets that are mutually dependent (which you intentionally want to allow!) you'll have to make it so the commands can all be run in order. the only way I can think of right now that achieves that is to require any tables that participate in these circular relationships to declare their foreign keys outside of the definition of the table, so you can parse the db_schemas and *fully* separate the table/function definitions from the foreign key definitions. that way you can put all the function definitions first (at least the ones with unchecked bodies), then the tables, then the foreign keys and other stuff
-
-	utils::temp_containers::with_temp_postgres_client(async |db_container_name, config, server_client| {
-		// set up the two separate checking dbs
-		let reset_db_name = "tempdb|reset";
-		let migrate_db_name = "tempdb|migrate";
-		server_client.batch_execute(&format!(r#"create database "{reset_db_name}""#)).await?;
-		server_client.batch_execute(&format!(r#"create database "{migrate_db_name}""#)).await?;
-		drop(server_client);
-
-		let reset_config = { let mut config = config.clone(); config.dbname(reset_db_name); config };
-		let reset_server_client = crate::pg_con(&reset_config).await?;
-		let migrate_config = { let mut config = config.clone(); config.dbname(migrate_db_name); config };
-		let migrate_server_client = crate::pg_con(&migrate_config).await?;
-
-		// // UNWRAP SAFETY: it must be true that with_temp_postgres_client gives a client with a set user
-		// let db_user = config.get_user().unwrap();
-		// podman_pg_restore(&db_container_name, &reset_db_name, &db_user, server_db_archive_path).await?;
-		// podman_pg_restore(&db_container_name, &migrate_db_name, &db_user, server_db_archive_path).await?;
-
-		let ctx = ValidateCtx {
-			db_container_name, reset_server_client, reset_config, migrate_server_client, migrate_config,
-		};
-
-		// do the recursive validation, which is basically just application! but to two things at the same time
-		let fns = validate_bundled_ruleset(full_path, parent_full_path, ruleset_name, &ctx, prev_ruleset, next_bundled_ruleset).await?;
-
-		Ok(fns)
-	}).await?
+	// pub static_recurring_events: HashMap<String, StaticRecurringEvent>,
 }
 
 pub async fn podman_votebase_tsc(full_ruleset_dir: &std::path::Path) -> Result<(), ValidationError> {
@@ -272,6 +147,63 @@ pub async fn podman_votebase_tsc(full_ruleset_dir: &std::path::Path) -> Result<(
 		Err(ValidationError::InvalidTs(errors.to_string()))
 	}
 	else { Ok(()) }
+}
+
+pub async fn validate_bundled_ruleset_top(
+	server_role_client: &PgClient,
+	parent_full_path: Option<&str>, ruleset_name: &str,
+	full_path: &str,
+	prev_ruleset: Option<&StoredRuleset>,
+	next_bundled_ruleset: &BundledRuleset,
+) -> Result<Vec<(String, FnType)>, ValidationError> {
+	// - for the "through_migration" database, gather all the db_schema fields from the stored rulesets, instantiating them in a big block with the create-ruleset.sql prepended to them and unfortunately a user switch before each as well. then run db_migration on that database which should be valid on top of what already exists
+	// - for the "through_schema" database do the same, but for the single ruleset we're checking run its db_schema instead
+	// afterward the two should have no diff, the db_migration applied on top of the migrated should exactly match db_schema
+
+	// we need to do the above instead of using an archive because we have to have granular control of what actually makes it through, including the users etc, and I don't want to mess with trying to selectively block or allow things. the state of the database schema *should* exactly match whatever we have stored in the rulesets, this is an essential invariant of this system!
+
+	// TODO for rulesets that are mutually dependent (which you intentionally want to allow!) you'll have to make it so the commands can all be run in order. the only way I can think of right now that achieves that is to require any tables that participate in these circular relationships to declare their foreign keys outside of the definition of the table, so you can parse the db_schemas and *fully* separate the table/function definitions from the foreign key definitions. that way you can put all the function definitions first (at least the ones with unchecked bodies), then the tables, then the foreign keys and other stuff
+
+	// let stored_schemas = queries::rulesets::get_stored_schemas().bind(server_role_client).all().await?;
+
+	// we have to validate the recursive rulesets migrations as well
+	// we essentially need to do a "join" from the bundled ruleset tree to the stored ruleset tree
+	// - "replace": apply stored.db_schema then bundled.db_migration to "migrated" and bundled.db_schema to "whole", then recurse on the join of the children maps
+	// - "keep": apply stored.db_schema to the entire stored tree for both databases
+	// - "delete": apply nothing, you don't have to recurse since we don't have to delete anything from these fake validation dbs
+
+	// this analysis only makes sense for static children. so far I've been only intending to either "keep" or "delete" dynamic children, which means that a bundled ruleset will never need to include migrations for dynamic children, which means we never have to validate migrations for them, only whether the migrations for *other* rulesets will run afoul of them, which they should never do since dynamic children can never have anything other than weak references to any of the rulesets "above" it
+
+	// the way we deal with weak references that have been invalidated is to just remove foreign keys that no longer point to a thing, and create a stub function that always returns null
+
+	let random_suffix = utils::temp_containers::random_string(20);
+	let network_name = format!("temp_postgres_network_{random_suffix}");
+	let podman_network = utils::temp_containers::PodmanNetwork::new(network_name).await?;
+
+	// TODO can run these creations at the same time
+	let through_migration_db_name = "tempdb|through_migration".to_string();
+	let through_migration_pg = crate::podman_fns::spawn_networked_postgres(through_migration_db_name, &podman_network).await?;
+	let through_schema_db_name = "tempdb|through_schema".to_string();
+	let through_schema_pg = crate::podman_fns::spawn_networked_postgres(through_schema_db_name, &podman_network).await?;
+
+	let through_schema_server_password = db_schema_utils::load_votebase_server_schema(&through_schema_db_name, through_schema_client).await?;
+	let through_migration_server_password = db_schema_utils::load_votebase_server_schema(&through_migration_db_name, through_migration_client).await?;
+
+
+	// TODO figure out all of this to use this new paradigm
+	let through_migration_config = { let mut config = config.clone(); config.dbname(through_migration_db_name); config };
+	let through_migration_server_client = crate::pg_con(&through_migration_config).await?;
+	let through_schema_config = { let mut config = config.clone(); config.dbname(through_schema_db_name); config };
+	let through_schema_server_client = crate::pg_con(&through_schema_config).await?;
+
+	let ctx = ValidateCtx {
+		db_container_name, through_migration_server_client, through_migration_config, through_schema_server_client, through_schema_config,
+	};
+
+	// do the recursive validation, which is basically just application! but to two things at the same time
+	let fns = validate_bundled_ruleset(full_path, parent_full_path, ruleset_name, &ctx, prev_ruleset, next_bundled_ruleset).await?;
+
+	Ok(fns)
 }
 
 pub(crate) async fn validate_bundled_ruleset(
@@ -291,60 +223,69 @@ pub(crate) async fn validate_bundled_ruleset(
 	let runtime = crate::runtime::Runtime::new(&next_bundled_ruleset.ts_code).await?;
 	let fns = runtime.get_fns();
 
-	// let function_uses: Vec<_> = next_bundled_ruleset.db_uses_functions.iter().map(|u| {
-	// 	let params_vec: Vec<&str> = u.params.iter().map(AsRef::as_ref).collect();
-	// 	(u.ruleset_path.as_str(), u.object_name.as_str(), u.is_action, u.return_type.as_str(), params_vec)
-	// }).collect();
+	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
+	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
+	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
+	let formatted_ruleset_schema = format_ruleset_schema(&full_path);
 
-	// let table_uses: Vec<_> = next_bundled_ruleset.db_uses_tables.iter().map(|u| {
-	// 	let columns_vec: Vec<DbUsesColumnStructBorrowed> = u.columns.iter().map(|c| DbUsesColumnStructBorrowed {
-	// 		name: &c.name,
-	// 		typ: &c.pg_type,
-	// 		can_null: c.can_null,
-	// 		use_kind: c.use_kind.into_db(),
-	// 	}).collect();
-	// 	(u.ruleset_path.as_str(), u.object_name.as_str(), columns_vec)
-	// }).collect();
+	let db_name = "fake_db_name";
+	let create_sql = format!(include_str!("./create-ruleset.sql"),
+		db_name=db_name,
+		formatted_ruleset_schema=formatted_ruleset_schema,
+		formatted_ruleset_role_migrator=formatted_ruleset_role_migrator,
+		formatted_ruleset_role_action=formatted_ruleset_role_action,
+		formatted_ruleset_role_view=formatted_ruleset_role_view,
+	);
 
-	// let formatted_ruleset_schema =
-	// 	if prev_ruleset.is_some() {
-	// 		// for reset, delete and recreate the ruleset
-	// 		queries::rulesets::delete_ruleset().bind(&ctx.reset_server_client, &full_path).await?;
-	// 		let (_, formatted_ruleset_schema) = create_ruleset_validation(
-	// 			&ctx.reset_config, &ctx.reset_server_client, parent_full_path, ruleset_name,
-	// 			&next_bundled_ruleset.ts_code, &next_bundled_ruleset.db_schema,
-	// 			// &function_uses, &table_uses,
-	// 		).await?;
+	// for through_schema always apply bundled.db_schema
+	ctx.through_schema_server_client.batch_execute(&format!(r#"
+		set role "votebase_server_{db_name}";
+		{create_sql};
 
-	// 		// for migrate, just apply the migration!
-	// 		// TODO we need to modify the actual details of the ruleset to conform with what we're doing, similarly to what we'll do when replacing one
-	// 		let migrator_pass = queries::rulesets::get_ruleset_migrator().bind(&ctx.migrate_server_client, &full_path).one().await?;
-	// 		let migrator_config = { let mut c = ctx.migrate_config.clone(); c.password(migrator_pass); c };
-	// 		let migrator_client = crate::pg_con(&migrator_config).await?;
-	// 		migrator_client.batch_execute(&next_bundled_ruleset.db_migration).await?;
+		set role "{formatted_ruleset_role_migrator}";
+		set search_path to "{formatted_ruleset_schema}";
+		{db_schema}
+		reset role;
+	"#, db_schema=next_bundled_ruleset.db_schema)).await?;
 
-	// 		formatted_ruleset_schema
-	// 	}
-	// 	else {
-	// 		// for entirely new rulesets the db_schema and db_migration should be the same!
-	// 		let (_, formatted_ruleset_schema) = create_ruleset_validation(
-	// 			&ctx.reset_config, &ctx.reset_server_client, parent_full_path, ruleset_name,
-	// 			&next_bundled_ruleset.ts_code, &next_bundled_ruleset.db_schema,
-	// 			// &function_uses, &table_uses,
-	// 		).await?;
-	// 		let (_, _) = create_ruleset_validation(
-	// 			&ctx.migrate_config, &ctx.migrate_server_client, parent_full_path, ruleset_name,
-	// 			&next_bundled_ruleset.ts_code, &next_bundled_ruleset.db_migration,
-	// 			// &function_uses, &table_uses,
-	// 		).await?;
+	if let Some(prev_ruleset) = prev_ruleset {
+		// for through_migration apply prev.db_schema and then bundled.db_migration
+		ctx.through_migration_server_client.batch_execute(&format!(r#"
+			set role "votebase_server_{db_name}";
+			{create_sql};
 
-	// 		formatted_ruleset_schema
-	// 	};
+			set role "{formatted_ruleset_role_migrator}";
+			set search_path to "{formatted_ruleset_schema}";
+			{db_schema}
+			{db_migration}
+			reset role;
+		"#, db_schema=prev_ruleset.db_schema, db_migration=next_bundled_ruleset.db_migration)).await?;
+	}
+	else {
+		// there *isn't* an old schema, so just do the same
+		ctx.through_migration_server_client.batch_execute(&format!(r#"
+			set role "votebase_server_{db_name}";
+			{create_sql};
 
-	// let diff = podman_compute_diff(&ctx.db_container_name, &formatted_ruleset_schema, &ctx.reset_config, &ctx.migrate_config).await?;
-	// if !diff.is_empty() {
-	// 	return Err(ValidationError::InvalidMigration(full_path.to_string()))
-	// }
+			set role "{formatted_ruleset_role_migrator}";
+			set search_path to "{formatted_ruleset_schema}";
+			{db_schema}
+			reset role;
+		"#, db_schema=next_bundled_ruleset.db_schema)).await?;
+	}
+
+	// in the limit we can't actually just diff things immediately,
+	// since we need to do all the children that we may point at
+	// and the rest of the entire ruleset tree outside of us that we may point at
+	// this means we actually have to do this in validate_bundled_ruleset_top???
+	// TODO but for now we're doing it naive and just doing it immediately
+	let diff = podman_compute_diff(
+		&ctx.db_container_name, &formatted_ruleset_schema,
+		&ctx.through_migration_config, &ctx.through_schema_config,
+	).await?;
+	if !diff.is_empty() {
+		return Err(ValidationError::InvalidMigration(full_path.to_string()))
+	}
 
 	// Box::pin(
 	// 	validate_bundled_ruleset_children(
@@ -703,7 +644,7 @@ pub async fn create_ruleset(
 	transaction.batch_execute(&create_sql).await?;
 
 	// TODO same role concerns
-	// TODO also the alter role stuff doesn't count because postgres that only counts when you connect as that role ugh
+	// TODO also the alter role stuff doesn't count because postgres only counts when you connect as that role ugh
 	sql_as_role(&mut transaction, &formatted_ruleset_schema, &formatted_ruleset_role_migrator, db_schema).await?;
 	transaction.commit().await?;
 
@@ -799,6 +740,7 @@ pub async fn apply_candidate_top(
 	let (parent_full_path, ruleset_name) = crate::split_full_path(&candidate_for);
 
 	validate_bundled_ruleset_top(
+		server_role_client,
 		parent_full_path.as_deref(), &ruleset_name, &candidate_for,
 		Some(&prev_ruleset), &bundled_ruleset, /*server_db_archive_path,*/
 	).await.map_err(|e| CandidateApplyError::Invalid(*candidate_id, e))?;
@@ -996,6 +938,7 @@ pub async fn propose_candidate_ruleset(
 	let prev_ruleset = get_stored_ruleset(&server_role_client, full_path).await?;
 
 	let fns = validate_bundled_ruleset_top(
+		server_role_client,
 		parent_full_path, ruleset_name, full_path,
 		Some(&prev_ruleset), candidate,
 		// server_db_archive_path,

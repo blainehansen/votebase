@@ -1,7 +1,7 @@
 use crate::{PgConfig};
 
 pub async fn podman_compute_diff(
-	db_container_name: &str,
+	podman_network: &utils::temp_containers::PodmanNetwork,
 	target_schema: &str,
 	from_config: &PgConfig,
 	to_config: &PgConfig,
@@ -11,7 +11,8 @@ pub async fn podman_compute_diff(
 
 	let output = utils::temp_containers::podman_run(
 		"votebase-dbdiff",
-		&["--network", &format!("container:{}", db_container_name)],
+		// &format!("container:{}", db_container_name)
+		&["--network", &podman_network.network_name],
 		&["--with-privileges", "--schema", target_schema, &from_url, &to_url],
 	).await?;
 
@@ -23,77 +24,43 @@ pub async fn podman_compute_diff(
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub async fn podman_pg_restore(
-	db_container_name: &str,
-	db_name: &str,
-	db_user_name: &str,
-	server_db_archive_path: &std::path::Path,
-	// exclude_schema: Option<&str>,
-) -> std::io::Result<()> {
-	// pg_dump outputs to stdout if no --file argument is given, and pg_restore reads from stdin if no --file is given
-	// if you go back to volumes: podman exec db_container_name pg_dump -d db_name -U db_user -f /whatever_volume_name/server_db_archive_path
-
-	let mut command = tokio::process::Command::new("podman");
-	command.arg("exec").arg(db_container_name)
-		.arg("pg_restore")
-		// --dbname=dbname
-		.arg("-d").arg(db_name)
-		// --username=username
-		.arg("-U").arg(db_user_name)
-		.arg("--format=custom")
-		.arg("--schema-only")
-		// --file=file
-		// .arg("-f").arg(server_db_archive_path)
-		.arg("--exit-on-error");
-
-	// if let Some(exclude_schema) = exclude_schema {
-	// 	// --exclude-schema=pattern
-	// 	command.arg("-N").arg(exclude_schema);
-	// }
-
-	let mut child = command
-		.stderr(std::process::Stdio::piped())
-		.stdout(std::process::Stdio::piped())
-		.spawn()?;
-
-	let mut server_db_archive = tokio::fs::File::open(server_db_archive_path).await?;
-	let mut child_stdin = child.stdin.as_mut().ok_or_else(|| std::io::Error::other("unable to capture pg_restore stdin"))?;
-	tokio::io::copy(&mut server_db_archive, &mut child_stdin).await?;
-
-	let status = child.wait().await?;
-	if status.success() { Ok(()) }
-	else { Err(std::io::Error::other("pg_restore process failed")) }
+struct TempNetworkedPg {
+	container_name: String,
+	config: PgConfig,
+	pg_pass: String,
+	pg_user: String,
+	pg_db: String,
+	pg_port: u16,
 }
 
-pub async fn podman_pg_dump(
-	db_container_name: &str,
-	db_name: &str,
-	db_user_name: &str,
-	server_db_archive_path: &std::path::Path,
-) -> std::io::Result<()> {
-	let mut command = tokio::process::Command::new("podman");
-	command.arg("exec").arg(db_container_name)
-		.arg("pg_dump")
-		// --dbname=dbname
-		.arg("-d").arg(db_name)
-		// --username=username
-		.arg("-U").arg(db_user_name)
-		.arg("--format=custom")
-		.arg("--schema-only")
-		// --file=file
-		// .arg("-f").arg(server_db_archive_path)
-		.arg("--exit-on-error");
+pub async fn spawn_networked_postgres(
+	db_name: String,
+	podman_network: &utils::temp_containers::PodmanNetwork,
+) -> std::io::Result<TempNetworkedPg> {
+	let (container_name, config, pg_pass, pg_user, _pg_db, pg_port) = utils::temp_containers::generate_temp_config();
 
-	let mut child = command
-		.stderr(std::process::Stdio::piped())
+	// LEAK SAFETY we're only allowed to implicitly drop this process Child
+	// because the podman network will be forcibly removed and therefore remove this podman process
+	let _postgres_process = tokio::process::Command::new("podman")
+		.args([
+			"run",
+			"--name", &container_name,
+			"--network", &podman_network.network_name,
+			"--env", &format!("POSTGRES_PASSWORD={pg_pass}"),
+			"--env", &format!("POSTGRES_USER={pg_user}"),
+			"--env", &format!("POSTGRES_DB={db_name}"),
+			"--env", &format!("PGPORT={pg_port}"),
+			"-p", &format!("{pg_port}:{pg_port}"),
+			"--rm",
+			"docker.io/library/postgres:latest",
+		])
 		.stdout(std::process::Stdio::piped())
+		.stderr(std::process::Stdio::piped())
 		.spawn()?;
 
-	let mut server_db_archive = tokio::fs::File::open(server_db_archive_path).await?;
-	let mut child_stdout = child.stdout.as_mut().ok_or_else(|| std::io::Error::other("unable to capture pg_dump stdout"))?;
-	tokio::io::copy(&mut child_stdout, &mut server_db_archive).await?;
+	utils::temp_containers::healthcheck_postgres(&config, 50, 100).await?;
 
-	let status = child.wait().await?;
-	if status.success() { Ok(()) }
-	else { Err(std::io::Error::other("pg_dump process failed")) }
+	Ok(TempNetworkedPg {
+		container_name, config, pg_pass, pg_user, pg_db: db_name, pg_port,
+	})
 }

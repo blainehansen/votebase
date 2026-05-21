@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 transpile_utils = { path = "../transpile_utils" }
 db_generated = { path = "../db_generated" }
+db_schema_utils = { path = "../db_schema_utils" }
 utils = { path = "../utils" }
 deno_core = { workspace = true }
 deno_error = { workspace = true }

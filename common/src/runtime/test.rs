@@ -1,6 +1,5 @@
 use super::*;
 use crate::{deadpool, postgres, rulesets::BundledRuleset};
-use serde_json::Value as Val;
 
 fn boil_string(s: &str) -> String {
 	s.split_whitespace().collect::<Vec<&str>>().join(" ")
@@ -409,5 +408,65 @@ async fn run_function_basics() {
 
 		// // // TODO find a way to test the real thing now that scheduleAction will actually queue a tokio task
 		// // assert!(false);
+	}).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_propose_self_replacement_invalid_migration() {
+	utils::temp_containers::with_temp_postgres_client(async |_, mut config, admin_client| {
+		let db_name = "tempdb";
+		let votebase_server_password = db_schema_utils::load_votebase_server_schema(db_name, &admin_client).await.unwrap();
+		config.user("votebase_server_tempdb");
+		config.password(votebase_server_password);
+		let pool = deadpool::Pool::builder(deadpool::Manager::new(config, postgres::NoTls)).max_size(2).build().unwrap();
+		let mut client = pool.get().await.unwrap();
+
+		let current_full_path = "root";
+		crate::rulesets::create_ruleset(
+			db_name, &mut client, None, &current_full_path,
+			&BundledRuleset {
+				ts_code: "".to_string(),
+				db_schema: "create table stuff (id uuid primary key);".to_string(),
+				db_migration: "create table stuff (id uuid primary key);".to_string(),
+			},
+			&vec![],
+		).await.unwrap();
+
+		// TODO do this with propose_self_replacement or something instead
+		let invalid_result = run_function::<String>(
+			current_full_path.to_string(), r#"
+				votebase.Action("test_action", async () => {
+					return await votebase.proposeSelfReplacement({
+						ts_code: `votebase.Action("action1", () => {});`,
+						db_schema: "create table stuff (id uuid primary key, color text not null);",
+						db_migration: "alter table stuff add column color text;",
+					})
+				})
+			"#, "test_action", serde_json::json!(null), FnType::Action,
+			pool.clone(),
+		).await;
+
+		let e = invalid_result.unwrap_err();
+		assert!(e.to_string().contains("doesn't match the provided schema") || e.to_string().contains("misdeclared schema"));
+
+		let valid_uuid = run_function::<String>(
+			current_full_path.to_string(), r#"
+				votebase.Action("test_action", async () => {
+					return await votebase.proposeSelfReplacement({
+						ts_code: `votebase.Action("action1", () => {});`,
+						db_schema: "create table stuff (id uuid primary key, color text not null);",
+						db_migration: "alter table stuff add column color text not null;",
+					})
+				})
+			"#, "test_action", serde_json::json!(null), FnType::Action,
+			pool.clone(),
+		).await.unwrap();
+
+		assert_eq!(valid_uuid.len(), 36);
+
+		let candidate = db_generated::queries::rulesets::test_select_candidate_replacement_ruleset()
+			.bind(&client).one().await.unwrap();
+		assert_eq!(candidate.id, uuid::Uuid::parse_str(&valid_uuid).unwrap());
+		assert_eq!(candidate.db_migration, "alter table stuff add column color text not null;");
 	}).await.unwrap();
 }
