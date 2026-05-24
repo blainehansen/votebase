@@ -19,17 +19,13 @@ async fn main() -> Result<(), AnyError> {
 
 	let root_ruleset_name = args.get(2).map(String::as_str).unwrap_or("root");
 
-	let fns = votebase_common::rulesets::validate_bundled_ruleset_top(
-		None, root_ruleset_name, root_ruleset_name,
-		None, &bundled_ruleset,
-	).await?;
-
-	votebase_common::rulesets::create_ruleset(
+	// TODO this should be recursively_apply_ruleset or something instead,
+	// which I'm guessing would also imply fns inference and
+	votebase_common::rulesets::recursively_apply_ruleset(
 		&db_name,
 		&mut client,
 		None, root_ruleset_name,
 		&bundled_ruleset,
-		&fns,
 	).await?;
 
 	// TODO need to make sure any other logging that may happen during this cli invocation is redirected to stderr or something

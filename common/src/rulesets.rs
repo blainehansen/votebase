@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 // use db_generated::queries::reflection::GetForeignKeys;
 
-use crate::podman_fns::{podman_compute_diff, podman_pg_restore};
+use crate::podman_fns::podman_compute_diff;
 use crate::runtime::RuntimeError;
 use crate::{
 	FnType, PgClient, PgConfig, RoleType, format_full_path, format_ruleset_role, format_ruleset_schema, pg_con, postgres, queries /*format_ruleset_schema*/
@@ -122,11 +122,8 @@ pub enum CandidateApplyError {
 
 
 pub(crate) struct ValidateCtx {
-	db_container_name: String,
-	through_migration_server_client: PgClient,
-	through_migration_config: PgConfig,
-	through_schema_server_client: PgClient,
-	through_schema_config: PgConfig,
+	through_migration_pg: crate::podman_fns::TempNetworkedPg,
+	through_schema_pg: crate::podman_fns::TempNetworkedPg,
 }
 
 #[derive(Debug)]
@@ -150,60 +147,25 @@ pub async fn podman_votebase_tsc(full_ruleset_dir: &std::path::Path) -> Result<(
 }
 
 pub async fn validate_bundled_ruleset_top(
-	server_role_client: &PgClient,
 	parent_full_path: Option<&str>, ruleset_name: &str,
 	full_path: &str,
 	prev_ruleset: Option<&StoredRuleset>,
 	next_bundled_ruleset: &BundledRuleset,
-) -> Result<Vec<(String, FnType)>, ValidationError> {
-	// - for the "through_migration" database, gather all the db_schema fields from the stored rulesets, instantiating them in a big block with the create-ruleset.sql prepended to them and unfortunately a user switch before each as well. then run db_migration on that database which should be valid on top of what already exists
-	// - for the "through_schema" database do the same, but for the single ruleset we're checking run its db_schema instead
-	// afterward the two should have no diff, the db_migration applied on top of the migrated should exactly match db_schema
-
-	// we need to do the above instead of using an archive because we have to have granular control of what actually makes it through, including the users etc, and I don't want to mess with trying to selectively block or allow things. the state of the database schema *should* exactly match whatever we have stored in the rulesets, this is an essential invariant of this system!
-
-	// TODO for rulesets that are mutually dependent (which you intentionally want to allow!) you'll have to make it so the commands can all be run in order. the only way I can think of right now that achieves that is to require any tables that participate in these circular relationships to declare their foreign keys outside of the definition of the table, so you can parse the db_schemas and *fully* separate the table/function definitions from the foreign key definitions. that way you can put all the function definitions first (at least the ones with unchecked bodies), then the tables, then the foreign keys and other stuff
-
-	// let stored_schemas = queries::rulesets::get_stored_schemas().bind(server_role_client).all().await?;
-
-	// we have to validate the recursive rulesets migrations as well
-	// we essentially need to do a "join" from the bundled ruleset tree to the stored ruleset tree
-	// - "replace": apply stored.db_schema then bundled.db_migration to "migrated" and bundled.db_schema to "whole", then recurse on the join of the children maps
-	// - "keep": apply stored.db_schema to the entire stored tree for both databases
-	// - "delete": apply nothing, you don't have to recurse since we don't have to delete anything from these fake validation dbs
-
-	// this analysis only makes sense for static children. so far I've been only intending to either "keep" or "delete" dynamic children, which means that a bundled ruleset will never need to include migrations for dynamic children, which means we never have to validate migrations for them, only whether the migrations for *other* rulesets will run afoul of them, which they should never do since dynamic children can never have anything other than weak references to any of the rulesets "above" it
-
-	// the way we deal with weak references that have been invalidated is to just remove foreign keys that no longer point to a thing, and create a stub function that always returns null
-
+) -> Result<(), ValidationError> {
 	let random_suffix = utils::temp_containers::random_string(20);
 	let network_name = format!("temp_postgres_network_{random_suffix}");
 	let podman_network = utils::temp_containers::PodmanNetwork::new(network_name).await?;
 
-	// TODO can run these creations at the same time
 	let through_migration_db_name = "tempdb|through_migration".to_string();
-	let through_migration_pg = crate::podman_fns::spawn_networked_postgres(through_migration_db_name, &podman_network).await?;
 	let through_schema_db_name = "tempdb|through_schema".to_string();
-	let through_schema_pg = crate::podman_fns::spawn_networked_postgres(through_schema_db_name, &podman_network).await?;
+	let (through_migration_pg, through_schema_pg) = tokio::try_join!(
+		crate::podman_fns::spawn_networked_votebase_postgres(through_migration_db_name, &podman_network),
+		crate::podman_fns::spawn_networked_votebase_postgres(through_schema_db_name, &podman_network),
+	)?;
 
-	let through_schema_server_password = db_schema_utils::load_votebase_server_schema(&through_schema_db_name, through_schema_client).await?;
-	let through_migration_server_password = db_schema_utils::load_votebase_server_schema(&through_migration_db_name, through_migration_client).await?;
-
-
-	// TODO figure out all of this to use this new paradigm
-	let through_migration_config = { let mut config = config.clone(); config.dbname(through_migration_db_name); config };
-	let through_migration_server_client = crate::pg_con(&through_migration_config).await?;
-	let through_schema_config = { let mut config = config.clone(); config.dbname(through_schema_db_name); config };
-	let through_schema_server_client = crate::pg_con(&through_schema_config).await?;
-
-	let ctx = ValidateCtx {
-		db_container_name, through_migration_server_client, through_migration_config, through_schema_server_client, through_schema_config,
-	};
-
-	// do the recursive validation, which is basically just application! but to two things at the same time
-	let fns = validate_bundled_ruleset(full_path, parent_full_path, ruleset_name, &ctx, prev_ruleset, next_bundled_ruleset).await?;
-
-	Ok(fns)
+	let ctx = ValidateCtx { through_migration_pg, through_schema_pg };
+	validate_bundled_ruleset(full_path, parent_full_path, ruleset_name, &ctx, prev_ruleset, next_bundled_ruleset).await?;
+	Ok(())
 }
 
 pub(crate) async fn validate_bundled_ruleset(
@@ -212,7 +174,7 @@ pub(crate) async fn validate_bundled_ruleset(
 	ctx: &ValidateCtx,
 	prev_ruleset: Option<&StoredRuleset>,
 	next_bundled_ruleset: &BundledRuleset,
-) -> Result<Vec<(String, FnType)>, ValidationError> {
+) -> Result<(), ValidationError> {
 	// place the typescript code in a temp directory and check it
 	let temp_dir = tmpdir::TmpDir::new("validate_bundled_ruleset").await?;
 	let ts_file = temp_dir.as_ref().join("ruleset.ts");
@@ -221,13 +183,16 @@ pub(crate) async fn validate_bundled_ruleset(
 
 	// ensure the runtime is okay with it
 	let runtime = crate::runtime::Runtime::new(&next_bundled_ruleset.ts_code).await?;
-	let fns = runtime.get_fns();
 
+	// every ruleset goes into the table as abstract but with declarations of uses. when we check we always stub. we use the hash of the variable name to help name the stubs
+	// this means we only have to figure out the joining of rulesets etc, and perform migration consistency checks on the actual ruleset change as we actually encounter it
+	// we'll do all of the ruleset creation within the context of a transaction, which means we can roll it back to wipe the slate clean
 	let formatted_ruleset_role_migrator = format_ruleset_role(&full_path, RoleType::Migrator);
 	let formatted_ruleset_role_action = format_ruleset_role(&full_path, RoleType::Action);
 	let formatted_ruleset_role_view = format_ruleset_role(&full_path, RoleType::View);
 	let formatted_ruleset_schema = format_ruleset_schema(&full_path);
 
+	// TODO this doesn't make sense
 	let db_name = "fake_db_name";
 	let create_sql = format!(include_str!("./create-ruleset.sql"),
 		db_name=db_name,
@@ -294,7 +259,7 @@ pub(crate) async fn validate_bundled_ruleset(
 	// 	)
 	// ).await?;
 
-	Ok(fns)
+	Ok(())
 }
 
 // async fn validate_bundled_ruleset_children(

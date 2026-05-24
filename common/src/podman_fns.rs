@@ -1,4 +1,4 @@
-use crate::{PgConfig};
+use crate::{PgClient, PgConfig};
 
 pub async fn podman_compute_diff(
 	podman_network: &utils::temp_containers::PodmanNetwork,
@@ -24,24 +24,21 @@ pub async fn podman_compute_diff(
 	Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-struct TempNetworkedPg {
-	container_name: String,
-	config: PgConfig,
-	pg_pass: String,
-	pg_user: String,
-	pg_db: String,
-	pg_port: u16,
+pub struct TempNetworkedPg {
+	pub container_name: String,
+	pub server_config: PgConfig,
+	pub server_client: PgClient,
+	postgres_process: utils::tokio_graceful_spawn::GracefulChild,
 }
 
-pub async fn spawn_networked_postgres(
+pub async fn spawn_networked_votebase_postgres(
 	db_name: String,
 	podman_network: &utils::temp_containers::PodmanNetwork,
 ) -> std::io::Result<TempNetworkedPg> {
 	let (container_name, config, pg_pass, pg_user, _pg_db, pg_port) = utils::temp_containers::generate_temp_config();
 
-	// LEAK SAFETY we're only allowed to implicitly drop this process Child
-	// because the podman network will be forcibly removed and therefore remove this podman process
-	let _postgres_process = tokio::process::Command::new("podman")
+	use utils::tokio_graceful_spawn::GracefulSpawn;
+	let postgres_process = tokio::process::Command::new("podman")
 		.args([
 			"run",
 			"--name", &container_name,
@@ -56,11 +53,19 @@ pub async fn spawn_networked_postgres(
 		])
 		.stdout(std::process::Stdio::piped())
 		.stderr(std::process::Stdio::piped())
-		.spawn()?;
+		.graceful_spawn()?;
 
 	utils::temp_containers::healthcheck_postgres(&config, 50, 100).await?;
 
-	Ok(TempNetworkedPg {
-		container_name, config, pg_pass, pg_user, pg_db: db_name, pg_port,
-	})
+	let admin_client = crate::pg_con(&config).await.map_err(std::io::Error::other)?;
+	let server_password = db_schema_utils::load_votebase_server_schema(&db_name, &admin_client).await.map_err(std::io::Error::other)?;
+	drop(admin_client);
+
+	let mut server_config = config;
+	server_config.user(format!("votebase_server_{db_name}"));
+	server_config.password(server_password);
+
+	let server_client = crate::pg_con(&server_config).await.map_err(std::io::Error::other)?;
+
+	Ok(TempNetworkedPg { container_name, server_config, server_client, postgres_process })
 }
