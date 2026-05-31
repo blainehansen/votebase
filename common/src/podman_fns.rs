@@ -48,6 +48,8 @@ pub struct TempNetworkedPg {
 	postgres_process: utils::tokio_graceful_spawn::GracefulChild,
 }
 
+// so this TempNetwork thing is interesting, it can give out Clients wrapper structs with a PhantomData tying its lifetime to the network?
+
 pub async fn spawn_networked_votebase_postgres(
 	podman_network: &utils::temp_containers::PodmanNetwork,
 ) -> std::io::Result<TempNetworkedPg> {

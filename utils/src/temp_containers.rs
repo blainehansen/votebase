@@ -1,4 +1,4 @@
-use std::io;
+use std::{borrow::Cow, io};
 use tokio_postgres::{self as postgres, Config};
 use deadpool_postgres as deadpool;
 
@@ -293,7 +293,6 @@ mod tests {
 	}
 
 	#[tokio::test]
-	#[serial_test::serial]
 	async fn test_with_temp_postgres() -> ContainerResult<()> {
 		with_temp_postgres(async |_, config| -> ContainerResult<()> {
 			let (client, connection) = config.connect(postgres::NoTls).await?;
@@ -328,7 +327,6 @@ mod tests {
 	}
 
 	#[tokio::test]
-	#[serial_test::serial]
 	async fn test_with_temp_postgres_client() -> ContainerResult<()> {
 		with_temp_postgres_client(async |_, _, client| -> ContainerResult<()> {
 			client.execute(
@@ -355,7 +353,6 @@ mod tests {
 	}
 
 	#[tokio::test]
-	#[serial_test::serial]
 	async fn test_with_temp_postgres_pool() -> ContainerResult<()> {
 		with_temp_postgres_pool(async |_, _, pool| -> ContainerResult<()> {
 			let client = pool.get().await?;
@@ -453,3 +450,94 @@ impl Drop for PodmanNetwork {
 // 		}
 // 	}
 // }
+
+
+
+/// A running podman postgres container with the correct host post discovered.
+pub struct TempPodmanPg {
+	#[allow(dead_code)]
+	child: crate::tokio_graceful_spawn::GracefulChild,
+	pub container_name: String,
+	pub host_port: u16,
+}
+
+pub enum AccessSource {
+	FromHost,
+	FromPod,
+}
+
+impl TempPodmanPg {
+	pub const DBNAME: &'static str = "temppg_db";
+	pub const USER: &'static str = "temppg_admin";
+	pub const PASSWORD: &'static str = "temppg_admin_pass";
+	pub const PORT: u16 = 5432;
+
+	pub fn make_config(&self, access_source: AccessSource) -> Config {
+		let mut config = Config::new();
+		config.dbname(Self::DBNAME);
+		config.user(Self::USER);
+		config.password(Self::PASSWORD);
+
+		match access_source {
+			AccessSource::FromHost => {
+				config.host("localhost");
+				config.port(self.host_port);
+			},
+			AccessSource::FromPod => {
+				config.host(&self.container_name);
+				config.port(Self::PORT);
+			},
+		}
+		config
+	}
+
+	pub fn random_new() -> impl Future<Output = std::io::Result<TempPodmanPg>> {
+		let random_container_name = format!("temp_postgres_{}", random_string(20));
+		Self::new(random_container_name)
+	}
+
+	pub async fn new(
+		container_name: String,
+	) -> std::io::Result<TempPodmanPg> {
+		use crate::tokio_graceful_spawn::GracefulSpawn;
+		let child = tokio::process::Command::new("podman")
+			.args([
+				"run",
+				"--name", &container_name,
+				"--env", "POSTGRES_DB=temppg_db",
+				"--env", "POSTGRES_USER=temppg_admin",
+				"--env", "POSTGRES_PASSWORD=temppg_admin_pass",
+				"--env", "PGPORT=5432",
+				"-p", "127.0.0.1::5432",
+				"--rm",
+				"docker.io/library/postgres:18-alpine",
+			])
+			.stdout(std::process::Stdio::piped())
+			.stderr(std::process::Stdio::piped())
+			.graceful_spawn()?;
+
+
+		let podman_port_output =
+			tokio::process::Command::new("podman").args(["port", &container_name, "5432/tcp"])
+			.stdout(std::process::Stdio::piped())
+			.stderr(std::process::Stdio::piped())
+			.spawn()?.wait_with_output().await?;
+
+		if !podman_port_output.status.success() {
+			let err = String::from_utf8_lossy(&podman_port_output.stderr);
+			return Err(io::Error::other(format!("couldn't spawn TempPodmanPg: {err}")))
+		}
+
+		let stdout = podman_port_output.stdout;
+		let index = stdout.iter().position(|&b| b == b':')
+			.ok_or_else(|| io::Error::other(format!("podman port output is malformed {}", String::from_utf8_lossy(&stdout))))?;
+
+		let host_port = String::from_utf8_lossy(&stdout[index..]).parse::<u16>()
+			.map_err(io::Error::other)?;
+		let temp_podman_pg = TempPodmanPg { child, host_port, container_name };
+		let config = temp_podman_pg.make_config(AccessSource::FromHost);
+		healthcheck_postgres(&config, 50, 100).await?;
+
+		Ok(temp_podman_pg)
+	}
+}
