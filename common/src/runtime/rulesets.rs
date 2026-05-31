@@ -2,7 +2,6 @@ use std::{cell::RefCell, rc::Rc};
 use deno_core::OpState;
 use crate::rulesets::{BundledRuleset, propose_candidate_ruleset};
 use crate::runtime::RunInfo;
-use crate::{PgClient};
 
 use super::{demand_external_allowed, js_err, run_err};
 

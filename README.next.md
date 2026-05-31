@@ -398,8 +398,8 @@ Here are all the environment variables you need to provide to the server. `DB_HO
 Above when you called `votebase_admin_cli bootstrap`, a few things happened:
 
 - `DB_NAME` was loaded with the overall votebase database schema.
-- A user `votebase_server_$DB_NAME` was created to act as the user for the votebase server itself.
-- A random password was generated and assigned to the above `votebase_server_$DB_NAME`.
+- A user `votebase_server` was created to act as the user for the votebase server itself.
+- A random password was generated and assigned to the above `votebase_server`.
 - **The blank "accept any" Ruleset was loaded into the database.** This ["accept any"](TODO location of accept-any definition) is a minimal Ruleset that literally does nothing other than accept the first Ruleset proposed to the `__insert_initial` Action.
 
 

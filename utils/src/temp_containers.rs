@@ -247,7 +247,7 @@ pub async fn with_temp_postgres_pool<
 	Ok(func(container_name, config, pool).await)
 }
 
-pub fn generate_temp_config() -> (String, Config, String, String, String, u16) {
+pub fn generate_temp_config() -> (String, Config, &'static str, &'static str, &'static str, u16) {
 	let random_suffix = random_string(20);
 	let container_name = format!("temp_postgres_{random_suffix}");
 	let pg_pass = "temppass";
@@ -262,7 +262,7 @@ pub fn generate_temp_config() -> (String, Config, String, String, String, u16) {
 	config.dbname(pg_db);
 	config.port(pg_port);
 
-	(container_name, config, pg_pass.to_string(), pg_user.to_string(), pg_db.to_string(), pg_port)
+	(container_name, config, pg_pass, pg_user, pg_db, pg_port)
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 -- this file is meant to be run by an admin role at polity creation time
 -- this needs the ability to create roles to create new rulesets and their sub roles
 -- and to create databases to do the migration checking
-create role "votebase_server_{db_name}" with createrole createdb nosuperuser noinherit login password '{votebase_server_password}';
+create role "votebase_server" with createrole createdb nosuperuser noinherit login password '{votebase_server_password}';
 
 alter default privileges revoke all privileges on tables from PUBLIC;
 alter default privileges revoke all privileges on sequences from PUBLIC;
@@ -13,23 +13,23 @@ grant connect on database "{db_name}" to PUBLIC;
 revoke all privileges on parameter search_path from PUBLIC;
 
 -- CREATE | CONNECT | TEMPORARY | TEMP
-grant all privileges on database "{db_name}" to "votebase_server_{db_name}";
+grant all privileges on database "{db_name}" to "votebase_server";
 -- SET | ALTER SYSTEM
-grant all privileges on parameter search_path to "votebase_server_{db_name}";
+grant all privileges on parameter search_path to "votebase_server";
 -- USAGE | CREATE
-alter default privileges grant all privileges on schemas to "votebase_server_{db_name}";
+alter default privileges grant all privileges on schemas to "votebase_server";
 
 drop schema public;
 create schema votebase_catalog;
 
 -- SELECT | INSERT | UPDATE | DELETE | TRUNCATE | REFERENCES | TRIGGER | MAINTAIN
-alter default privileges in schema votebase_catalog grant all privileges on tables to "votebase_server_{db_name}";
+alter default privileges in schema votebase_catalog grant all privileges on tables to "votebase_server";
 -- USAGE | SELECT | UPDATE
-alter default privileges in schema votebase_catalog grant all privileges on sequences to "votebase_server_{db_name}";
+alter default privileges in schema votebase_catalog grant all privileges on sequences to "votebase_server";
 -- EXECUTE
-alter default privileges in schema votebase_catalog grant all privileges on functions to "votebase_server_{db_name}";
+alter default privileges in schema votebase_catalog grant all privileges on functions to "votebase_server";
 -- USAGE
-alter default privileges in schema votebase_catalog grant all privileges on types to "votebase_server_{db_name}";
+alter default privileges in schema votebase_catalog grant all privileges on types to "votebase_server";
 
 create extension if not exists pgcrypto with schema votebase_catalog;
 -- https://github.com/supabase/pg_jsonschema/blob/master/dockerfiles/db/Dockerfile

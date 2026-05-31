@@ -16,7 +16,7 @@ async fn main() -> std::io::Result<()> {
 	let db_port = std::env::var("DB_PORT").expect("DB_PORT must be set").parse().expect("DB_PORT must be a valid port number");
 	let db_host = std::env::var("DB_HOST").expect("DB_HOST must be set");
 	let db_name = std::env::var("DB_NAME").expect("DB_NAME must be set");
-	let db_votebase_user = format!("votebase_server_{db_name}");
+	let db_votebase_user = "votebase_server".to_string();
 	let db_votebase_server_password = std::env::var("VOTEBASE_SERVER_PASSWORD").expect("VOTEBASE_SERVER_PASSWORD must be set");
 
 	let mut server_role_config = postgres::Config::new();

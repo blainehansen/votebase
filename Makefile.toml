@@ -42,6 +42,9 @@ script = "cargo test -p votebase_common --lib -- --nocapture"
 [tasks.build_votebase_tsc]
 script = "podman build -t votebase-tsc -f Containerfile.votebase-tsc ."
 
+[tasks.build_votebase_dbdiff]
+script = "podman build -t votebase-dbdiff -f Containerfile.votebase-dbdiff ."
+
 [tasks.dev_votebase_tsc]
 dependencies = ["build_votebase_tsc"]
 script = "podman run --rm -v ./test-rulesets/accept-any:/workspace/ruleset votebase-tsc --noEmit"
