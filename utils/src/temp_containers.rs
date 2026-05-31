@@ -1,4 +1,4 @@
-use std::{borrow::Cow, io};
+use std::io;
 use tokio_postgres::{self as postgres, Config};
 use deadpool_postgres as deadpool;
 
@@ -21,12 +21,6 @@ pub fn random_string(len: usize) -> String {
 	let mut rng = rand::rng();
 	use rand::distr::SampleString;
 	rand::distr::Alphanumeric.sample_string(&mut rng, len)
-}
-
-pub fn random_port() -> u16 {
-	let mut rng = rand::rng();
-	use rand::Rng;
-	rng.random_range(6000..=65535)
 }
 
 // async fn is_installed(tool: &str) -> bool {
@@ -101,70 +95,14 @@ pub async fn podman_run(
 // 		Ok(())
 // 	} else {
 // 		let err = String::from_utf8_lossy(&output.stderr);
-// 		Err(io::Error::new(io::ErrorKind::Other, format!("`podman` couldn't {action}: {err}")))
+// 		Err(io::Error::other(format!("`podman` couldn't {action}: {err}")))
 // 	}
 // }
-
-pub fn spawn_postgres_tokio(
-	container_name: &str,
-	pg_pass: &str,
-	pg_user: &str,
-	pg_db: &str,
-	pg_port: u16,
-) -> io::Result<crate::tokio_graceful_spawn::GracefulChild> {
-	use crate::tokio_graceful_spawn::GracefulSpawn;
-	let child = tokio::process::Command::new("podman")
-		.args([
-			"run",
-			"--name", container_name,
-			"--env", &format!("POSTGRES_PASSWORD={pg_pass}"),
-			"--env", &format!("POSTGRES_USER={pg_user}"),
-			"--env", &format!("POSTGRES_DB={pg_db}"),
-			"--env", &format!("PGPORT={pg_port}"),
-			"-p", &format!("{pg_port}:{pg_port}"),
-			"--rm",
-			"docker.io/library/postgres:latest",
-		])
-		.stdout(std::process::Stdio::piped())
-		.stderr(std::process::Stdio::piped())
-		.graceful_spawn()?;
-
-	Ok(child)
-}
-
-pub fn spawn_postgres_std(
-	container_name: &str,
-	pg_pass: &str,
-	pg_user: &str,
-	pg_db: &str,
-	pg_port: u16,
-) -> io::Result<crate::std_graceful_spawn::GracefulChild> {
-	use crate::std_graceful_spawn::GracefulSpawn;
-	let child = std::process::Command::new("podman")
-		.args([
-			"run",
-			"--name", container_name,
-			"--env", &format!("POSTGRES_PASSWORD={pg_pass}"),
-			"--env", &format!("POSTGRES_USER={pg_user}"),
-			"--env", &format!("POSTGRES_DB={pg_db}"),
-			"--env", &format!("PGPORT={pg_port}"),
-			"-p", &format!("{pg_port}:{pg_port}"),
-			"--rm",
-			"docker.io/library/postgres:latest",
-		])
-		.stdout(std::process::Stdio::piped())
-		.stderr(std::process::Stdio::piped())
-		.graceful_spawn()?;
-
-	Ok(child)
-}
-
 
 async fn is_postgres_healthy(config: &Config) -> bool {
 	// let args = ["exec", container_name, "pg_isready"];
 	// Ok(podman_cmd(&args, "check container health").await.is_ok())
 	config.connect(postgres::NoTls).await.is_ok()
-
 	// let res = config.connect(postgres::NoTls).await;
 	// match res {
 	// 	Ok(_) => true,
@@ -175,21 +113,45 @@ async fn is_postgres_healthy(config: &Config) -> bool {
 	// }
 }
 
-pub async fn healthcheck_postgres(
+async fn wait_for_podman_port(
+	container_name: &str,
+	max_retries: u64,
+	ms_per_retry: u64,
+) -> io::Result<u16> {
+	for _ in 0..max_retries {
+		let podman_port_output = tokio::process::Command::new("podman")
+			.args(["port", container_name, "5432/tcp"])
+			.stdout(std::process::Stdio::piped())
+			.stderr(std::process::Stdio::piped())
+			.spawn()?.wait_with_output().await?;
+
+		if podman_port_output.status.success() {
+			let stdout = podman_port_output.stdout;
+			if let Some(index) = stdout.iter().position(|&b| b == b':') {
+				if let Ok(port) = String::from_utf8_lossy(&stdout[index + 1..]).trim().parse::<u16>() {
+					return Ok(port);
+				}
+			}
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(ms_per_retry)).await;
+	}
+
+	Err(io::Error::other(format!("timed out waiting for podman port for container {}", container_name)))
+}
+
+async fn healthcheck_postgres(
 	config: &Config,
 	max_retries: u64,
 	ms_per_retry: u64,
 ) -> io::Result<()> {
 	let slow_threshold = 10 + max_retries / 10;
-	let mut nb_retries = 0;
 
-	while !is_postgres_healthy(&config).await {
-		if nb_retries >= max_retries {
-			return Err(io::Error::new(io::ErrorKind::Other, "reached the max number of connection retries while waiting for postgres"))
-		};
+	for nb_retries in 1..=max_retries {
+		if is_postgres_healthy(config).await {
+			return Ok(());
+		}
 
 		tokio::time::sleep(std::time::Duration::from_millis(ms_per_retry)).await;
-		nb_retries += 1;
 
 		if nb_retries % slow_threshold == 0 {
 			eprintln!(
@@ -198,206 +160,25 @@ pub async fn healthcheck_postgres(
 		}
 	}
 
-	Ok(())
+	Err(io::Error::other("reached the max number of connection retries while waiting for postgres"))
 }
 
 
-pub async fn with_temp_postgres<
-	Fut: Future,
-	F: FnOnce(String, Config) -> Fut,
->(func: F) -> ContainerResult<Fut::Output> {
-	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
-
-	let _postgres_process = spawn_postgres_tokio(&container_name, &pg_pass, &pg_user, &pg_db, pg_port)?;
-	healthcheck_postgres(&config, 50, 100).await?;
-
-	Ok(func(container_name, config).await)
-}
-
-pub async fn with_temp_postgres_client<
-	Fut: Future,
-	F: FnOnce(String, Config, postgres::Client) -> Fut,
->(func: F) -> ContainerResult<Fut::Output> {
-	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
-
-	let _postgres_process = spawn_postgres_tokio(&container_name, &pg_pass, &pg_user, &pg_db, pg_port)?;
-	healthcheck_postgres(&config, 50, 100).await?;
-
-	let (client, connection) = config.connect(postgres::NoTls).await?;
-	tokio::spawn(async move {
-		if let Err(e) = connection.await {
-			eprintln!("connection error: {}", e);
-		}
-	});
-
-	Ok(func(container_name, config, client).await)
-}
-
-pub async fn with_temp_postgres_pool<
-	Fut: Future,
-	F: FnOnce(String, Config, deadpool::Pool) -> Fut,
->(func: F) -> ContainerResult<Fut::Output> {
-	let (container_name, config, pg_pass, pg_user, pg_db, pg_port) = generate_temp_config();
-
-	let _postgres_process = spawn_postgres_tokio(&container_name, &pg_pass, &pg_user, &pg_db, pg_port)?;
-	healthcheck_postgres(&config, 50, 100).await?;
-
-	let pool = deadpool::Pool::builder(deadpool::Manager::new(config.clone(), postgres::NoTls)).max_size(5).build()?;
-
-	Ok(func(container_name, config, pool).await)
-}
-
-pub fn generate_temp_config() -> (String, Config, &'static str, &'static str, &'static str, u16) {
-	let random_suffix = random_string(20);
-	let container_name = format!("temp_postgres_{random_suffix}");
-	let pg_pass = "temppass";
-	let pg_user = "tempuser";
-	let pg_db = "tempdb";
-	let pg_port = random_port();
-
-	let mut config = Config::new();
-	config.host("localhost");
-	config.password(pg_pass);
-	config.user(pg_user);
-	config.dbname(pg_db);
-	config.port(pg_port);
-
-	(container_name, config, pg_pass, pg_user, pg_db, pg_port)
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	async fn assert_no_temp_postgres() -> ContainerResult<()> {
-		let pattern = "temp_postgres_";
-
-		tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-		let output = tokio::process::Command::new("podman")
-			.args(["ps", "-a", "--format", "{{.Names}}"]).output().await?;
-
-		assert!(output.status.success(), "podman ps -a failed: {}", String::from_utf8_lossy(&output.stderr));
-
-		let stdout = String::from_utf8_lossy(&output.stdout);
-		let matches: Vec<&str> = stdout
-			.lines().filter(|line| line.contains(pattern))
-			.collect();
-
-		assert!(
-			matches.is_empty(),
-			"Expected no containers matching {:?}, but found: {:?}", pattern, matches,
-		);
-
-		Ok(())
-	}
-
-	#[tokio::test]
-	async fn test_with_temp_postgres() -> ContainerResult<()> {
-		with_temp_postgres(async |_, config| -> ContainerResult<()> {
-			let (client, connection) = config.connect(postgres::NoTls).await?;
-
-			tokio::spawn(async move {
-				if let Err(e) = connection.await {
-					eprintln!("connection error: {}", e);
-				}
-			});
-
-			client.execute(
-				"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
-				&[]
-			).await?;
-
-			client.execute(
-				"INSERT INTO test_users (name) VALUES ($1), ($2)",
-				&[&"Alice", &"Bob"]
-			).await?;
-
-			let rows = client.query("SELECT id, name FROM test_users ORDER BY id", &[]).await?;
-
-			assert_eq!(rows.len(), 2);
-			assert_eq!(rows[0].get::<_, i32>(0), 1);
-			assert_eq!(rows[0].get::<_, &str>(1), "Alice");
-			assert_eq!(rows[1].get::<_, &str>(1), "Bob");
-
-			Ok(())
-		}).await??;
-
-		assert_no_temp_postgres().await
-	}
-
-	#[tokio::test]
-	async fn test_with_temp_postgres_client() -> ContainerResult<()> {
-		with_temp_postgres_client(async |_, _, client| -> ContainerResult<()> {
-			client.execute(
-				"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
-				&[]
-			).await?;
-
-			client.execute(
-				"INSERT INTO test_users (name) VALUES ($1), ($2)",
-				&[&"Alice", &"Bob"]
-			).await?;
-
-			let rows = client.query("SELECT id, name FROM test_users ORDER BY id", &[]).await?;
-
-			assert_eq!(rows.len(), 2);
-			assert_eq!(rows[0].get::<_, i32>(0), 1);
-			assert_eq!(rows[0].get::<_, &str>(1), "Alice");
-			assert_eq!(rows[1].get::<_, &str>(1), "Bob");
-
-			Ok(())
-		}).await??;
-
-		assert_no_temp_postgres().await
-	}
-
-	#[tokio::test]
-	async fn test_with_temp_postgres_pool() -> ContainerResult<()> {
-		with_temp_postgres_pool(async |_, _, pool| -> ContainerResult<()> {
-			let client = pool.get().await?;
-
-			client.execute(
-				"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
-				&[]
-			).await?;
-
-			client.execute(
-				"INSERT INTO test_users (name) VALUES ($1), ($2)",
-				&[&"Alice", &"Bob"]
-			).await?;
-
-			let rows = client.query("SELECT id, name FROM test_users ORDER BY id", &[]).await?;
-
-			assert_eq!(rows.len(), 2);
-			assert_eq!(rows[0].get::<_, i32>(0), 1);
-			assert_eq!(rows[0].get::<_, &str>(1), "Alice");
-			assert_eq!(rows[1].get::<_, &str>(1), "Bob");
-
-			Ok(())
-		}).await??;
-
-		assert_no_temp_postgres().await
-	}
-}
-
-
-
-pub struct PodmanNetwork {
+pub struct TempPodmanNetwork {
 	pub network_name: String,
 }
-impl PodmanNetwork {
-	pub async fn new(network_name: String) -> std::io::Result<PodmanNetwork> {
+impl TempPodmanNetwork {
+	pub async fn new(network_name: String) -> std::io::Result<TempPodmanNetwork> {
 		tokio::process::Command::new("podman").args(&["network", "create", &network_name])
 			.stderr(std::process::Stdio::piped())
 			.stdout(std::process::Stdio::piped())
 			.spawn()?.wait_with_output().await?;
 
-		Ok(PodmanNetwork { network_name: network_name.to_string() })
+		Ok(TempPodmanNetwork { network_name: network_name.to_string() })
 	}
 }
 
-impl Drop for PodmanNetwork {
+impl Drop for TempPodmanNetwork {
 	fn drop(&mut self) {
 		let network_name = self.network_name.clone();
 
@@ -412,51 +193,9 @@ impl Drop for PodmanNetwork {
 	}
 }
 
-
-// pub(crate) mod error {
-// 	use std::fmt::Debug;
-
-// 	use miette::Diagnostic;
-// 	use thiserror::Error as ThisError;
-
-// 	#[derive(Debug, ThisError, Diagnostic)]
-// 	#[error("{msg}")]
-// 	pub struct Error {
-// 		pub(crate) msg: String,
-// 		#[help]
-// 		pub help: Option<String>,
-// 	}
-
-// 	impl Error {
-// 		pub fn new(msg: String, ) -> Self {
-// 			let help = if podman {
-// 				"Make sure that port 5435 is usable and that no container named `clorinde_postgres` already exists."
-// 			} else {
-// 				"First, check that the docker daemon is up-and-running. Then, make sure that port 5435 is usable and that no container named `clorinde_postgres` already exists."
-// 			};
-// 			Error {
-// 				msg,
-// 				help: Some(String::from(help)),
-// 			}
-// 		}
-// 	}
-
-// 	impl From<io::Error> for Error {
-// 		fn from(e: std::io::Error) -> Self {
-// 			Self {
-// 				msg: format!("{e:#}"),
-// 				help: None,
-// 			}
-// 		}
-// 	}
-// }
-
-
-
 /// A running podman postgres container with the correct host post discovered.
 pub struct TempPodmanPg {
-	#[allow(dead_code)]
-	child: crate::tokio_graceful_spawn::GracefulChild,
+	_child: crate::tokio_graceful_spawn::GracefulChild,
 	pub container_name: String,
 	pub host_port: u16,
 }
@@ -464,6 +203,42 @@ pub struct TempPodmanPg {
 pub enum AccessSource {
 	FromHost,
 	FromPod,
+}
+
+pub struct TempClient<'a> {
+	client: postgres::Client,
+	_phantom: std::marker::PhantomData<&'a TempPodmanPg>,
+}
+
+impl<'a> std::ops::Deref for TempClient<'a> {
+	type Target = postgres::Client;
+	fn deref(&self) -> &Self::Target {
+		&self.client
+	}
+}
+
+impl<'a> std::ops::DerefMut for TempClient<'a> {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.client
+	}
+}
+
+pub struct TempPool<'a> {
+	pool: deadpool::Pool,
+	_phantom: std::marker::PhantomData<&'a TempPodmanPg>,
+}
+
+impl<'a> std::ops::Deref for TempPool<'a> {
+	type Target = deadpool::Pool;
+	fn deref(&self) -> &Self::Target {
+		&self.pool
+	}
+}
+
+impl<'a> std::ops::DerefMut for TempPool<'a> {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.pool
+	}
 }
 
 impl TempPodmanPg {
@@ -515,29 +290,129 @@ impl TempPodmanPg {
 			.stdout(std::process::Stdio::piped())
 			.stderr(std::process::Stdio::piped())
 			.graceful_spawn()?;
+			// .debug_output()
 
+		let host_port = wait_for_podman_port(&container_name, 50, 100).await?;
 
-		let podman_port_output =
-			tokio::process::Command::new("podman").args(["port", &container_name, "5432/tcp"])
-			.stdout(std::process::Stdio::piped())
-			.stderr(std::process::Stdio::piped())
-			.spawn()?.wait_with_output().await?;
-
-		if !podman_port_output.status.success() {
-			let err = String::from_utf8_lossy(&podman_port_output.stderr);
-			return Err(io::Error::other(format!("couldn't spawn TempPodmanPg: {err}")))
-		}
-
-		let stdout = podman_port_output.stdout;
-		let index = stdout.iter().position(|&b| b == b':')
-			.ok_or_else(|| io::Error::other(format!("podman port output is malformed {}", String::from_utf8_lossy(&stdout))))?;
-
-		let host_port = String::from_utf8_lossy(&stdout[index..]).parse::<u16>()
-			.map_err(io::Error::other)?;
-		let temp_podman_pg = TempPodmanPg { child, host_port, container_name };
+		let temp_podman_pg = TempPodmanPg { _child: child, host_port, container_name };
 		let config = temp_podman_pg.make_config(AccessSource::FromHost);
 		healthcheck_postgres(&config, 50, 100).await?;
 
 		Ok(temp_podman_pg)
+	}
+
+	pub async fn client(&self) -> ContainerResult<TempClient<'_>> {
+		let config = self.make_config(AccessSource::FromHost);
+		let (client, connection) = config.connect(postgres::NoTls).await?;
+		tokio::spawn(async move {
+			if let Err(e) = connection.await {
+				eprintln!("connection error: {}", e);
+			}
+		});
+		Ok(TempClient {
+			client,
+			_phantom: std::marker::PhantomData,
+		})
+	}
+
+	pub fn pool(&self, max_size: usize) -> ContainerResult<TempPool<'_>> {
+		let config = self.make_config(AccessSource::FromHost);
+		let pool = deadpool::Pool::builder(deadpool::Manager::new(config, postgres::NoTls))
+			.max_size(max_size)
+			.build()?;
+		Ok(TempPool {
+			pool,
+			_phantom: std::marker::PhantomData,
+		})
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	async fn assert_no_temp_postgres() -> ContainerResult<()> {
+		let pattern = "temp_postgres_";
+
+		tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+		let output = tokio::process::Command::new("podman")
+			.args(["ps", "-a", "--format", "{{.Names}}"]).output().await?;
+
+		assert!(output.status.success(), "podman ps -a failed: {}", String::from_utf8_lossy(&output.stderr));
+
+		let stdout = String::from_utf8_lossy(&output.stdout);
+		let matches: Vec<&str> = stdout
+			.lines().filter(|line| line.contains(pattern))
+			.collect();
+
+		assert!(
+			matches.is_empty(),
+			"Expected no containers matching {:?}, but found: {:?}", pattern, matches,
+		);
+
+		let output = tokio::process::Command::new("podman")
+			.args(["network", "ls", "--format", "{{.Name}}"]).output().await?;
+
+		assert!(output.status.success(), "podman network ls failed: {}", String::from_utf8_lossy(&output.stderr));
+
+		let stdout = String::from_utf8_lossy(&output.stdout);
+		let networks: Vec<&str> = stdout.lines().filter(|line| !line.trim().is_empty()).collect();
+		assert_eq!(networks, vec!["podman"], "Expected only the default 'podman' network, but found: {:?}", networks);
+
+		Ok(())
+	}
+
+	#[tokio::test]
+	async fn test_temp_podman_pg_client() -> ContainerResult<()> {
+		let pg = TempPodmanPg::random_new().await?;
+		let client = pg.client().await?;
+
+		client.execute(
+			"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
+			&[]
+		).await?;
+
+		client.execute(
+			"INSERT INTO test_users (name) VALUES ($1), ($2)",
+			&[&"Alice", &"Bob"]
+		).await?;
+
+		let rows = client.query("SELECT id, name FROM test_users ORDER BY id", &[]).await?;
+
+		assert_eq!(rows.len(), 2);
+		assert_eq!(rows[0].get::<_, i32>(0), 1);
+		assert_eq!(rows[0].get::<_, &str>(1), "Alice");
+		assert_eq!(rows[1].get::<_, &str>(1), "Bob");
+		drop(pg);
+
+		assert_no_temp_postgres().await
+	}
+
+	#[tokio::test]
+	async fn test_temp_podman_pg_pool() -> ContainerResult<()> {
+		let pg = TempPodmanPg::random_new().await?;
+		let pool = pg.pool(1)?;
+		let client = pool.get().await?;
+
+		client.execute(
+			"CREATE TABLE test_users (id SERIAL PRIMARY KEY, name TEXT NOT NULL)",
+			&[]
+		).await?;
+
+		client.execute(
+			"INSERT INTO test_users (name) VALUES ($1), ($2)",
+			&[&"Alice", &"Bob"]
+		).await?;
+
+		let rows = client.query("SELECT id, name FROM test_users ORDER BY id", &[]).await?;
+
+		assert_eq!(rows.len(), 2);
+		assert_eq!(rows[0].get::<_, i32>(0), 1);
+		assert_eq!(rows[0].get::<_, &str>(1), "Alice");
+		assert_eq!(rows[1].get::<_, &str>(1), "Bob");
+		drop(pg);
+
+		assert_no_temp_postgres().await
 	}
 }
