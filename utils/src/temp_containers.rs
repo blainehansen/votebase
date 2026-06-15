@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, marker::PhantomData, ops::{Deref, DerefMut}, future::Future};
 use tokio_postgres::{self as postgres, Config};
 use deadpool_postgres as deadpool;
 
@@ -176,20 +176,42 @@ impl TempPodmanNetwork {
 
 		Ok(TempPodmanNetwork { network_name: network_name.to_string() })
 	}
+
+	pub async fn pg(&self) -> std::io::Result<NetworkBoundPg<'_>> {
+		let container_name = format!("temp_postgres_{}", random_string(20));
+		let pg = TempPodmanPg::new(container_name, Some(&self.network_name)).await?;
+		Ok(NetworkBoundPg {
+			pg,
+			_phantom: PhantomData,
+		})
+	}
+}
+
+pub struct NetworkBoundPg<'a> {
+	pub pg: TempPodmanPg,
+	_phantom: PhantomData<&'a TempPodmanNetwork>,
+}
+
+impl<'a> Deref for NetworkBoundPg<'a> {
+	type Target = TempPodmanPg;
+	fn deref(&self) -> &Self::Target {
+		&self.pg
+	}
+}
+
+impl<'a> DerefMut for NetworkBoundPg<'a> {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.pg
+	}
 }
 
 impl Drop for TempPodmanNetwork {
 	fn drop(&mut self) {
-		let network_name = self.network_name.clone();
-
-		tokio::spawn(async move {
-			tokio::process::Command::new("podman").args(&["network", "rm", "-f", &network_name])
-			.stderr(std::process::Stdio::piped())
-			.stdout(std::process::Stdio::piped())
-			.spawn()?.wait_with_output().await?;
-
-			Ok::<_, std::io::Error>(())
-		});
+		let _ = std::process::Command::new("podman")
+			.args(&["network", "rm", "-f", &self.network_name])
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.status();
 	}
 }
 
@@ -268,25 +290,33 @@ impl TempPodmanPg {
 
 	pub fn random_new() -> impl Future<Output = std::io::Result<TempPodmanPg>> {
 		let random_container_name = format!("temp_postgres_{}", random_string(20));
-		Self::new(random_container_name)
+		Self::new(random_container_name, None)
 	}
 
+	// TODO need to audit this implementation
 	pub async fn new(
 		container_name: String,
+		network: Option<&str>,
 	) -> std::io::Result<TempPodmanPg> {
 		use crate::tokio_graceful_spawn::GracefulSpawn;
+		let mut args = vec![
+			"run",
+			"--name", &container_name,
+			"--env", "POSTGRES_DB=temppg_db",
+			"--env", "POSTGRES_USER=temppg_admin",
+			"--env", "POSTGRES_PASSWORD=temppg_admin_pass",
+			"--env", "PGPORT=5432",
+			"-p", "127.0.0.1::5432",
+			"--rm",
+		];
+		if let Some(net) = network {
+			args.push("--network");
+			args.push(net);
+		}
+		args.push("docker.io/library/postgres:18-alpine");
+
 		let child = tokio::process::Command::new("podman")
-			.args([
-				"run",
-				"--name", &container_name,
-				"--env", "POSTGRES_DB=temppg_db",
-				"--env", "POSTGRES_USER=temppg_admin",
-				"--env", "POSTGRES_PASSWORD=temppg_admin_pass",
-				"--env", "PGPORT=5432",
-				"-p", "127.0.0.1::5432",
-				"--rm",
-				"docker.io/library/postgres:18-alpine",
-			])
+			.args(args)
 			.stdout(std::process::Stdio::piped())
 			.stderr(std::process::Stdio::piped())
 			.graceful_spawn()?;
@@ -415,4 +445,48 @@ mod tests {
 
 		assert_no_temp_postgres().await
 	}
+
+	// TODO need to audit this test
+	#[tokio::test]
+	async fn test_temp_podman_network_diff() -> ContainerResult<()> {
+		let network = TempPodmanNetwork::new(format!("temp_net_{}", random_string(10))).await?;
+		let pg1 = network.pg().await?;
+		let pg2 = network.pg().await?;
+
+		let client1 = pg1.client().await?;
+		client1.execute("CREATE TABLE test_diff (id SERIAL PRIMARY KEY)", &[]).await?;
+
+		let config1 = pg1.make_config(AccessSource::FromPod);
+		let config2 = pg2.make_config(AccessSource::FromPod);
+
+		let url1 = crate::url_encoded_connection_string(&config1);
+		let url2 = crate::url_encoded_connection_string(&config2);
+
+		let output = podman_run(
+			"votebase-dbdiff",
+			&["--network", &network.network_name],
+			&[
+				"--with-privileges",
+				&url2, // empty
+				&url1, // has table
+			]
+		).await?;
+
+		let stdout = String::from_utf8_lossy(&output.stdout);
+		let stderr = String::from_utf8_lossy(&output.stderr);
+
+		if !output.status.success() && output.status.code() != Some(2) {
+			panic!("dbdiff failed with status {}:\nSTDOUT:\n{}\nSTDERR:\n{}", output.status, stdout, stderr);
+		}
+
+		assert!(
+			stdout.to_lowercase().contains("create table \"public\".\"test_diff\""),
+			"Expected diff to contain create table \"public\".\"test_diff\", got: {}", stdout,
+		);
+
+		drop(network);
+
+		assert_no_temp_postgres().await
+	}
 }
+
